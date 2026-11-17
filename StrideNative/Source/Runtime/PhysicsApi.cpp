@@ -72,8 +72,12 @@ SN_API int32_t sn_physics_create(uint32_t max_bodies)
 	if (max_bodies == 0)
 		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "max_bodies must be positive");
 
+	// Resting bodies touch several others (a box in a stack has up to four neighbours and the
+	// ground), so pairs and contacts need headroom over the body count.
+	constexpr uint32_t cContactsPerBody = 8;
 	auto world = std::make_unique<World>();
-	world->mSystem.Init(max_bodies, 0, max_bodies, max_bodies, world->mBroadPhaseLayers, world->mObjectVsBroadPhase, world->mObjectPairs);
+	world->mSystem.Init(max_bodies, 0, max_bodies * cContactsPerBody, max_bodies * cContactsPerBody,
+		world->mBroadPhaseLayers, world->mObjectVsBroadPhase, world->mObjectPairs);
 	return GetTable<World>().Add(std::move(world));
 }
 
@@ -114,7 +118,13 @@ SN_API int32_t sn_physics_step(int32_t world, float delta_time, int32_t collisio
 	if (w == nullptr)
 		return SN_ERROR_INVALID_HANDLE;
 	EPhysicsUpdateError errors = w->mSystem.Update(delta_time, collision_steps > 0 ? collision_steps : 1, &GetTempAllocator(), &GetJobSystem());
-	return errors == EPhysicsUpdateError::None ? SN_OK : SetLastError(SN_ERROR_FAILED, "physics update ran out of capacity");
+	if (errors == EPhysicsUpdateError::None)
+		return SN_OK;
+	if ((errors & EPhysicsUpdateError::BodyPairCacheFull) != EPhysicsUpdateError::None)
+		return SetLastError(SN_ERROR_FAILED, "physics step: body pair limit reached");
+	if ((errors & EPhysicsUpdateError::ContactConstraintsFull) != EPhysicsUpdateError::None)
+		return SetLastError(SN_ERROR_FAILED, "physics step: contact constraint limit reached");
+	return SetLastError(SN_ERROR_FAILED, "physics step: contact cache full (temp allocator too small)");
 }
 
 SN_API int32_t sn_physics_get_positions(int32_t world, float *out_xyz, uint32_t max_bodies)

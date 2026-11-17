@@ -59,6 +59,26 @@ TEST_CASE("Physics box falls onto the floor")
 	sn_physics_destroy(world);
 }
 
+TEST_CASE("Physics world sized to its body count holds a settled stack")
+{
+	ModuleScope module;
+	constexpr int cColumns = 10, cRows = 10, cBodies = cColumns * cRows + 1;
+	int32_t world = sn_physics_create(cBodies);
+	REQUIRE(world > 0);
+	const float floor_position[] = { 0, -1, 0 }, floor_half[] = { 50, 1, 50 }, box_half[] = { 0.5f, 0.5f, 0.5f };
+	REQUIRE(sn_physics_add_box(world, floor_position, floor_half, 0) == 0);
+	// Columns 1 m apart with 1 m boxes: every box rests on the one below and touches its neighbours.
+	for (int i = 0; i < cColumns * cRows; ++i)
+	{
+		const float position[] = { float(i % cColumns), 0.5f + float(i / cColumns), 0 };
+		REQUIRE(sn_physics_add_box(world, position, box_half, 1) > 0);
+	}
+
+	for (int i = 0; i < 120; ++i)
+		REQUIRE(sn_physics_step(world, 1.0f / 60.0f, 1) == SN_OK);
+	sn_physics_destroy(world);
+}
+
 TEST_CASE("Meshopt batch decodes vertex and index buffers in parallel")
 {
 	ModuleScope module;
