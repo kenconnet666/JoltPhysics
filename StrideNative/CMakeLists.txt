@@ -94,7 +94,7 @@ stride_third_party_library(sn_basis_transcoder_full
 	SOURCES ${THIRD_PARTY}/basis_universal/transcoder/basisu_transcoder.cpp
 	INCLUDES ${THIRD_PARTY}/basis_universal/transcoder ${THIRD_PARTY}/basis_universal/zstd
 	DEFINES BASISD_SUPPORT_KTX2=1 BASISD_SUPPORT_KTX2_ZSTD=1)
-file(GLOB BASIS_ENCODER_SOURCES ${THIRD_PARTY}/basis_universal/encoder/*.cpp)
+file(GLOB BASIS_ENCODER_SOURCES ${THIRD_PARTY}/basis_universal/encoder/*.cpp ${THIRD_PARTY}/basis_universal/encoder/3rdparty/*.cpp)
 list(FILTER BASIS_ENCODER_SOURCES EXCLUDE REGEX "basisu_wasm_")
 stride_third_party_library(sn_basis_encoder
 	SOURCES ${BASIS_ENCODER_SOURCES}
@@ -104,9 +104,11 @@ target_link_libraries(sn_basis_encoder PUBLIC sn_basis_transcoder_full sn_zstd)
 
 stride_third_party_library(sn_ufbx SOURCES ${THIRD_PARTY}/ufbx/ufbx.c INCLUDES ${THIRD_PARTY}/ufbx)
 stride_third_party_library(sn_mikktspace SOURCES ${THIRD_PARTY}/MikkTSpace/mikktspace.c INCLUDES ${THIRD_PARTY}/MikkTSpace)
-stride_third_party_library(sn_xatlas SOURCES ${THIRD_PARTY}/xatlas/xatlas.cpp INCLUDES ${THIRD_PARTY}/xatlas)
+# Single-threaded: unwrap runs inside a task, the job system provides the parallelism.
+stride_third_party_library(sn_xatlas SOURCES ${THIRD_PARTY}/xatlas/xatlas.cpp INCLUDES ${THIRD_PARTY}/xatlas DEFINES XA_MULTITHREADED=0)
 file(GLOB MSDFGEN_SOURCES ${THIRD_PARTY}/msdfgen/core/*.cpp)
-stride_third_party_library(sn_msdfgen SOURCES ${MSDFGEN_SOURCES} INCLUDES ${THIRD_PARTY}/msdfgen)
+# Defining MSDFGEN_PUBLIC replaces the msdfgen-config.h that upstream generates at configure time.
+stride_third_party_library(sn_msdfgen SOURCES ${MSDFGEN_SOURCES} INCLUDES ${THIRD_PARTY}/msdfgen DEFINES MSDFGEN_PUBLIC=)
 # Header-only libraries get their implementation compiled in one of our own source files.
 add_library(sn_header_only INTERFACE)
 target_include_directories(sn_header_only SYSTEM INTERFACE ${THIRD_PARTY}/cgltf ${THIRD_PARTY}/stb ${THIRD_PARTY}/v-hacd)
@@ -189,5 +191,6 @@ else()
 		target_include_directories(StrideNative${MODULE}Tests PRIVATE ${REPO_ROOT}/UnitTests ${STRIDE_NATIVE_ROOT}/Tests/Native)
 		string(TOUPPER ${MODULE} MODULE_UPPER)
 		target_link_libraries(StrideNative${MODULE}Tests PRIVATE ${${MODULE_UPPER}_OBJECTS})
+		target_compile_definitions(StrideNative${MODULE}Tests PRIVATE STRIDE_NATIVE_TEST_DATA="${STRIDE_NATIVE_ROOT}/Tests/Data")
 	endforeach()
 endif()
