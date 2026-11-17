@@ -1,0 +1,163 @@
+// stride-native runtime C API: physics, decoding, navigation and animation.
+// Handles are positive int32 values; negative return values are SN_ERROR_* codes.
+#pragma once
+
+#include <StrideNative/Core.h>
+
+// ---------------------------------------------------------------------------------------------
+// Physics (smoke test only; the Stride-shaped physics API is a separate milestone)
+// ---------------------------------------------------------------------------------------------
+
+/// Creates a world that steps on the shared job system. Returns a world handle.
+SN_API int32_t sn_physics_create(uint32_t max_bodies);
+SN_API void sn_physics_destroy(int32_t world);
+/// Adds a box; dynamic = 0 makes it static. Returns the body's index in creation order.
+SN_API int32_t sn_physics_add_box(int32_t world, const float *position3, const float *half_extent3, int32_t dynamic);
+SN_API int32_t sn_physics_step(int32_t world, float delta_time, int32_t collision_steps);
+/// Writes xyz positions of all bodies in creation order; returns the body count.
+SN_API int32_t sn_physics_get_positions(int32_t world, float *out_xyz, uint32_t max_bodies);
+
+// ---------------------------------------------------------------------------------------------
+// Mesh decoding (EXT_meshopt_compression / KHR_meshopt_compression)
+// ---------------------------------------------------------------------------------------------
+
+enum
+{
+	SN_MESHOPT_MODE_ATTRIBUTES = 0,
+	SN_MESHOPT_MODE_TRIANGLES = 1,
+	SN_MESHOPT_MODE_INDICES = 2,
+};
+
+enum
+{
+	SN_MESHOPT_FILTER_NONE = 0,
+	SN_MESHOPT_FILTER_OCTAHEDRAL = 1,
+	SN_MESHOPT_FILTER_QUATERNION = 2,
+	SN_MESHOPT_FILTER_EXPONENTIAL = 3,
+	SN_MESHOPT_FILTER_COLOR = 4,
+};
+
+/// Decodes one glTF buffer view into dst (count * stride bytes).
+SN_API int32_t sn_meshopt_decode(void *dst, uint32_t count, uint32_t stride, const void *src, uint32_t src_size, int32_t mode, int32_t filter);
+
+typedef struct sn_meshopt_request
+{
+	void *dst;
+	uint32_t count;
+	uint32_t stride;
+	const void *src;
+	uint32_t src_size;
+	int32_t mode;
+	int32_t filter;
+	int32_t result;			///< Written by the task: SN_OK or an error code
+} sn_meshopt_request;
+
+/// Decodes many buffer views in parallel. The requests and buffers must stay alive until the task
+/// finishes. Returns a task; it fails if any request failed (see each request's result).
+SN_API int32_t sn_meshopt_decode_batch(sn_meshopt_request *requests, uint32_t count);
+
+// ---------------------------------------------------------------------------------------------
+// KTX2 / Basis Universal transcoding
+// ---------------------------------------------------------------------------------------------
+
+/// Transcode targets, named after the WebGPU format they upload to.
+enum
+{
+	SN_TEXTURE_RGBA8 = 0,			///< rgba8unorm(-srgb)
+	SN_TEXTURE_BC7 = 1,				///< bc7-rgba-unorm(-srgb), texture-compression-bc
+	SN_TEXTURE_ASTC_4X4 = 2,		///< astc-4x4-unorm(-srgb), texture-compression-astc
+	SN_TEXTURE_ETC2_RGBA8 = 3,		///< etc2-rgba8unorm(-srgb), texture-compression-etc2
+};
+
+typedef struct sn_ktx2_info
+{
+	uint32_t width;
+	uint32_t height;
+	uint32_t levels;
+	uint32_t layers;				///< 0 for a plain 2D texture
+	uint32_t faces;					///< 6 for cubemaps
+	int32_t has_alpha;
+	int32_t is_srgb;
+	int32_t is_hdr;
+} sn_ktx2_info;
+
+SN_API int32_t sn_ktx2_get_info(const void *data, uint32_t size, sn_ktx2_info *out_info);
+
+/// Transcodes every mip level in parallel. data must stay alive until the task finishes.
+/// Outputs: one buffer per level (level 0 first) for layer 0 / face 0.
+/// Results: [0] width, [1] height, [2] level count, [3] bytes per block (or per pixel for RGBA8).
+SN_API int32_t sn_ktx2_transcode(const void *data, uint32_t size, int32_t target);
+
+// ---------------------------------------------------------------------------------------------
+// Navigation (Recast/Detour)
+// ---------------------------------------------------------------------------------------------
+
+typedef struct sn_nav_config
+{
+	float cell_size;
+	float cell_height;
+	float agent_height;
+	float agent_radius;
+	float agent_max_climb;
+	float agent_max_slope_degrees;
+	int32_t tile_size;				///< In cells; tiles are built in parallel
+	float max_edge_length;
+	float max_simplification_error;
+	float min_region_size;
+	float merge_region_size;
+	float detail_sample_distance;
+	float detail_sample_max_error;
+} sn_nav_config;
+
+/// Fills a config with the Recast demo defaults for a human-sized agent.
+SN_API void sn_nav_default_config(sn_nav_config *out_config);
+
+/// Builds a tiled navmesh from a triangle soup, tiles in parallel. Inputs must stay alive until
+/// the task finishes. Result [0]: navmesh handle; [1]: tile count.
+SN_API int32_t sn_nav_build(const float *vertices, uint32_t vertex_count, const int32_t *triangles, uint32_t triangle_count, const sn_nav_config *config);
+/// Loads a navmesh serialized by sn_nav_serialize or the stride-tools bake. Returns a handle.
+SN_API int32_t sn_nav_load(const void *data, uint32_t size);
+/// Serializes a navmesh. Result buffer is allocated with sn_alloc; the caller frees it.
+SN_API int32_t sn_nav_serialize(int32_t navmesh, void **out_data, uint32_t *out_size);
+SN_API void sn_nav_destroy(int32_t navmesh);
+/// Straight path between two points (corners written as xyz). Returns the corner count.
+SN_API int32_t sn_nav_find_path(int32_t navmesh, const float *start3, const float *end3, const float *search_extents3, float *out_points, uint32_t max_points);
+
+SN_API int32_t sn_crowd_create(int32_t navmesh, uint32_t max_agents, float max_agent_radius);
+SN_API void sn_crowd_destroy(int32_t crowd);
+/// Returns the agent index.
+SN_API int32_t sn_crowd_add_agent(int32_t crowd, const float *position3, float radius, float height, float max_speed, float max_acceleration);
+SN_API void sn_crowd_remove_agent(int32_t crowd, int32_t agent);
+SN_API int32_t sn_crowd_request_move(int32_t crowd, int32_t agent, const float *target3);
+SN_API void sn_crowd_update(int32_t crowd, float delta_time);
+/// Writes xyz per agent slot (NaN for empty slots); returns the slot count written.
+SN_API int32_t sn_crowd_get_positions(int32_t crowd, float *out_xyz, uint32_t max_agents);
+
+// ---------------------------------------------------------------------------------------------
+// Animation (ozz-animation runtime)
+// ---------------------------------------------------------------------------------------------
+
+/// Loads ozz archives (as produced by stride-tools). Return handles.
+SN_API int32_t sn_anim_load_skeleton(const void *data, uint32_t size);
+SN_API int32_t sn_anim_load_animation(const void *data, uint32_t size);
+SN_API void sn_anim_destroy_skeleton(int32_t skeleton);
+SN_API void sn_anim_destroy_animation(int32_t animation);
+SN_API int32_t sn_anim_skeleton_joint_count(int32_t skeleton);
+SN_API float sn_anim_animation_duration(int32_t animation);
+
+/// An instance owns the sampling context and the model-space matrices of one character.
+SN_API int32_t sn_anim_instance_create(int32_t skeleton);
+SN_API void sn_anim_instance_destroy(int32_t instance);
+/// joint_count column-major 4x4 float matrices, valid while the instance lives.
+SN_API const float *sn_anim_instance_model_matrices(int32_t instance);
+
+typedef struct sn_anim_sample_request
+{
+	int32_t instance;
+	int32_t animation;
+	float ratio;					///< Normalized time in [0, 1]
+	int32_t result;					///< Written by the call
+} sn_anim_sample_request;
+
+/// Samples and converts to model space for every request, in parallel; returns when all are done.
+SN_API int32_t sn_anim_sample_batch(sn_anim_sample_request *requests, uint32_t count);
