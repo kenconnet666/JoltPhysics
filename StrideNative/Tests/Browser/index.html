@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>StrideNative browser tests</title>
+<style>
+	body { font: 14px/1.5 system-ui, sans-serif; margin: 2rem; }
+	li.pass::marker { content: '✔ '; color: #2a7; }
+	li.fail::marker { content: '✘ '; color: #c33; }
+	code { color: #555; }
+</style>
+</head>
+<body>
+<h1>StrideNative browser tests</h1>
+<p id="summary">Running…</p>
+<ul id="results"></ul>
+<script type="module">
+import { createStrideNative, MeshoptMode, TextureTarget } from '/dist/stride-native.mjs';
+
+const results = [];
+const list = document.getElementById('results');
+const fixture = async (name) => new Uint8Array(await (await fetch(`/fixtures/${name}`)).arrayBuffer());
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+
+async function check(name, body) {
+	const start = performance.now();
+	let detail = '', passed = true;
+	try {
+		detail = (await body()) ?? '';
+	} catch (error) {
+		passed = false;
+		detail = error.message;
+	}
+	const ms = (performance.now() - start).toFixed(1);
+	results.push({ name, passed, detail, ms });
+	const item = document.createElement('li');
+	item.className = passed ? 'pass' : 'fail';
+	item.innerHTML = `${name} <code>${ms} ms</code> ${detail}`;
+	list.append(item);
+}
+
+window.strideNativeTest = { done: false, results };
+let native;
+
+await check('crossOriginIsolated and module start', async () => {
+	assert(crossOriginIsolated, 'page is not cross-origin isolated');
+	native = await createStrideNative();
+	assert(native.buffer instanceof SharedArrayBuffer, 'memory is not shared');
+	return `${native.workerThreadCount} worker threads, hardwareConcurrency ${navigator.hardwareConcurrency}`;
+});
+
+await check('physics steps on the shared job system (main thread waits and helps)', async () => {
+	const world = native.createPhysicsWorld(256);
+	world.addBox([0, -1, 0], [50, 1, 50], false);
+	for (let i = 0; i < 100; ++i)
+		world.addBox([(i % 10) * 1.5 - 7, 2 + Math.floor(i / 10) * 1.5, 0], [0.5, 0.5, 0.5], true);
+	const start = performance.now();
+	for (let i = 0; i < 300; ++i)
+		world.step(1 / 60);
+	const perStep = (performance.now() - start) / 300;
+	const y = world.positions();
+	world.destroy();
+	for (let b = 1; b <= 100; ++b)
+		assert(y[b * 3 + 1] > 0.3, `body ${b} fell through the floor`);
+	return `100 boxes, ${perStep.toFixed(2)} ms per step`;
+});
+
+await check('meshopt batch decode (parallel)', async () => {
+	const [encoded, original] = await Promise.all([fixture('vertices.meshopt'), fixture('vertices.bin')]);
+	const requests = Array.from({ length: 8 }, () => ({ source: encoded, count: original.length / 16, stride: 16, mode: MeshoptMode.attributes }));
+	const decoded = await native.decodeMeshoptBatch(requests);
+	decoded.forEach((bytes) => assert(bytes.every((value, i) => value === original[i]), 'decoded bytes differ'));
+	return `8 × ${original.length / 16} vertices`;
+});
+
+await check('KTX2 transcode, mip levels in parallel', async () => {
+	const ktx2 = await fixture('texture.ktx2');
+	const info = native.ktx2Info(ktx2);
+	const rgba = await native.transcodeKtx2(ktx2, TextureTarget.rgba8);
+	const bc7 = await native.transcodeKtx2(ktx2, TextureTarget.bc7);
+	assert(rgba.levels.length === info.levels && rgba.levels[0].length === info.width * info.height * 4, 'unexpected RGBA levels');
+	assert(bc7.levels[0].length === (info.width / 4) * (info.height / 4) * 16, 'unexpected BC7 size');
+	return `${info.width}×${info.height}, ${info.levels} levels, RGBA8 and BC7`;
+});
+
+await check('navmesh: parallel tiled build, baked load, path, crowd', async () => {
+	const vertices = new Float32Array((await fixture('ground-vertices.bin')).buffer);
+	const triangles = new Int32Array((await fixture('ground-triangles.bin')).buffer);
+	const built = await native.buildNavMesh(vertices, triangles, { tileSize: 32 });
+	const baked = native.loadNavMesh(await fixture('navmesh.bin'));
+	const a = built.findPath([-55, 0, -55], [55, 0, 55]), b = baked.findPath([-55, 0, -55], [55, 0, 55]);
+	assert(a.length === b.length && Math.abs(a.at(-3) - 55) < 0.5, 'paths differ or miss the target');
+	const crowd = baked.createCrowd(32, 0.6);
+	const agents = Array.from({ length: 16 }, (_, i) => crowd.addAgent([-40, 0, i * 2 - 15]));
+	agents.forEach((agent) => crowd.requestMove(agent, [40, 0, 0]));
+	for (let i = 0; i < 900; ++i)
+		crowd.update(1 / 30);
+	const p = crowd.positions();
+	agents.forEach((agent) => assert(p[agent * 3] > 30, `agent ${agent} did not arrive`));
+	crowd.destroy();
+	built.destroy();
+	baked.destroy();
+	return `${a.length / 3} path corners, 16 agents arrived`;
+});
+
+await check('animation: batch sampling of 256 characters (parallel)', async () => {
+	const skeleton = native.loadSkeleton(await fixture('skeleton.ozz'));
+	const animation = native.loadAnimation(await fixture('animation.ozz'));
+	const instances = Array.from({ length: 256 }, () => skeleton.createInstance());
+	native.sampleAnimations(instances.map((instance) => ({ instance, animation, ratio: 1 })));
+	for (const instance of instances) {
+		const child = instance.modelMatrices().subarray(16, 32);
+		assert(Math.abs(child[12] + 1) < 1e-3 && Math.abs(child[13]) < 1e-3, 'child joint not rotated to (-1, 0, 0)');
+	}
+	instances.forEach((instance) => instance.destroy());
+	animation.destroy();
+	skeleton.destroy();
+	return 'child joint at (-1, 0, 0) after 90° root rotation';
+});
+
+const failed = results.filter((r) => !r.passed).length;
+document.getElementById('summary').textContent = `${results.length - failed} passed, ${failed} failed`;
+window.strideNativeTest.done = true;
+</script>
+</body>
+</html>
