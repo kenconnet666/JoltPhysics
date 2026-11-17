@@ -91,7 +91,10 @@ SN_API int32_t sn_ktx2_transcode(const void *data, uint32_t size, int32_t target
 		uint32_t units = basist::basis_transcoder_format_is_uncompressed(transcode->mFormat) ? info.m_orig_width * info.m_orig_height : info.m_total_blocks;
 		void *output = ioTask.SetOutput(inLevel, units * unit_size);
 
+		// The state has no constructor: clear() initializes the cached level index, without it a
+		// garbage index can skip the Zstd decompression of the level.
 		basist::ktx2_transcoder_state state;
+		state.clear();
 		if (!transcode->mTranscoder.transcode_image_level(inLevel, 0, 0, output, units, transcode->mFormat, 0, 0, 0, -1, -1, &state))
 			ioTask.Fail("transcoding KTX2 level " + std::to_string(inLevel) + " failed");
 	},

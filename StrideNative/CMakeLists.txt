@@ -80,6 +80,10 @@ endforeach()
 set(BASIS_TRANSCODER_DEFINES
 	BASISD_SUPPORT_KTX2=1 BASISD_SUPPORT_KTX2_ZSTD=1
 	BASISD_SUPPORT_PVRTC1=0 BASISD_SUPPORT_PVRTC2=0 BASISD_SUPPORT_ATC=0 BASISD_SUPPORT_FXT1=0)
+option(STRIDE_NATIVE_BASIS_DEBUG "Print Basis Universal's internal error messages" OFF)
+if (STRIDE_NATIVE_BASIS_DEBUG)
+	list(APPEND BASIS_TRANSCODER_DEFINES BASISU_FORCE_DEVEL_MESSAGES=1)
+endif()
 stride_third_party_library(sn_basis_transcoder
 	SOURCES ${THIRD_PARTY}/basis_universal/transcoder/basisu_transcoder.cpp
 	INCLUDES ${THIRD_PARTY}/basis_universal/transcoder ${THIRD_PARTY}/basis_universal/zstd
@@ -158,7 +162,8 @@ if (EMSCRIPTEN)
 		-sSTACK_SIZE=1048576 -sDEFAULT_PTHREAD_STACK_SIZE=1048576
 		# Jolt starts its workers synchronously, so the Worker pool must exist before main code runs.
 		-sPTHREAD_POOL_SIZE=Module.workerPoolSize
-		-sEXPORTED_RUNTIME_METHODS=HEAPU8,HEAP32,HEAPU32,HEAPF32,UTF8ToString
+		# wasmMemory: JS reads memory.buffer, which always spans the current (grown) shared memory.
+		-sEXPORTED_RUNTIME_METHODS=wasmMemory,UTF8ToString
 		-sFILESYSTEM=0 --no-entry)
 
 	add_executable(stride-native-core)

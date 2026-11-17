@@ -28,7 +28,8 @@ enum
 	SN_ERROR_NOT_INITIALIZED = -4,
 };
 
-/// Starts the shared job system. worker_threads < 0 uses (hardware threads - 1). Call once.
+/// Starts the shared job system. worker_threads < 0 uses (hardware threads - 1); 0 is rejected because
+/// tasks only run on worker threads. Call once.
 SN_API int32_t sn_init(int32_t worker_threads);
 SN_API void sn_shutdown(void);
 SN_API int32_t sn_worker_thread_count(void);

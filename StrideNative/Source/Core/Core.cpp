@@ -98,6 +98,9 @@ SN_API int32_t sn_init(int32_t worker_threads)
 {
 	if (IsInitialized())
 		return SetLastError(SN_ERROR_FAILED, "sn_init was already called");
+	// Tasks run only on workers (a waiting thread helps only with barrier jobs), so 0 would hang them.
+	if (worker_threads == 0)
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "at least one worker thread is required");
 
 	JPH::RegisterDefaultAllocator();
 	JPH::Trace = TraceImpl;
