@@ -494,6 +494,192 @@ TEST_CASE("物理：传感器和接触事件（Stride 的 Trigger、IContactHand
 	sn_physics_destroy(world);
 }
 
+namespace
+{
+	/// PhysicsSample 的 Constraints 场景：运动学的立方体在 (2, 0, -9)，动态的球在 (-2, 0, -9)，重力 -9。返回世界。
+	int32_t ConstraintWorld(bool inCubeDynamic = false)
+	{
+		sn_physics_settings settings {};
+		settings.gravity[1] = -9.0f;
+		for (uint32_t &mask : settings.collision_masks)
+			mask = 0xffffffffu;
+		int32_t world = sn_physics_create(8, 0, &settings);
+		sn_shape shapes[2] = { BoxShape(2, 2, 2), {} };
+		shapes[1].type = SN_SHAPE_SPHERE;
+		shapes[1].rotation[3] = 1.0f;
+		shapes[1].size[0] = 1.0f;
+		shapes[1].mass = 1.0f;
+		sn_body bodies[] = { Body(inCubeDynamic ? SN_MOTION_DYNAMIC : SN_MOTION_KINEMATIC, 2, 0, -9, 0), Body(SN_MOTION_DYNAMIC, -2, 0, -9, 1) };
+		bodies[0].flags = bodies[1].flags = SN_BODY_NEVER_SLEEP;
+		REQUIRE(sn_physics_add_bodies(world, bodies, 2, shapes, 2, nullptr, 0) == 0);
+		return world;
+	}
+
+	sn_constraint Constraint(uint32_t inType, int32_t inA = 0, int32_t inB = 1)
+	{
+		sn_constraint c {};
+		c.type = inType;
+		c.body_a = inA;
+		c.body_b = inB;
+		c.basis_a[3] = c.basis_b[3] = 1.0f;
+		return c;
+	}
+
+	/// 测试里用的三维向量（只要减法和长度）
+	struct Vec3
+	{
+		float x, y, z;
+		float GetX() const { return x; }
+		float GetY() const { return y; }
+		float GetZ() const { return z; }
+		Vec3 operator-(const Vec3 &inRHS) const { return { x - inRHS.x, y - inRHS.y, z - inRHS.z }; }
+		float Length() const { return std::sqrt(x * x + y * y + z * z); }
+		Vec3 Normalized() const { float l = Length(); return { x / l, y / l, z / l }; }
+	};
+
+	Vec3 PositionOf(int32_t inWorld, int32_t inBody)
+	{
+		const float *p = sn_physics_positions(inWorld) + inBody * 3;
+		return { p[0], p[1], p[2] };
+	}
+}
+
+TEST_CASE("物理：约束（Stride.BepuPhysics 的约束组件，PhysicsSample 的 Constraints 场景）")
+{
+	ModuleScope module;
+	const float impulse_z[3] = { 0, 0, 18 };
+
+	SUBCASE("球窝：球右边 4 米的点停在立方体中心，球绕着它转")
+	{
+		int32_t world = ConstraintWorld();
+		sn_constraint c = Constraint(SN_CONSTRAINT_BALL_SOCKET);
+		c.offset_b[0] = 4;
+		int32_t id = sn_physics_add_constraint(world, &c);
+		REQUIRE(id > 0);
+		sn_physics_body_apply_impulse(world, 1, impulse_z, nullptr);
+		Step(world, 90);
+		CHECK((PositionOf(world, 1) - PositionOf(world, 0)).Length() == doctest::Approx(4.0f).epsilon(0.02));
+		// 移除后球自由落下（一秒落下约 4.5 米）
+		float height = PositionOf(world, 1).GetY();
+		REQUIRE(sn_physics_remove_constraint(world, id) == SN_OK);
+		REQUIRE(sn_physics_remove_constraint(world, id) == SN_OK);
+		Step(world, 60);
+		CHECK(PositionOf(world, 1).GetY() < height - 3.0f);
+		sn_physics_destroy(world);
+	}
+
+	SUBCASE("铰链：轴是 Z，沿 Z 的冲量被挡住，球只在 XY 平面里摆")
+	{
+		int32_t world = ConstraintWorld();
+		sn_constraint c = Constraint(SN_CONSTRAINT_HINGE);
+		c.offset_b[0] = 4;
+		c.axis_a[2] = c.axis_b[2] = 1;
+		REQUIRE(sn_physics_add_constraint(world, &c) > 0);
+		sn_physics_body_apply_impulse(world, 1, impulse_z, nullptr);
+		Step(world, 90);
+		// 没有铰链时 1.5 秒会沿 Z 走 27 米；刚性求解在大冲量下留一点误差
+		CHECK(std::abs(PositionOf(world, 1).GetZ() + 9.0f) < 0.2f);
+		CHECK((PositionOf(world, 1) - PositionOf(world, 0)).Length() == doctest::Approx(4.0f).epsilon(0.02));
+		sn_physics_destroy(world);
+	}
+
+	SUBCASE("齿轮马达：立方体绕 X 的角速度是球的一半，同向")
+	{
+		int32_t world = ConstraintWorld(true);
+		sn_physics_body_set_gravity(world, 0, 0);
+		sn_physics_body_set_gravity(world, 1, 0);
+		sn_constraint c = Constraint(SN_CONSTRAINT_ANGULAR_AXIS_GEAR_MOTOR, 1, 0);
+		c.axis_a[0] = 1;
+		c.scale = 0.5f;
+		REQUIRE(sn_physics_add_constraint(world, &c) > 0);
+		const float spin[3] = { 25, 0, 0 };
+		sn_physics_body_set_velocity(world, 1, nullptr, spin);
+		Step(world, 30);
+		float sphere[3], cube[3], linear[3];
+		sn_physics_body_velocity(world, 1, linear, sphere);
+		sn_physics_body_velocity(world, 0, linear, cube);
+		CHECK(sphere[0] > 1.0f);
+		CHECK(cube[0] == doctest::Approx(0.5f * sphere[0]).epsilon(0.05));
+		sn_physics_destroy(world);
+	}
+
+	SUBCASE("滑轨：球在立方体的 X 轴上，离开不超过左边 4 米")
+	{
+		int32_t world = ConstraintWorld();
+		sn_constraint line = Constraint(SN_CONSTRAINT_POINT_ON_LINE);
+		line.axis_a[0] = 1;
+		sn_constraint limit = Constraint(SN_CONSTRAINT_LINEAR_AXIS_LIMIT);
+		limit.axis_a[0] = 1;
+		limit.minimum = -4;
+		limit.maximum = 0;
+		REQUIRE(sn_physics_add_constraint(world, &line) > 0);
+		REQUIRE(sn_physics_add_constraint(world, &limit) > 0);
+		const float push[3] = { -25, 0, 0 };
+		sn_physics_body_apply_impulse(world, 1, push, nullptr);
+		Step(world, 60);
+		Vec3 offset = PositionOf(world, 1) - PositionOf(world, 0);
+		CHECK(offset.GetY() == doctest::Approx(0.0f).epsilon(0.01));
+		CHECK(std::abs(offset.GetZ()) < 0.01f);
+		CHECK(offset.GetX() >= -4.05f);
+		CHECK(offset.GetX() <= 0.05f);
+		sn_physics_destroy(world);
+	}
+
+	SUBCASE("锥形扭转：球窝加摆动限位，球的 X 轴偏离立方体的不超过 0.5 弧度")
+	{
+		int32_t world = ConstraintWorld();
+		sn_constraint socket = Constraint(SN_CONSTRAINT_BALL_SOCKET);
+		socket.offset_b[0] = 4;
+		sn_constraint swing = Constraint(SN_CONSTRAINT_SWING_LIMIT);
+		swing.axis_a[0] = swing.axis_b[0] = 1;
+		swing.maximum = 0.5f;
+		sn_constraint twist = Constraint(SN_CONSTRAINT_TWIST_LIMIT);
+		const float s = std::sqrt(0.5f);
+		twist.basis_a[1] = twist.basis_b[1] = s;
+		twist.basis_a[3] = twist.basis_b[3] = s;
+		twist.minimum = -0.5f;
+		twist.maximum = 0.5f;
+		for (sn_constraint *c : { &socket, &swing, &twist })
+			REQUIRE(sn_physics_add_constraint(world, c) > 0);
+		sn_physics_body_apply_impulse(world, 1, impulse_z, nullptr);
+		Step(world, 120);
+		// 球心在立方体中心左边 4 米处的锥里：和 -X 方向的夹角不超过 0.5（加一点误差）
+		Vec3 arm = (PositionOf(world, 1) - PositionOf(world, 0)).Normalized();
+		CHECK(std::acos(std::clamp(-arm.GetX(), -1.0f, 1.0f)) < 0.55f);
+		sn_physics_destroy(world);
+	}
+
+	SUBCASE("焊接：球保持在立方体左边 4 米，冲量过后回到原位")
+	{
+		int32_t world = ConstraintWorld();
+		sn_constraint c = Constraint(SN_CONSTRAINT_WELD);
+		c.offset_a[0] = -4;
+		REQUIRE(sn_physics_add_constraint(world, &c) > 0);
+		sn_physics_body_apply_impulse(world, 1, impulse_z, nullptr);
+		Step(world, 60);
+		Vec3 offset = PositionOf(world, 1) - PositionOf(world, 0);
+		CHECK(offset.GetX() == doctest::Approx(-4.0f).epsilon(0.01));
+		CHECK(std::abs(offset.GetY()) < 0.05f);
+		CHECK(std::abs(offset.GetZ()) < 0.05f);
+		// 移除物体时连着的约束一起移除
+		const int32_t sphere[] = { 1 };
+		REQUIRE(sn_physics_remove_bodies(world, sphere, 1) == SN_OK);
+		Step(world, 1);
+		sn_physics_destroy(world);
+	}
+
+	SUBCASE("参数检查")
+	{
+		int32_t world = ConstraintWorld();
+		sn_constraint same = Constraint(SN_CONSTRAINT_BALL_SOCKET, 1, 1);
+		CHECK(sn_physics_add_constraint(world, &same) == SN_ERROR_INVALID_ARGUMENT);
+		sn_constraint unknown = Constraint(99);
+		CHECK(sn_physics_add_constraint(world, &unknown) == SN_ERROR_INVALID_ARGUMENT);
+		CHECK(sn_physics_remove_constraint(world, 5) == SN_ERROR_INVALID_ARGUMENT);
+		sn_physics_destroy(world);
+	}
+}
+
 TEST_CASE("物理：插值的物体在两步之间写回插值的位姿")
 {
 	ModuleScope module;

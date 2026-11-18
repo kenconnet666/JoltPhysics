@@ -215,6 +215,11 @@ const BODY_CONTACT_EVENTS = 16;
 // sn_contact_event：type、body_a、body_b
 const CONTACT_EVENT_WORDS = 3;
 const CONTACT_TYPES = { 1: 'started', 2: 'stopped' } as const;
+// sn_constraint：type、body_a、body_b、offset_a[3]、offset_b[3]、axis_a[3]、axis_b[3]、basis_a[4]、basis_b[4]、minimum、maximum、scale
+const CONSTRAINT_WORDS = 26;
+const CONSTRAINT_TYPES = {
+	ballSocket: 0, hinge: 1, angularAxisGearMotor: 2, pointOnLine: 3, linearAxisLimit: 4, swingLimit: 5, twistLimit: 6, weld: 7,
+} as const;
 const ALL_LAYERS = 0xffffffff;
 
 const ORIGIN: Vec3 = [0, 0, 0];
@@ -328,6 +333,32 @@ export interface SweepOptions extends QueryOptions {
 
 const CAST_IGNORE_INITIAL_OVERLAP = 1;
 
+/** 用 PhysicsWorld.addConstraint 建的约束。 */
+export type PhysicsConstraint = Branded<number, 'PhysicsConstraint'>;
+
+/**
+ * 两个物体之间的约束（Stride.BepuPhysics 的约束组件，字段名和语义照它们）。向量在各自物体的本地空间，四元数是 xyzw，
+ * 角度是弧度。和 Bepu 不同：Bepu 的约束是软的（弹簧），这里是刚性的。
+ */
+export type ConstraintDesc = { bodyA: BodyId; bodyB: BodyId } & (
+	/** 两点重合。 */
+	| { type: 'ballSocket'; localOffsetA?: Vec3; localOffsetB?: Vec3 }
+	/** 两点重合，两条铰链轴重合。 */
+	| { type: 'hinge'; localOffsetA?: Vec3; localOffsetB?: Vec3; localHingeAxisA: Vec3; localHingeAxisB: Vec3 }
+	/** B 绕 A 的轴的角速度 = velocityScale · A 绕它的角速度。 */
+	| { type: 'angularAxisGearMotor'; localAxisA: Vec3; velocityScale: number }
+	/** B 的点在 A 上过 localOffsetA、方向 localDirection 的直线上（不限制转动）。 */
+	| { type: 'pointOnLine'; localOffsetA?: Vec3; localOffsetB?: Vec3; localDirection: Vec3 }
+	/** 两点沿 A 的轴的距离在 [minimumOffset, maximumOffset] 里。 */
+	| { type: 'linearAxisLimit'; localOffsetA?: Vec3; localOffsetB?: Vec3; localAxis: Vec3; minimumOffset: number; maximumOffset: number }
+	/** 两条轴的夹角不超过 maximumSwingAngle。 */
+	| { type: 'swingLimit'; axisLocalA: Vec3; axisLocalB: Vec3; maximumSwingAngle: number }
+	/** 绕两个基的 Z 轴的扭转（从 A 的 X 量向 Y）在 [minimumAngle, maximumAngle] 里。 */
+	| { type: 'twistLimit'; localBasisA?: ArrayLike<number>; localBasisB?: ArrayLike<number>; minimumAngle: number; maximumAngle: number }
+	/** B 在 A 的 localOffset 处，相对 A 的朝向是 localOrientation。 */
+	| { type: 'weld'; localOffset?: Vec3; localOrientation?: ArrayLike<number> }
+);
+
 /** 一次接触事件；self 是打开了接触事件的那个物体（两个都打开时是编号小的）。 */
 export interface ContactEvent {
 	readonly type: 'started' | 'stopped';
@@ -373,6 +404,20 @@ export class PhysicsWorld extends NativeObject<StrideNative> {
 		const n = this.native;
 		return n.withArrays([positions, indices], (p, i) =>
 			n.check(n.module._sn_physics_create_mesh(this[HANDLE], p, positions.length / 3, i, indices.length), 'sn_physics_create_mesh') as PhysicsMesh);
+	}
+
+	/** 加一个约束（两个物体都会唤醒）。 */
+	addConstraint(desc: ConstraintDesc): PhysicsConstraint {
+		const n = this.native;
+		return n.withScratch(CONSTRAINT_WORDS * 4, (address) => {
+			writeConstraint(n.f32(address, CONSTRAINT_WORDS), n.i32(address, CONSTRAINT_WORDS), desc);
+			return n.check(n.module._sn_physics_add_constraint(this[HANDLE], address), 'sn_physics_add_constraint') as PhysicsConstraint;
+		});
+	}
+
+	/** 移除约束（两个物体都会唤醒）；移除过的忽略。物体被移除时连着它的约束一起移除。 */
+	removeConstraint(constraint: PhysicsConstraint): void {
+		this.native.check(this.native.module._sn_physics_remove_constraint(this[HANDLE], constraint), 'sn_physics_remove_constraint');
 	}
 
 	/** 移除物体（实体销毁时）：编号不再复用，和它有关的接触不再报告；移除过的忽略。 */
@@ -518,6 +563,11 @@ export class PhysicsWorld extends NativeObject<StrideNative> {
 		this.#pair(linear, angular, (l, a) => this.native.module._sn_physics_body_apply_impulse(this[HANDLE], body, l, a), 'sn_physics_body_apply_impulse');
 	}
 
+	/** 一直醒着（Stride 的 SleepThreshold 为负）；打开时顺便唤醒。 */
+	setNeverSleep(body: BodyId, neverSleep: boolean): void {
+		this.native.check(this.native.module._sn_physics_body_set_never_sleep(this[HANDLE], body, neverSleep ? 1 : 0), 'sn_physics_body_set_never_sleep');
+	}
+
 	/** 受不受重力（Stride 的 Gravity）。 */
 	setGravity(body: BodyId, enabled: boolean): void {
 		this.native.check(this.native.module._sn_physics_body_set_gravity(this[HANDLE], body, enabled ? 1 : 0), 'sn_physics_body_set_gravity');
@@ -607,6 +657,66 @@ function writeShape(floats: Float32Array, words: Uint32Array, o: number, shape: 
 	floats.set(size, o + 8);
 	words[o + 11] = shape.type === 'mesh' ? shape.mesh : shape.type === 'convexHull' ? shape.hull : 0;
 	floats[o + 12] = shape.mass ?? 1;
+}
+
+function writeConstraint(floats: Float32Array, ints: Int32Array, desc: ConstraintDesc): void {
+	const type = CONSTRAINT_TYPES[desc.type];
+	if (type === undefined) throw new TypeError(`unknown constraint type '${String((desc as { type: unknown }).type)}'`);
+	floats.fill(0);
+	ints[0] = type;
+	ints[1] = desc.bodyA;
+	ints[2] = desc.bodyB;
+	const put = (at: number, values: ArrayLike<number> | undefined, width: number) => {
+		for (let i = 0; i < width; i++) floats[at + i] = values?.[i] ?? 0;
+	};
+	// 四元数默认单位
+	floats[15 + 3] = floats[19 + 3] = 1;
+	switch (desc.type) {
+		case 'ballSocket':
+		case 'pointOnLine':
+		case 'linearAxisLimit':
+		case 'hinge':
+			put(3, desc.localOffsetA, 3);
+			put(6, desc.localOffsetB, 3);
+			break;
+		default:
+			break;
+	}
+	switch (desc.type) {
+		case 'hinge':
+			put(9, desc.localHingeAxisA, 3);
+			put(12, desc.localHingeAxisB, 3);
+			break;
+		case 'angularAxisGearMotor':
+			put(9, desc.localAxisA, 3);
+			floats[25] = desc.velocityScale;
+			break;
+		case 'pointOnLine':
+			put(9, desc.localDirection, 3);
+			break;
+		case 'linearAxisLimit':
+			put(9, desc.localAxis, 3);
+			floats[23] = desc.minimumOffset;
+			floats[24] = desc.maximumOffset;
+			break;
+		case 'swingLimit':
+			put(9, desc.axisLocalA, 3);
+			put(12, desc.axisLocalB, 3);
+			floats[24] = desc.maximumSwingAngle;
+			break;
+		case 'twistLimit':
+			if (desc.localBasisA) put(15, desc.localBasisA, 4);
+			if (desc.localBasisB) put(19, desc.localBasisB, 4);
+			floats[23] = desc.minimumAngle;
+			floats[24] = desc.maximumAngle;
+			break;
+		case 'weld':
+			put(3, desc.localOffset, 3);
+			if (desc.localOrientation) put(15, desc.localOrientation, 4);
+			break;
+		default:
+			break;
+	}
 }
 
 function writeCharacter(floats: Float32Array, o: number, settings: CharacterSettings): void {

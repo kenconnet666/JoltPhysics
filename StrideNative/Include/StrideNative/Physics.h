@@ -133,6 +133,46 @@ SN_API int32_t sn_physics_body_set_velocity(int32_t world, int32_t body, const f
 SN_API int32_t sn_physics_body_apply_impulse(int32_t world, int32_t body, const float *linear, const float *angular);
 /// 受不受重力（Stride 的 Gravity）。
 SN_API int32_t sn_physics_body_set_gravity(int32_t world, int32_t body, int32_t enabled);
+/// 一直醒着（SN_BODY_NEVER_SLEEP，Stride 的 SleepThreshold 为负）；打开时顺便唤醒。
+SN_API int32_t sn_physics_body_set_never_sleep(int32_t world, int32_t body, int32_t never_sleep);
+
+// ---------------------------------------------------------------------------------------------
+// 约束（Stride.BepuPhysics 的约束组件，语义照 Bepu；Bepu 的约束都是软的，这里是刚性的）
+// ---------------------------------------------------------------------------------------------
+
+enum
+{
+	SN_CONSTRAINT_BALL_SOCKET = 0,			///< offset_a、offset_b 两点重合（Jolt 的 PointConstraint）
+	SN_CONSTRAINT_HINGE = 1,				///< 两点重合，axis_a、axis_b 两条铰链轴重合（HingeConstraint）
+	SN_CONSTRAINT_ANGULAR_AXIS_GEAR_MOTOR = 2,	///< B 绕 A 的 axis_a 的角速度 = scale · A 绕它的角速度（GearConstraint）
+	SN_CONSTRAINT_POINT_ON_LINE = 3,		///< B 的点（offset_b）在 A 上过 offset_a、方向 axis_a 的直线上，不限制转动
+	SN_CONSTRAINT_LINEAR_AXIS_LIMIT = 4,	///< 两点沿 A 的 axis_a 的距离在 [minimum, maximum] 里
+	SN_CONSTRAINT_SWING_LIMIT = 5,			///< axis_a、axis_b 的夹角不超过 maximum（弧度）
+	SN_CONSTRAINT_TWIST_LIMIT = 6,			///< 绕 basis_a、basis_b 的 Z 轴的扭转（从 X 量向 Y）在 [minimum, maximum] 里
+	SN_CONSTRAINT_WELD = 7,					///< B 在 A 的 offset_a 处、相对 A 的朝向是 basis_a（FixedConstraint）
+};
+
+/// 一个约束；向量和四元数都在各自物体的本地空间，四元数是 xyzw。不用的字段忽略。
+typedef struct sn_constraint
+{
+	uint32_t type;					///< SN_CONSTRAINT_*
+	int32_t body_a;
+	int32_t body_b;
+	float offset_a[3];
+	float offset_b[3];
+	float axis_a[3];
+	float axis_b[3];
+	float basis_a[4];
+	float basis_b[4];
+	float minimum;
+	float maximum;
+	float scale;
+} sn_constraint;
+
+/// 加一个约束（两个物体都会唤醒），返回约束句柄（> 0）。
+SN_API int32_t sn_physics_add_constraint(int32_t world, const sn_constraint *constraint);
+/// 移除约束；移除过的忽略。物体被移除时连着它的约束一起移除。
+SN_API int32_t sn_physics_remove_constraint(int32_t world, int32_t constraint);
 
 // ---------------------------------------------------------------------------------------------
 // 接触事件（Stride 的 IContactHandler）

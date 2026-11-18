@@ -300,6 +300,11 @@ describe('stride-native and stride-tools', () => {
 			world.setGravity(crate, true);
 			for (let i = 0; i < 30; i++) world.step(1 / 60);
 			assert.ok(transforms.position[slot * 3 + 1] < 9);
+			world.setNeverSleep(crate, false);
+			for (let i = 0; i < 240; i++) world.step(1 / 60);
+			assert.equal(world.isAwake(crate), false, 'resting bodies fall asleep once allowed');
+			world.setNeverSleep(crate, true);
+			assert.equal(world.isAwake(crate), true);
 			assert.throws(() => world.setKinematic(0, true), /not a dynamic or kinematic body/);
 		} finally {
 			world.destroy();
@@ -328,6 +333,38 @@ describe('stride-native and stride-tools', () => {
 			world.step(1 / 60);
 			assert.deepEqual(world.contactEvents(), []);
 			assert.throws(() => world.setSensor(box, false), /does not exist/);
+		} finally {
+			world.destroy();
+		}
+	});
+
+	it('adds Bepu-style constraints between bodies and removes them', () => {
+		const world = native.createPhysicsWorld(8, { gravity: [0, -9, 0] });
+		try {
+			const [cube, sphere] = world.addBodies([
+				{ motion: 'kinematic', shapes: [{ type: 'box', size: [2, 2, 2] }], position: [2, 0, -9] },
+				{ motion: 'dynamic', shapes: [{ type: 'sphere', radius: 1 }], position: [-2, 0, -9], neverSleep: true },
+			]);
+			const constraint = world.addConstraint({ type: 'ballSocket', bodyA: cube, bodyB: sphere, localOffsetB: [4, 0, 0] });
+			world.applyImpulse(sphere, [0, 0, 18]);
+			for (let i = 0; i < 90; i++) world.step(1 / 60);
+			const p = world.positions();
+			assert.ok(Math.abs(Math.hypot(p[3] - p[0], p[4] - p[1], p[5] - p[2]) - 4) < 0.1, 'the sphere orbits 4 m from the cube');
+			world.removeConstraint(constraint);
+			world.removeConstraint(constraint);
+			// 滑轨：在立方体的 X 轴上，离开不超过左边 4 米（检查范围字段写对了位置）
+			world.teleport(sphere, [-2, 0, -9], [0, 0, 0, 1]);
+			world.setVelocity(sphere, [0, 0, 0], [0, 0, 0]);
+			world.addConstraint({ type: 'pointOnLine', bodyA: cube, bodyB: sphere, localDirection: [1, 0, 0] });
+			const limit = world.addConstraint({ type: 'linearAxisLimit', bodyA: cube, bodyB: sphere, localAxis: [1, 0, 0], minimumOffset: -4, maximumOffset: 0 });
+			world.applyImpulse(sphere, [-25, 0, 0]);
+			for (let i = 0; i < 60; i++) world.step(1 / 60);
+			const offset = world.positions()[3] - world.positions()[0];
+			assert.ok(offset >= -4.05 && offset <= 0.05, `slider offset ${offset}`);
+			assert.ok(Math.abs(world.positions()[4]) < 0.01, 'the sphere stays on the line');
+			assert.ok(limit > constraint);
+			assert.throws(() => world.addConstraint({ type: 'weld', bodyA: sphere, bodyB: sphere }), /two different bodies/);
+			assert.throws(() => world.addConstraint({ type: 'spring', bodyA: cube, bodyB: sphere }), /unknown constraint type/);
 		} finally {
 			world.destroy();
 		}

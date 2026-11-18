@@ -192,6 +192,11 @@ export interface NativeExports {
 	 */
 	_sn_physics_add_bodies(world: number, bodies: number, count: number, shapes: number, shapeCount: number, characters: number, characterCount: number): number;
 	/**
+	 * 加一个约束（两个物体都会唤醒），返回约束句柄（> 0）。
+	 * C: Physics.h
+	 */
+	_sn_physics_add_constraint(world: number, constraint: number): number;
+	/**
 	 * 在质心加冲量（Stride 的 ApplyLinearImpulse、ApplyAngularImpulse）；传 null 的不加。运动学物体忽略。
 	 * C: Physics.h
 	 */
@@ -221,6 +226,11 @@ export interface NativeExports {
 	 * C: Physics.h
 	 */
 	_sn_physics_body_set_kinematic(world: number, body: number, kinematic: number): number;
+	/**
+	 * 一直醒着（SN_BODY_NEVER_SLEEP，Stride 的 SleepThreshold 为负）；打开时顺便唤醒。
+	 * C: Physics.h
+	 */
+	_sn_physics_body_set_never_sleep(world: number, body: number, neverSleep: number): number;
 	/**
 	 * 设成或取消传感器（SN_BODY_SENSOR）。
 	 * C: Physics.h
@@ -296,6 +306,11 @@ export interface NativeExports {
 	 * C: Physics.h
 	 */
 	_sn_physics_remove_bodies(world: number, bodies: number, count: number): number;
+	/**
+	 * 移除约束；移除过的忽略。物体被移除时连着它的约束一起移除。
+	 * C: Physics.h
+	 */
+	_sn_physics_remove_constraint(world: number, constraint: number): number;
 	/**
 	 * 球体扫掠（Stride 的 SweepCast 加 Sphere），同 sn_physics_ray_cast；flags 是 SN_CAST_*。
 	 * C: Physics.h
@@ -619,6 +634,9 @@ export type RuntimeExport =
 	| 'sn_physics_body_set_velocity'
 	| 'sn_physics_body_apply_impulse'
 	| 'sn_physics_body_set_gravity'
+	| 'sn_physics_body_set_never_sleep'
+	| 'sn_physics_add_constraint'
+	| 'sn_physics_remove_constraint'
 	| 'sn_physics_body_set_contact_events'
 	| 'sn_physics_body_set_sensor'
 	| 'sn_physics_contact_events'
