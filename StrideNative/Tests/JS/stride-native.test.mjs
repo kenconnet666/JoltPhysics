@@ -198,6 +198,18 @@ describe('stride-native and stride-tools', () => {
 		assert.equal(bc7.levels[0].length, (size / 4) * (size / 4) * 16);
 	});
 
+	it('prefilters a cubemap for GGX and projects it onto spherical harmonics (tools)', async () => {
+		const size = 16;
+		const faces = new Float32Array(6 * size * size * 4);
+		for (let i = 0; i < faces.length; i += 4) faces.set([0.25, 0.5, 1, 1], i);
+		const prefiltered = await tools.prefilterCubemapGGX({ size, faces }, 64, 32);
+		assert.deepEqual(prefiltered.levels.map((l) => l.length), [64, 32, 16, 8, 4, 2, 1].map((e) => 6 * e * e * 4));
+		assert.ok(Math.abs(prefiltered.levels[3][1] - 0.5) < 0.01);
+		const sh = await tools.cubemapSH({ size, faces });
+		assert.equal(sh.length, 27);
+		assert.ok(Math.abs(sh[0] - 0.25) < 0.01 && Math.abs(sh[2] - 1) < 0.01 && Math.abs(sh[5]) < 0.01);
+	});
+
 	it('bakes a navmesh (tools), loads it, finds paths and drives a crowd (runtime)', async () => {
 		const { vertices, triangles } = ground(60, 30);
 		const baked = await tools.bakeNavMesh(vertices, triangles, { tileSize: 32 });

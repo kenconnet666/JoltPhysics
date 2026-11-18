@@ -55,6 +55,20 @@ export interface DecodedImage {
 	pixels: Uint8Array;
 }
 
+/** RGBA32F 的立方体贴图：面的顺序 +X -X +Y -Y +Z -Z，每面的行从上到下（D3D/WebGPU 的布局）。 */
+export interface CubemapData {
+	/** 一个面的边长（2 的幂）。 */
+	size: number;
+	/** 6 * size * size * 4 个 float。 */
+	faces: Float32Array;
+}
+
+export interface PrefilteredCubemap {
+	size: number;
+	/** 从 size 到 1 的每一级，每级 6 个面连续存放；第 i 级的粗糙度是 i / (levels.length - 1)。 */
+	levels: Float32Array[];
+}
+
 export interface BasisOptions {
 	/** 默认 'uastc'。 */
 	mode?: BasisMode;
@@ -195,6 +209,29 @@ export class StrideTools extends NativeModule<ToolsExport> {
 				channels: task.result(2),
 				pixels: task.output(Uint8Array, 0),
 			})));
+	}
+
+	/**
+	 * 天空盒的镜面光照：GGX 预滤波成 outSize 的立方体贴图（同 Stride 的 RadiancePrefilteringGGX，默认 256、1024 个采样）。
+	 * 最高一级是源贴图重采样，不滤波。
+	 */
+	prefilterCubemapGGX({ size, faces }: CubemapData, outSize = 256, samples = 1024): Promise<PrefilteredCubemap> {
+		return this.withArraysAsync([faces], (f) =>
+			this.awaitTask(this.module._st_cubemap_prefilter_ggx(f, size, outSize, samples), 'st_cubemap_prefilter_ggx', (task) => {
+				const all = task.output(Float32Array, 0);
+				const levels: Float32Array[] = [];
+				for (let edge = outSize, offset = 0; edge >= 1; edge >>= 1) {
+					levels.push(all.subarray(offset, offset + 6 * edge * edge * 4));
+					offset += 6 * edge * edge * 4;
+				}
+				return { size: outSize, levels };
+			}));
+	}
+
+	/** 天空盒的漫反射光照：3 阶球谐（同 Stride 的 LambertianPrefilteringSH），9 个 RGB 系数，已经乘过基函数常数。 */
+	cubemapSH({ size, faces }: CubemapData): Promise<Float32Array> {
+		return this.withArraysAsync([faces], (f) =>
+			this.awaitTask(this.module._st_cubemap_sh_lambert(f, size), 'st_cubemap_sh_lambert', (task) => task.output(Float32Array, 0)));
 	}
 
 	/** 把 RGBA8 像素编码成 KTX2 文件。 */

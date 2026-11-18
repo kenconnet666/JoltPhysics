@@ -202,6 +202,51 @@ TEST_CASE("PNG decodes to RGBA8 and garbage fails")
 	sn_task_release(task);
 }
 
+TEST_CASE("Cubemap prefiltering keeps a constant sky constant and SH evaluates back to it")
+{
+	ModuleScope module;
+	constexpr uint32_t size = 16;
+	// 恒定的天空 (0.5, 1, 2)；+Y 面（第 2 个面）再亮一些，检查方向
+	std::vector<float> faces(6 * size * size * 4);
+	for (size_t i = 0; i < faces.size(); i += 4)
+	{
+		bool up = i / (size * size * 4) == 2;
+		faces[i] = 0.5f;
+		faces[i + 1] = 1.0f;
+		faces[i + 2] = up ? 6.0f : 2.0f;
+		faces[i + 3] = 1.0f;
+	}
+
+	int32_t task = st_cubemap_prefilter_ggx(faces.data(), size, 32, 64);
+	REQUIRE(WaitForTask(task) == SN_TASK_DONE);
+	// 32、16、8、4、2、1 共 6 级
+	uint32_t floats = 0;
+	for (uint32_t edge = 32; edge >= 1; edge >>= 1)
+		floats += 6 * edge * edge * 4;
+	REQUIRE(sn_task_output_size(task, 0) == floats * 4);
+	const float *levels = static_cast<const float *>(sn_task_output_data(task, 0));
+	// 红、绿通道处处恒定，滤波后不变；蓝通道在最粗糙的一级里向上的面仍然更亮
+	for (uint32_t i = 0; i < floats; i += 4)
+	{
+		CHECK(levels[i] == doctest::Approx(0.5f).epsilon(0.01));
+		CHECK(levels[i + 1] == doctest::Approx(1.0f).epsilon(0.01));
+	}
+	const float *last = levels + floats - 6 * 4;
+	CHECK(last[2 * 4 + 2] > last[3 * 4 + 2] + 1.0f);
+	sn_task_release(task);
+
+	task = st_cubemap_sh_lambert(faces.data(), size);
+	REQUIRE(WaitForTask(task) == SN_TASK_DONE);
+	REQUIRE(sn_task_output_size(task, 0) == 27 * 4);
+	const float *sh = static_cast<const float *>(sn_task_output_data(task, 0));
+	CHECK(sh[0] == doctest::Approx(0.5f).epsilon(0.01));
+	CHECK(sh[1] == doctest::Approx(1.0f).epsilon(0.01));
+	CHECK(std::abs(sh[3 * 1 + 0]) < 0.01f);
+	// 系数 1 乘的是 y：亮的 +Y 面让它在蓝通道是正的
+	CHECK(sh[3 * 1 + 2] > 0.5f);
+	sn_task_release(task);
+}
+
 TEST_CASE("MSDF glyphs are generated in parallel")
 {
 	const char *font_path = std::getenv("STRIDE_TEST_FONT") != nullptr ? std::getenv("STRIDE_TEST_FONT") : "C:/Windows/Fonts/arial.ttf";

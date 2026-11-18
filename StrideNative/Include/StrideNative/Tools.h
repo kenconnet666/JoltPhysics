@@ -89,6 +89,21 @@ enum
 /// Result [0]: width, [1]: height, [2]: channels in the file. Output [0]: the pixels, rows top-down.
 SN_API int32_t st_image_decode(const void *data, uint32_t size);
 
+/// Cubemaps below are RGBA32F, faces in the order +X -X +Y -Y +Z -Z, rows top-down (the D3D/WebGPU layout).
+
+/// Prefilters a radiance cubemap for GGX environment lighting like Stride's RadiancePrefilteringGGX:
+/// level 0 of the out_size cube is the source resampled, level i is filtered with roughness i / (levels - 1)
+/// using samples GGX importance samples. faces is level 0 of a size x size cube (mipmaps are generated);
+/// both sizes must be powers of two. faces must stay alive until the task finishes.
+/// Output [0]: every level from out_size down to 1, each 6 faces, concatenated.
+SN_API int32_t st_cubemap_prefilter_ggx(const float *faces, uint32_t size, uint32_t out_size, uint32_t samples);
+
+/// Projects a radiance cubemap onto order-3 spherical harmonics with the Lambertian cosine lobe, like Stride's
+/// LambertianPrefilteringSH; the coefficients are already multiplied by the basis constants, so evaluating
+/// them only needs the polynomials. faces must stay alive until the task finishes.
+/// Output [0]: 9 RGB coefficients (27 floats).
+SN_API int32_t st_cubemap_sh_lambert(const float *faces, uint32_t size);
+
 /// Encodes an RGBA8 image into a KTX2 file. rgba must stay alive until the task finishes.
 /// quality 0-100, effort 0-10. Output [0]: the .ktx2 file.
 SN_API int32_t st_basis_encode(const uint8_t *rgba, uint32_t width, uint32_t height, int32_t mode, int32_t flags, int32_t quality, int32_t effort);
