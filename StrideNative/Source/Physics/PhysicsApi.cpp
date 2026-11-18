@@ -18,7 +18,9 @@
 #include <Jolt/Physics/Collision/RayCast.h>
 #include <Jolt/Physics/Collision/ShapeCast.h>
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
+#include <Jolt/Physics/Collision/CollisionDispatch.h>
 #include <Jolt/Physics/Collision/Shape/EmptyShape.h>
+#include <Jolt/Physics/Collision/Shape/TriangleShape.h>
 #include <Jolt/Physics/Collision/Shape/OffsetCenterOfMassShape.h>
 #include <Jolt/Physics/Constraints/DistanceConstraint.h>
 #include <Jolt/Physics/Constraints/FixedConstraint.h>
@@ -557,6 +559,30 @@ namespace
 		character.SetLinearVelocity(velocity, false);
 	}
 
+	/// 网格对网格的碰撞（Jolt 没有，Bepu 有：动态的网格刚体撞静态网格）：网格 1 落在网格 2 包围盒里的三角形，逐个当成
+	/// 凸的三角形形状和网格 2 碰。三角形在世界空间里，变换是单位的
+	void CollideMeshVsMesh(const Shape *inShape1, const Shape *inShape2, Vec3Arg inScale1, Vec3Arg inScale2, Mat44Arg inCenterOfMassTransform1,
+		Mat44Arg inCenterOfMassTransform2, const SubShapeIDCreator &inSubShapeIDCreator1, const SubShapeIDCreator &inSubShapeIDCreator2,
+		const CollideShapeSettings &inCollideShapeSettings, CollideShapeCollector &ioCollector, const ShapeFilter &inShapeFilter)
+	{
+		AABox bounds = inShape2->GetWorldSpaceBounds(inCenterOfMassTransform2, inScale2);
+		bounds.ExpandBy(Vec3::sReplicate(inCollideShapeSettings.mMaxSeparationDistance));
+		Shape::GetTrianglesContext context;
+		inShape1->GetTrianglesStart(context, bounds, inCenterOfMassTransform1.GetTranslation(), inCenterOfMassTransform1.GetQuaternion(), inScale1);
+		Float3 vertices[Shape::cGetTrianglesMinTrianglesRequested * 3];
+		for (int count; (count = inShape1->GetTrianglesNext(context, Shape::cGetTrianglesMinTrianglesRequested, vertices)) > 0; )
+			for (int t = 0; t < count; ++t)
+			{
+				Vec3 v1(vertices[t * 3]), v2(vertices[t * 3 + 1]), v3(vertices[t * 3 + 2]);
+				TriangleShape triangle(v1, v2, v3);
+				triangle.SetEmbedded();
+				CollisionDispatch::sCollideShapeVsShape(&triangle, inShape2, Vec3::sOne(), inScale2, Mat44::sIdentity(), inCenterOfMassTransform2,
+					inSubShapeIDCreator1, inSubShapeIDCreator2, inCollideShapeSettings, ioCollector, inShapeFilter);
+				if (ioCollector.ShouldEarlyOut())
+					return;
+			}
+	}
+
 	/// 第一次创建物理世界时注册 Jolt 的类型，sn_shutdown 时注销。放在物理这边而不是 sn_init 里：物理在 wasm 里是
 	/// 单独的侧模块，核心模块不链接 Jolt 的物理部分。JS 只在主线程上调用，不需要加锁。
 	void EnsureTypesRegistered()
@@ -575,6 +601,8 @@ namespace
 			return;
 		Factory::sInstance = new Factory();
 		RegisterTypes();
+		// Jolt 不支持网格对网格（Bepu 支持）
+		CollisionDispatch::sRegisterCollideShape(EShapeSubType::Mesh, EShapeSubType::Mesh, CollideMeshVsMesh);
 	}
 
 	/// 物体编号对应的记录；编号不对时记下错误

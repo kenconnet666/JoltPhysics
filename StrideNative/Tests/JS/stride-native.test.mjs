@@ -396,10 +396,12 @@ describe('stride-native and stride-tools', () => {
 		}
 	});
 
-	it('simulates a dynamic body with a closed mesh shape (mass properties integrated from the mesh, like Bepu)', () => {
+	it('simulates a dynamic body with a closed mesh shape on a mesh floor (mass from the mesh, mesh-vs-mesh contacts, like Bepu)', () => {
 		const world = native.createPhysicsWorld(8);
 		try {
-			world.addBody({ motion: 'static', shapes: [{ type: 'box', size: [20, 1, 20] }], position: [0, -0.5, 0] });
+			// 地面也是网格：网格对网格的碰撞（Jolt 本来不支持）
+			const floor = world.createMesh(new Float32Array([-10, 0, -10, 10, 0, -10, 10, 0, 10, -10, 0, 10]), new Uint32Array([0, 2, 1, 0, 3, 2]));
+			world.addBody({ motion: 'static', shapes: [{ type: 'mesh', mesh: floor }] });
 			// 单位立方体的 12 个三角形（朝外）
 			const corners = [0, 1, 2, 3, 4, 5, 6, 7].flatMap((i) => [i & 1 ? 0.5 : -0.5, i & 2 ? 0.5 : -0.5, i & 4 ? 0.5 : -0.5]);
 			const faces = [0, 2, 3, 0, 3, 1, 4, 5, 7, 4, 7, 6, 0, 1, 5, 0, 5, 4, 2, 6, 7, 2, 7, 3, 0, 4, 6, 0, 6, 2, 1, 3, 7, 1, 7, 5];
