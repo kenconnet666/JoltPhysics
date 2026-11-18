@@ -721,6 +721,11 @@ export class TransformStore extends NativeObject<StrideNative> {
 		this.native.check(this.native.module._sn_transforms_update(this[HANDLE]), 'sn_transforms_update');
 	}
 
+	/** 只算 slot 和它的祖先的世界矩阵（Stride 的 UpdateWorldMatrix）：这一帧的 update() 之前要用世界位姿时调用。 */
+	updateSlot(slot: TransformSlot): void {
+		this.native.check(this.native.module._sn_transforms_update_slot(this[HANDLE], slot), 'sn_transforms_update_slot');
+	}
+
 	/** 这个存储的视锥剔除工作区；渲染器每帧复用一个。 */
 	createCuller(): FrustumCuller {
 		return new FrustumCuller(this.native, this);

@@ -374,8 +374,13 @@ describe('stride-native and stride-tools', () => {
 		rotation.set([0, s, 0, s], parent * 4);
 		transforms.setParent(child, parent);
 		position.set([0, 4, 2], child * 3);
-		transforms.update();
 		const near = (actual, expected, epsilon = 1e-4) => assert.ok(Math.abs(actual - expected) < epsilon, `${actual} is not near ${expected}`);
+		// 只算子节点这一条链（父节点也算），别的槽位不动
+		transforms.updateSlot(child);
+		[12, 4, 0].forEach((v, i) => near(world[child * 16 + 12 + i], v));
+		near(world[parent * 16 + 12], 10);
+		near(world[root * 16 + 13], 0);
+		transforms.update();
 		[12, 4, 0].forEach((v, i) => near(world[child * 16 + 12 + i], v));
 
 		using physics = native.createPhysicsWorld(8, { transforms });

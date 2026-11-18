@@ -198,6 +198,20 @@ namespace StrideNative
 		}
 	}
 
+	void TransformStore::UpdateSlot(int32_t inSlot)
+	{
+		std::vector<int32_t> chain;
+		for (int32_t slot = inSlot; slot != 0; slot = mParent[slot])
+			chain.push_back(slot);
+		for (auto it = chain.rbegin(); it != chain.rend(); ++it)
+		{
+			Mat44 world = LocalMatrix(*it);
+			if (int32_t parent = mParent[*it]; parent != 0)
+				world = LoadWorld(parent) * world;
+			world.StoreFloat4x4(reinterpret_cast<Float4 *>(&mWorld[*it * 16]));
+		}
+	}
+
 	void TransformStore::SetWorldPose(int32_t inSlot, Vec3Arg inPosition, QuatArg inRotation)
 	{
 		Vec3 position = inPosition;
@@ -292,6 +306,17 @@ SN_API int32_t sn_transforms_slot_limit(int32_t transforms)
 {
 	TransformStore *store = GetStore(transforms);
 	return store != nullptr ? int32_t(store->SlotLimit()) : SN_ERROR_INVALID_HANDLE;
+}
+
+SN_API int32_t sn_transforms_update_slot(int32_t transforms, int32_t slot)
+{
+	TransformStore *store = GetStore(transforms);
+	if (store == nullptr)
+		return SN_ERROR_INVALID_HANDLE;
+	if (!store->IsAlive(slot))
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "transform slot " + std::to_string(slot) + " is not allocated");
+	store->UpdateSlot(slot);
+	return SN_OK;
 }
 
 SN_API int32_t sn_transforms_update(int32_t transforms)

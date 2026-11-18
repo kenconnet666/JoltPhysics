@@ -28,6 +28,8 @@ namespace StrideNative
 
 		/// 按父节点在前的顺序算所有世界矩阵。
 		void Update();
+		/// 只算 inSlot 和它的祖先的世界矩阵，从根往下写
+		void UpdateSlot(int32_t inSlot);
 
 		/// 本地矩阵 T * R * S。
 		JPH::Mat44 LocalMatrix(int32_t inSlot) const;

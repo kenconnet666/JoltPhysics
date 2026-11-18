@@ -407,6 +407,12 @@ export interface NativeExports {
 	 * C: Runtime.h
 	 */
 	_sn_transforms_update(transforms: number): number;
+	/**
+	 * 只算 slot 和它的祖先的世界矩阵（Stride 的 TransformComponent.UpdateWorldMatrix）：脚本在这一帧的 sn_transforms_update
+	 * 之前要用世界位姿时调用。
+	 * C: Runtime.h
+	 */
+	_sn_transforms_update_slot(transforms: number, slot: number): number;
 	/** C: Core.h */
 	_sn_worker_thread_count(): number;
 	/**
@@ -635,6 +641,7 @@ export type RuntimeExport =
 	| 'sn_transforms_free'
 	| 'sn_transforms_set_parent'
 	| 'sn_transforms_update'
+	| 'sn_transforms_update_slot'
 	| 'sn_transforms_slot_limit'
 	| 'sn_transforms_cull'
 	| 'sn_meshopt_decode'
