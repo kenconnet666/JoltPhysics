@@ -453,6 +453,47 @@ TEST_CASE("物理：凸包和 BodyComponent 的控制（运动学切换、瞬移
 	sn_physics_destroy(world);
 }
 
+TEST_CASE("物理：传感器和接触事件（Stride 的 Trigger、IContactHandler），移除物体")
+{
+	ModuleScope module;
+	int32_t world = sn_physics_create(8, 0, nullptr);
+	REQUIRE(world > 0);
+	// 0：地面（报接触事件），1：地面上方 2..4 的传感器盒子（静态），2：从 8 米落下的盒子
+	sn_shape shapes[] = { BoxShape(20, 1, 20), BoxShape(4, 2, 4), BoxShape(1, 1, 1) };
+	sn_body bodies[] = { Body(SN_MOTION_STATIC, 0, -0.5f, 0, 0), Body(SN_MOTION_STATIC, 0, 3, 0, 1), Body(SN_MOTION_DYNAMIC, 0, 8, 0, 2) };
+	bodies[0].flags = SN_BODY_CONTACT_EVENTS;
+	bodies[1].flags = SN_BODY_SENSOR | SN_BODY_CONTACT_EVENTS;
+	REQUIRE(sn_physics_add_bodies(world, bodies, 3, shapes, 3, nullptr, 0) == 0);
+
+	// 逐步收集事件：盒子穿过传感器（开始、结束），落到地面（开始；之后睡下也不报结束，同 Bepu）
+	std::vector<sn_contact_event> seen;
+	for (int i = 0; i < 180; ++i)
+	{
+		REQUIRE(sn_physics_step(world, 1.0f / 60.0f, 1) == SN_OK);
+		uint32_t count = 0;
+		const sn_contact_event *events = sn_physics_contact_events(world, &count);
+		seen.insert(seen.end(), events, events + count);
+	}
+	REQUIRE(seen.size() == 3);
+	CHECK((seen[0].type == SN_CONTACT_STARTED && seen[0].body_a == 1 && seen[0].body_b == 2));
+	CHECK((seen[1].type == SN_CONTACT_STOPPED && seen[1].body_a == 1 && seen[1].body_b == 2));
+	CHECK((seen[2].type == SN_CONTACT_STARTED && seen[2].body_a == 0 && seen[2].body_b == 2));
+	// 传感器不挡住盒子：最后停在地面上
+	CHECK(sn_physics_positions(world)[7] == doctest::Approx(0.5f).epsilon(0.05));
+
+	// 移除：之后的步进不再报和它有关的事件，控制接口报错
+	const int32_t removed[] = { 2 };
+	REQUIRE(sn_physics_remove_bodies(world, removed, 1) == SN_OK);
+	REQUIRE(sn_physics_remove_bodies(world, removed, 1) == SN_OK);	// 移除过的忽略
+	REQUIRE(sn_physics_step(world, 1.0f / 60.0f, 1) == SN_OK);
+	uint32_t count = 0;
+	sn_physics_contact_events(world, &count);
+	CHECK(count == 0);
+	CHECK(sn_physics_body_set_gravity(world, 2, 0) == SN_ERROR_INVALID_ARGUMENT);
+	CHECK(sn_physics_body_set_contact_events(world, 2, 1) == SN_ERROR_INVALID_ARGUMENT);
+	sn_physics_destroy(world);
+}
+
 TEST_CASE("物理：插值的物体在两步之间写回插值的位姿")
 {
 	ModuleScope module;

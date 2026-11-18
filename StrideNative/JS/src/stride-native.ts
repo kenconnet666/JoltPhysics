@@ -210,6 +210,11 @@ const MOTIONS = { static: 0, dynamic: 1, kinematic: 2, character: 3 } as const;
 const BODY_INTERPOLATED = 1;
 const BODY_NO_GRAVITY = 2;
 const BODY_NEVER_SLEEP = 4;
+const BODY_SENSOR = 8;
+const BODY_CONTACT_EVENTS = 16;
+// sn_contact_event：type、body_a、body_b
+const CONTACT_EVENT_WORDS = 3;
+const CONTACT_TYPES = { 1: 'started', 2: 'stopped' } as const;
 const ALL_LAYERS = 0xffffffff;
 
 const ORIGIN: Vec3 = [0, 0, 0];
@@ -274,6 +279,10 @@ export interface BodyDesc {
 	gravity?: boolean;
 	/** 一直醒着（Stride 的 SleepThreshold 为负）。 */
 	neverSleep?: boolean;
+	/** 只检测、不产生碰撞响应（Stride 的 Trigger）。 */
+	sensor?: boolean;
+	/** 报告开始和结束接触（contactEvents()）。 */
+	contactEvents?: boolean;
 	/** motion 为 'character' 时用。 */
 	character?: CharacterSettings;
 }
@@ -319,6 +328,13 @@ export interface SweepOptions extends QueryOptions {
 
 const CAST_IGNORE_INITIAL_OVERLAP = 1;
 
+/** 一次接触事件；self 是打开了接触事件的那个物体（两个都打开时是编号小的）。 */
+export interface ContactEvent {
+	readonly type: 'started' | 'stopped';
+	readonly self: BodyId;
+	readonly other: BodyId;
+}
+
 /** 射线和扫掠的结果；查询传入一个对象时就地改写它，不分配内存。 */
 export class PhysicsHit {
 	/** 沿方向的距离；球体扫掠从一开始就重叠时是 0。 */
@@ -357,6 +373,39 @@ export class PhysicsWorld extends NativeObject<StrideNative> {
 		const n = this.native;
 		return n.withArrays([positions, indices], (p, i) =>
 			n.check(n.module._sn_physics_create_mesh(this[HANDLE], p, positions.length / 3, i, indices.length), 'sn_physics_create_mesh') as PhysicsMesh);
+	}
+
+	/** 移除物体（实体销毁时）：编号不再复用，和它有关的接触不再报告；移除过的忽略。 */
+	removeBodies(bodies: readonly BodyId[]): void {
+		if (bodies.length === 0) return;
+		const n = this.native;
+		n.withArrays([Int32Array.from(bodies)], (b) => n.check(n.module._sn_physics_remove_bodies(this[HANDLE], b, bodies.length), 'sn_physics_remove_bodies'));
+	}
+
+	/** 打开或关掉接触事件（建物体时用 BodyDesc.contactEvents）。 */
+	setContactEvents(body: BodyId, enabled: boolean): void {
+		this.native.check(this.native.module._sn_physics_body_set_contact_events(this[HANDLE], body, enabled ? 1 : 0), 'sn_physics_body_set_contact_events');
+	}
+
+	/** 设成或取消传感器（建物体时用 BodyDesc.sensor）。 */
+	setSensor(body: BodyId, sensor: boolean): void {
+		this.native.check(this.native.module._sn_physics_body_set_sensor(this[HANDLE], body, sensor ? 1 : 0), 'sn_physics_body_set_sensor');
+	}
+
+	/** 上一次 step() 里的接触事件，按发生的顺序（复合形状的多对子形状算一对物体；物体睡着时接触还在，同 Bepu）。 */
+	contactEvents(): ContactEvent[] {
+		const n = this.native;
+		return n.withScratch(4, (countAddress) => {
+			const address = n.module._sn_physics_contact_events(this[HANDLE], countAddress);
+			const count = n.u32(countAddress, 1)[0]!;
+			if (count === 0) return [];
+			const words = n.i32(address, count * CONTACT_EVENT_WORDS);
+			return Array.from({ length: count }, (_, i) => ({
+				type: CONTACT_TYPES[words[i * CONTACT_EVENT_WORDS] as 1 | 2],
+				self: words[i * CONTACT_EVENT_WORDS + 1]! as BodyId,
+				other: words[i * CONTACT_EVENT_WORDS + 2]! as BodyId,
+			}));
+		});
 	}
 
 	/** 凸包形状：Jolt 由这些点（xyz）算出凸包，至少 4 个点。 */
@@ -574,7 +623,8 @@ function writeBody(floats: Float32Array, words: Uint32Array, o: number, body: Bo
 	const layer = body.layer ?? 0;
 	if (!Number.isInteger(layer) || layer < 0 || layer > 31) throw new RangeError(`body ${index}: layer must be an integer 0..31, got ${layer}`);
 	words[o] = motion;
-	words[o + 1] = (body.interpolated ? BODY_INTERPOLATED : 0) | (body.gravity === false ? BODY_NO_GRAVITY : 0) | (body.neverSleep ? BODY_NEVER_SLEEP : 0);
+	words[o + 1] = (body.interpolated ? BODY_INTERPOLATED : 0) | (body.gravity === false ? BODY_NO_GRAVITY : 0) | (body.neverSleep ? BODY_NEVER_SLEEP : 0)
+		| (body.sensor ? BODY_SENSOR : 0) | (body.contactEvents ? BODY_CONTACT_EVENTS : 0);
 	words[o + 2] = body.transform ?? 0;
 	const position = body.position ?? ORIGIN, rotation = body.rotation ?? IDENTITY;
 	floats.set([position[0]!, position[1]!, position[2]!, rotation[0]!, rotation[1]!, rotation[2]!, rotation[3]!], o + 3);

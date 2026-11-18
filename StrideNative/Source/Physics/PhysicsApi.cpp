@@ -13,6 +13,7 @@
 #include <Jolt/Physics/Character/Character.h>
 #include <Jolt/Physics/Collision/CastResult.h>
 #include <Jolt/Physics/Collision/CollisionCollectorImpl.h>
+#include <Jolt/Physics/Collision/ContactListener.h>
 #include <Jolt/Physics/Collision/RayCast.h>
 #include <Jolt/Physics/Collision/ShapeCast.h>
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
@@ -28,7 +29,11 @@
 #include <Jolt/RegisterTypes.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
+#include <mutex>
+#include <unordered_map>
+#include <unordered_set>
 #include <string>
 #include <vector>
 
@@ -113,6 +118,7 @@ namespace
 
 	struct BodyRecord
 	{
+		bool mRemoved = false;
 		BodyID mID;
 		uint32_t mMotion = SN_MOTION_STATIC;
 		uint32_t mFlags = 0;
@@ -120,6 +126,100 @@ namespace
 		int32_t mCharacter = -1;			///< mCharacters 里的下标
 		RVec3 mPreviousPosition, mPosition;	///< 插值用：上一步和这一步的位姿
 		Quat mPreviousRotation = Quat::sIdentity(), mRotation = Quat::sIdentity();
+	};
+
+	/**
+	 * 接触事件：Jolt 在步进的工作线程上回调，按子形状对记下接触，一对物体的第一个子形状对出现时报开始、最后一个消失时报结束。
+	 * 和 Bepu 一样，物体睡着时接触还在：Jolt 在物体睡下时也回调 OnContactRemoved，这时忽略，醒来后重新加入的同一对不再计数。
+	 * 只看打开了接触事件的物体；回调里只读 mWanted（步进期间主线程不改它）。
+	 */
+	class ContactCollector final : public ContactListener
+	{
+	public:
+		/// 按 Jolt 的 BodyID 下标找我们的物体编号（OnContactRemoved 只给 BodyID）
+		std::vector<int32_t>			mIndexOfBodyID;
+		/// 每个物体（按编号）报不报接触事件
+		std::vector<uint8_t>			mWanted;
+		std::vector<sn_contact_event>	mEvents;
+		const PhysicsSystem *			mSystem = nullptr;
+
+		void OnContactAdded(const Body &inBody1, const Body &inBody2, const ContactManifold &inManifold, ContactSettings &) override
+		{
+			Update(int32_t(inBody1.GetUserData()), int32_t(inBody2.GetUserData()), SubShapes(inManifold.mSubShapeID1, inManifold.mSubShapeID2), true);
+		}
+
+		void OnContactRemoved(const SubShapeIDPair &inPair) override
+		{
+			// 移除过的物体（编号已经清掉）不再报告
+			int32_t a = IndexOf(inPair.GetBody1ID()), b = IndexOf(inPair.GetBody2ID());
+			if (a < 0 || b < 0)
+				return;
+			// 睡下引起的移除：接触还算在（同 Bepu）。静态物体从来不"醒着"，只看会动的那个
+			if (Sleeping(inPair.GetBody1ID()) || Sleeping(inPair.GetBody2ID()))
+				return;
+			Update(a, b, SubShapes(inPair.GetSubShapeID1(), inPair.GetSubShapeID2()), false);
+		}
+
+		/// 物体被移除：和它有关的接触直接忘掉（不报结束，Stride 移除时也不发）
+		void Forget(int32_t inBody)
+		{
+			std::lock_guard lock(mMutex);
+			for (auto it = mPairs.begin(); it != mPairs.end();)
+				it = (int32_t(it->first >> 32) == inBody || int32_t(it->first & 0xffffffffu) == inBody) ? mPairs.erase(it) : std::next(it);
+		}
+
+	private:
+		std::mutex mMutex;
+		/// 一对物体（报告的一方在高 32 位）→ 正在接触的子形状对
+		std::unordered_map<uint64_t, std::unordered_set<uint64_t>> mPairs;
+
+		bool Sleeping(BodyID inID) const
+		{
+			const BodyInterface &bodies = mSystem->GetBodyInterfaceNoLock();
+			return bodies.GetMotionType(inID) != EMotionType::Static && !bodies.IsActive(inID);
+		}
+
+		static uint64_t SubShapes(const SubShapeID &inA, const SubShapeID &inB)
+		{
+			return uint64_t(inA.GetValue()) << 32 | inB.GetValue();
+		}
+
+		int32_t IndexOf(BodyID inID) const
+		{
+			uint32_t index = inID.GetIndex();
+			return index < mIndexOfBodyID.size() ? mIndexOfBodyID[index] : -1;
+		}
+
+		bool Wanted(int32_t inBody) const
+		{
+			return inBody >= 0 && size_t(inBody) < mWanted.size() && mWanted[inBody] != 0;
+		}
+
+		void Update(int32_t inA, int32_t inB, uint64_t inSubShapes, bool inTouching)
+		{
+			if (!Wanted(inA) && !Wanted(inB))
+				return;
+			// 报告的一方在前：打开事件的那个，都打开时编号小的；子形状对跟着换
+			if (!Wanted(inA) || (Wanted(inB) && inB < inA))
+			{
+				std::swap(inA, inB);
+				inSubShapes = inSubShapes << 32 | inSubShapes >> 32;
+			}
+			uint64_t key = uint64_t(uint32_t(inA)) << 32 | uint32_t(inB);
+			std::lock_guard lock(mMutex);
+			std::unordered_set<uint64_t> &touching = mPairs[key];
+			bool before = !touching.empty();
+			if (inTouching)
+				touching.insert(inSubShapes);
+			else
+				touching.erase(inSubShapes);
+			if (!before && !touching.empty())
+				mEvents.push_back({ SN_CONTACT_STARTED, inA, inB });
+			else if (before && touching.empty())
+				mEvents.push_back({ SN_CONTACT_STOPPED, inA, inB });
+			if (touching.empty())
+				mPairs.erase(key);
+		}
 	};
 
 	struct World
@@ -134,6 +234,7 @@ namespace
 		std::vector<RefConst<Shape>>	mMeshes;			///< 网格和凸包，句柄是下标加 1
 		int32_t							mTransforms = 0;	///< 绑定用的变换存储句柄，0 表示没有
 		std::vector<float>				mPositions;			///< 每个物体的 xyz；只分配一次，调用方可以一直拿着视图
+		ContactCollector				mContacts;
 	};
 
 	World *GetWorld(int32_t inHandle)
@@ -168,6 +269,8 @@ namespace
 		const BodyInterface &bodies = ioWorld.mSystem.GetBodyInterfaceNoLock();
 		for (size_t i = inFirst; i < ioWorld.mBodies.size(); ++i)
 		{
+			if (ioWorld.mBodies[i].mRemoved)
+				continue;
 			RVec3 position = bodies.GetPosition(ioWorld.mBodies[i].mID);
 			float *out = &ioWorld.mPositions[i * 3];
 			out[0] = float(position.GetX());
@@ -182,7 +285,7 @@ namespace
 		const BodyInterface &bodies = ioWorld.mSystem.GetBodyInterfaceNoLock();
 		for (BodyRecord &record : ioWorld.mBodies)
 		{
-			if (!Integrates(record.mMotion))
+			if (!Integrates(record.mMotion) || record.mRemoved)
 				continue;
 			record.mPreviousPosition = record.mPosition;
 			record.mPreviousRotation = record.mRotation;
@@ -369,9 +472,10 @@ namespace
 	}
 
 	/// 物体编号对应的记录；编号不对时记下错误
+	/// 按编号找没被移除的物体；没有时记下错误、返回 nullptr。
 	BodyRecord *GetBody(World &ioWorld, int32_t inBody)
 	{
-		if (inBody < 0 || size_t(inBody) >= ioWorld.mBodies.size())
+		if (inBody < 0 || size_t(inBody) >= ioWorld.mBodies.size() || ioWorld.mBodies[inBody].mRemoved)
 		{
 			StrideNative::SetLastError(SN_ERROR_INVALID_ARGUMENT, "body " + std::to_string(inBody) + " does not exist");
 			return nullptr;
@@ -463,6 +567,10 @@ SN_API int32_t sn_physics_create(uint32_t max_bodies, int32_t transforms, const 
 	world->mBodies.reserve(max_bodies);
 	world->mTransforms = transforms;
 	world->mPositions.resize(size_t(max_bodies) * 3);
+	world->mContacts.mIndexOfBodyID.assign(max_bodies, -1);
+	world->mContacts.mWanted.assign(max_bodies, 0);
+	world->mContacts.mSystem = &world->mSystem;
+	world->mSystem.SetContactListener(&world->mContacts);
 	return GetTable<World>().Add(std::move(world));
 }
 
@@ -472,11 +580,12 @@ SN_API void sn_physics_destroy(int32_t world)
 	if (removed == nullptr)
 		return;
 	for (CharacterRecord &record : removed->mCharacters)
-		record.mCharacter->RemoveFromPhysicsSystem(false);
+		if (record.mCharacter != nullptr)
+			record.mCharacter->RemoveFromPhysicsSystem(false);
 	removed->mCharacters.clear();	// 角色自己销毁它的物体
 	std::vector<BodyID> ids;
 	for (const BodyRecord &record : removed->mBodies)
-		if (record.mCharacter < 0)
+		if (record.mCharacter < 0 && !record.mRemoved)
 			ids.push_back(record.mID);
 	if (ids.empty())
 		return;
@@ -638,6 +747,7 @@ SN_API int32_t sn_physics_add_bodies(int32_t world, const sn_body *bodies, uint3
 			settings.mAngularDamping = w->mSettings.angular_damping;
 			settings.mGravityFactor = (body.flags & SN_BODY_NO_GRAVITY) != 0 ? 0.0f : 1.0f;
 			settings.mAllowSleeping = (body.flags & SN_BODY_NEVER_SLEEP) == 0;
+			settings.mIsSensor = (body.flags & SN_BODY_SENSOR) != 0;
 			// BodyComponent 能在动态和运动学之间切换；质量照动态的算，切过去时用得上。带网格形状的（只能是运动学）没有质量，不能切
 			bool has_mesh = false;
 			for (uint32_t s = 0; s < body.shape_count; ++s)
@@ -654,6 +764,8 @@ SN_API int32_t sn_physics_add_bodies(int32_t world, const sn_body *bodies, uint3
 			record.mID = created->GetID();
 			added.push_back(record.mID);
 		}
+		w->mContacts.mIndexOfBodyID[record.mID.GetIndex()] = index;
+		w->mContacts.mWanted[index] = (body.flags & SN_BODY_CONTACT_EVENTS) != 0;
 		w->mBodies.push_back(record);
 	}
 
@@ -680,7 +792,9 @@ SN_API int32_t sn_physics_step(int32_t world, float delta_time, int32_t collisio
 		return SN_ERROR_INVALID_HANDLE;
 	SN_DEBUG_SCOPE("physics.step");
 	for (CharacterRecord &character : w->mCharacters)
-		UpdateCharacter(*w, character, delta_time);
+		if (character.mCharacter != nullptr)
+			UpdateCharacter(*w, character, delta_time);
+	w->mContacts.mEvents.clear();
 	EPhysicsUpdateError errors = w->mSystem.Update(delta_time, collision_steps > 0 ? collision_steps : 1, &GetTempAllocator(), &GetJobSystem());
 	if (DebugEnabled())
 	{
@@ -691,7 +805,8 @@ SN_API int32_t sn_physics_step(int32_t world, float delta_time, int32_t collisio
 	// 地面状态按这一步结束时的接触算（Bepu 也是用这一步的接触判断支撑）
 	constexpr float cMaxSeparationDistance = 0.05f;
 	for (CharacterRecord &character : w->mCharacters)
-		character.mCharacter->PostSimulation(cMaxSeparationDistance, false);
+		if (character.mCharacter != nullptr)
+			character.mCharacter->PostSimulation(cMaxSeparationDistance, false);
 	WritePositions(*w, 0);
 	RecordPoses(*w, store);
 	if (errors == EPhysicsUpdateError::None)
@@ -717,7 +832,7 @@ SN_API int32_t sn_physics_interpolate(int32_t world, float alpha)
 	float t = std::clamp(alpha, 0.0f, 1.0f);
 	for (const BodyRecord &record : w->mBodies)
 	{
-		if ((record.mFlags & SN_BODY_INTERPOLATED) == 0 || record.mSlot == 0 || !Integrates(record.mMotion))
+		if ((record.mFlags & SN_BODY_INTERPOLATED) == 0 || record.mSlot == 0 || !Integrates(record.mMotion) || record.mRemoved)
 			continue;
 		RVec3 position = record.mPreviousPosition + (record.mPosition - record.mPreviousPosition) * t;
 		Quat rotation = record.mPreviousRotation.SLERP(record.mRotation, t);
@@ -745,6 +860,11 @@ namespace
 			return nullptr;
 		}
 		BodyRecord &record = inWorld->mBodies[inBody];
+		if (record.mRemoved)
+		{
+			SetLastError(SN_ERROR_INVALID_ARGUMENT, std::string(inWhat) + ": body " + std::to_string(inBody) + " was removed");
+			return nullptr;
+		}
 		if (record.mMotion != SN_MOTION_DYNAMIC && record.mMotion != SN_MOTION_KINEMATIC)
 		{
 			SetLastError(SN_ERROR_INVALID_ARGUMENT, std::string(inWhat) + ": body " + std::to_string(inBody) + " is not a dynamic or kinematic body");
@@ -752,6 +872,80 @@ namespace
 		}
 		return &record;
 	}
+}
+
+SN_API int32_t sn_physics_remove_bodies(int32_t world, const int32_t *bodies, uint32_t count)
+{
+	World *w = GetWorld(world);
+	if (w == nullptr)
+		return SN_ERROR_INVALID_HANDLE;
+	if (bodies == nullptr && count > 0)
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "bodies are required");
+	BodyInterface &body_interface = w->mSystem.GetBodyInterface();
+	std::vector<BodyID> ids;
+	for (uint32_t i = 0; i < count; ++i)
+	{
+		int32_t index = bodies[i];
+		if (index < 0 || size_t(index) >= w->mBodies.size() || w->mBodies[index].mRemoved)
+			continue;
+		BodyRecord &record = w->mBodies[index];
+		record.mRemoved = true;
+		w->mContacts.mWanted[index] = 0;
+		w->mContacts.mIndexOfBodyID[record.mID.GetIndex()] = -1;
+		w->mContacts.Forget(index);
+		if (record.mCharacter >= 0)
+		{
+			// 角色自己销毁它的物体
+			CharacterRecord &character = w->mCharacters[record.mCharacter];
+			character.mCharacter->RemoveFromPhysicsSystem(false);
+			character.mCharacter = nullptr;
+		}
+		else
+			ids.push_back(record.mID);
+	}
+	if (!ids.empty())
+	{
+		body_interface.RemoveBodies(ids.data(), int(ids.size()));
+		body_interface.DestroyBodies(ids.data(), int(ids.size()));
+	}
+	return SN_OK;
+}
+
+SN_API int32_t sn_physics_body_set_contact_events(int32_t world, int32_t body, int32_t enabled)
+{
+	World *w = GetWorld(world);
+	if (w == nullptr)
+		return SN_ERROR_INVALID_HANDLE;
+	BodyRecord *record = GetBody(*w, body);
+	if (record == nullptr)
+		return SN_ERROR_INVALID_ARGUMENT;
+	w->mContacts.mWanted[body] = enabled != 0;
+	return SN_OK;
+}
+
+SN_API int32_t sn_physics_body_set_sensor(int32_t world, int32_t body, int32_t sensor)
+{
+	World *w = GetWorld(world);
+	if (w == nullptr)
+		return SN_ERROR_INVALID_HANDLE;
+	BodyRecord *record = GetBody(*w, body);
+	if (record == nullptr)
+		return SN_ERROR_INVALID_ARGUMENT;
+	w->mSystem.GetBodyInterface().SetIsSensor(record->mID, sensor != 0);
+	return SN_OK;
+}
+
+SN_API const sn_contact_event *sn_physics_contact_events(int32_t world, uint32_t *count)
+{
+	World *w = GetWorld(world);
+	if (w == nullptr || count == nullptr)
+	{
+		if (count != nullptr)
+			*count = 0;
+		return nullptr;
+	}
+	*count = uint32_t(w->mContacts.mEvents.size());
+	return w->mContacts.mEvents.data();
 }
 
 SN_API int32_t sn_physics_body_set_kinematic(int32_t world, int32_t body, int32_t kinematic)

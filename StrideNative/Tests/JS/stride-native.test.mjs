@@ -306,6 +306,33 @@ describe('stride-native and stride-tools', () => {
 		}
 	});
 
+	it('reports trigger and contact events per body pair, and removes bodies', () => {
+		const world = native.createPhysicsWorld(8);
+		try {
+			const [ground, trigger, box] = world.addBodies([
+				{ shapes: [{ type: 'box', size: [20, 1, 20] }], position: [0, -0.5, 0], contactEvents: true },
+				{ shapes: [{ type: 'box', size: [4, 2, 4] }], position: [0, 3, 0], sensor: true, contactEvents: true },
+				{ motion: 'dynamic', shapes: [{ type: 'box', size: [1, 1, 1] }], position: [0, 8, 0] },
+			]);
+			const seen = [];
+			for (let i = 0; i < 180; i++) {
+				world.step(1 / 60);
+				seen.push(...world.contactEvents());
+			}
+			assert.deepEqual(seen, [
+				{ type: 'started', self: trigger, other: box },
+				{ type: 'stopped', self: trigger, other: box },
+				{ type: 'started', self: ground, other: box },
+			]);
+			world.removeBodies([box, box]);
+			world.step(1 / 60);
+			assert.deepEqual(world.contactEvents(), []);
+			assert.throws(() => world.setSensor(box, false), /does not exist/);
+		} finally {
+			world.destroy();
+		}
+	});
+
 	it('culls instances against view frustums in native memory, batch by batch', () => {
 		using transforms = native.createTransforms(8);
 		const slots = transforms.allocate(4);

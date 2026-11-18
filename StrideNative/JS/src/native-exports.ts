@@ -207,6 +207,11 @@ export interface NativeExports {
 	 */
 	_sn_physics_body_set_awake(world: number, body: number, awake: number): number;
 	/**
+	 * 打开或关掉某个物体的接触事件（SN_BODY_CONTACT_EVENTS）。
+	 * C: Physics.h
+	 */
+	_sn_physics_body_set_contact_events(world: number, body: number, enabled: number): number;
+	/**
 	 * 受不受重力（Stride 的 Gravity）。
 	 * C: Physics.h
 	 */
@@ -216,6 +221,11 @@ export interface NativeExports {
 	 * C: Physics.h
 	 */
 	_sn_physics_body_set_kinematic(world: number, body: number, kinematic: number): number;
+	/**
+	 * 设成或取消传感器（SN_BODY_SENSOR）。
+	 * C: Physics.h
+	 */
+	_sn_physics_body_set_sensor(world: number, body: number, sensor: number): number;
 	/**
 	 * 设线速度和角速度；传 null 的不变。
 	 * C: Physics.h
@@ -242,6 +252,11 @@ export interface NativeExports {
 	 * C: Physics.h
 	 */
 	_sn_physics_character_move(world: number, body: number, targetX: number, targetZ: number, jump: number): number;
+	/**
+	 * 上一次 sn_physics_step 里产生的事件，按发生的顺序；地址在下一次步进前有效。复合形状的多对子形状按一对物体算。
+	 * C: Physics.h
+	 */
+	_sn_physics_contact_events(world: number, count: number): number;
 	/**
 	 * 建一个在共享任务系统上步进的世界，返回句柄。transforms 是物体可以绑定的变换存储（0 表示不用），它要比世界
 	 * 活得久，绑定的槽位在物体存在期间不能释放。settings 为空时用 Stride 的默认值（重力 -9.8、阻尼 0.05、全部层相互碰撞）。
@@ -276,6 +291,11 @@ export interface NativeExports {
 	 * C: Physics.h
 	 */
 	_sn_physics_ray_cast(world: number, origin: number, direction: number, maxDistance: number, mask: number, hit: number): number;
+	/**
+	 * 移除物体（实体销毁时）：从世界里拿走并释放，编号不再复用；和它有关的接触不再报告。移除过的忽略。
+	 * C: Physics.h
+	 */
+	_sn_physics_remove_bodies(world: number, bodies: number, count: number): number;
 	/**
 	 * 球体扫掠（Stride 的 SweepCast 加 Sphere），同 sn_physics_ray_cast；flags 是 SN_CAST_*。
 	 * C: Physics.h
@@ -580,6 +600,7 @@ export type RuntimeExport =
 	| 'sn_physics_destroy'
 	| 'sn_physics_create_mesh'
 	| 'sn_physics_create_hull'
+	| 'sn_physics_remove_bodies'
 	| 'sn_physics_add_bodies'
 	| 'sn_physics_step'
 	| 'sn_physics_interpolate'
@@ -592,6 +613,9 @@ export type RuntimeExport =
 	| 'sn_physics_body_set_velocity'
 	| 'sn_physics_body_apply_impulse'
 	| 'sn_physics_body_set_gravity'
+	| 'sn_physics_body_set_contact_events'
+	| 'sn_physics_body_set_sensor'
+	| 'sn_physics_contact_events'
 	| 'sn_physics_character_move'
 	| 'sn_physics_character_grounded'
 	| 'sn_physics_ray_cast'

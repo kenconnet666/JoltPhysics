@@ -61,6 +61,8 @@ enum
 	SN_BODY_INTERPOLATED = 1,		///< InterpolationMode.Interpolated：sn_physics_interpolate 写回两步之间的位姿
 	SN_BODY_NO_GRAVITY = 2,			///< Gravity = false
 	SN_BODY_NEVER_SLEEP = 4,		///< SleepThreshold 为负：一直醒着（Jolt 的睡眠阈值是全局的，按物体只能开关）
+	SN_BODY_SENSOR = 8,				///< 只检测、不产生碰撞响应（Stride 的 Trigger，或 ContactEventHandler.NoContactResponse）
+	SN_BODY_CONTACT_EVENTS = 16,	///< 报告开始和结束接触（Stride 的 ContactEventHandler）
 };
 
 /// 角色参数（Stride 的 CharacterComponent），SN_MOTION_CHARACTER 的物体用。
@@ -94,6 +96,8 @@ typedef struct sn_body
 SN_API int32_t sn_physics_create_mesh(int32_t world, const float *positions, uint32_t vertex_count, const uint32_t *indices, uint32_t index_count);
 /// 凸包形状（Jolt 由点算出凸包），世界内的物体共用；和网格共用句柄空间。positions 是 xyz。返回句柄。
 SN_API int32_t sn_physics_create_hull(int32_t world, const float *positions, uint32_t point_count);
+/// 移除物体（实体销毁时）：从世界里拿走并释放，编号不再复用；和它有关的接触不再报告。移除过的忽略。
+SN_API int32_t sn_physics_remove_bodies(int32_t world, const int32_t *bodies, uint32_t count);
 /// 一次加入 count 个物体（Jolt 成批插进宽相），返回第一个物体的编号；编号按加入顺序递增。
 SN_API int32_t sn_physics_add_bodies(int32_t world, const sn_body *bodies, uint32_t count, const sn_shape *shapes, uint32_t shape_count,
 	const sn_character *characters, uint32_t character_count);
@@ -129,6 +133,31 @@ SN_API int32_t sn_physics_body_set_velocity(int32_t world, int32_t body, const f
 SN_API int32_t sn_physics_body_apply_impulse(int32_t world, int32_t body, const float *linear, const float *angular);
 /// 受不受重力（Stride 的 Gravity）。
 SN_API int32_t sn_physics_body_set_gravity(int32_t world, int32_t body, int32_t enabled);
+
+// ---------------------------------------------------------------------------------------------
+// 接触事件（Stride 的 IContactHandler）
+// ---------------------------------------------------------------------------------------------
+
+enum
+{
+	SN_CONTACT_STARTED = 1,			///< 两个物体开始接触（OnStartedTouching、Trigger 的 OnEnter）
+	SN_CONTACT_STOPPED = 2,			///< 不再接触（OnStoppedTouching、OnLeave）
+};
+
+/// 一个事件；body_a 是打开了 SN_BODY_CONTACT_EVENTS 的那个（两个都打开时按编号小的在前，只报一次）。
+typedef struct sn_contact_event
+{
+	int32_t type;					///< SN_CONTACT_*
+	int32_t body_a;
+	int32_t body_b;
+} sn_contact_event;
+
+/// 打开或关掉某个物体的接触事件（SN_BODY_CONTACT_EVENTS）。
+SN_API int32_t sn_physics_body_set_contact_events(int32_t world, int32_t body, int32_t enabled);
+/// 设成或取消传感器（SN_BODY_SENSOR）。
+SN_API int32_t sn_physics_body_set_sensor(int32_t world, int32_t body, int32_t sensor);
+/// 上一次 sn_physics_step 里产生的事件，按发生的顺序；地址在下一次步进前有效。复合形状的多对子形状按一对物体算。
+SN_API const sn_contact_event *sn_physics_contact_events(int32_t world, uint32_t *count);
 
 // ---------------------------------------------------------------------------------------------
 // 角色
