@@ -256,7 +256,7 @@ describe('stride-native and stride-tools', () => {
 			assert.equal(world.sphereCast(0.5, [5, 2, -6], [1, 0, 0], 20).distance, 0);
 			assert.equal(world.sphereCast(0.5, [5, 2, -6], [1, 0, 0], 20, { ignoreInitialOverlap: true }), undefined, 'nothing behind the wall on this line');
 			assert.throws(() => world.moveCharacter(wall, 1, 0), /not a character/);
-			assert.throws(() => world.addBody({ motion: 'dynamic', shapes: [{ type: 'mesh', mesh }] }), /mesh shapes/);
+			assert.throws(() => world.addBody({ motion: 'dynamic', shapes: [{ type: 'mesh', mesh }, { type: 'sphere', radius: 1 }] }), /mesh shape must have only that shape/);
 			assert.throws(() => native.createPhysicsWorld(4, { collisionMasks: [1, 2] }), /32 entries/);
 		} finally {
 			world.destroy();
@@ -391,6 +391,27 @@ describe('stride-native and stride-tools', () => {
 			assert.ok(limit > constraint);
 			assert.throws(() => world.addConstraint({ type: 'weld', bodyA: sphere, bodyB: sphere }), /two different bodies/);
 			assert.throws(() => world.addConstraint({ type: 'spring', bodyA: cube, bodyB: sphere }), /unknown constraint type/);
+		} finally {
+			world.destroy();
+		}
+	});
+
+	it('simulates a dynamic body with a closed mesh shape (mass properties integrated from the mesh, like Bepu)', () => {
+		const world = native.createPhysicsWorld(8);
+		try {
+			world.addBody({ motion: 'static', shapes: [{ type: 'box', size: [20, 1, 20] }], position: [0, -0.5, 0] });
+			// 单位立方体的 12 个三角形（朝外）
+			const corners = [0, 1, 2, 3, 4, 5, 6, 7].flatMap((i) => [i & 1 ? 0.5 : -0.5, i & 2 ? 0.5 : -0.5, i & 4 ? 0.5 : -0.5]);
+			const faces = [0, 2, 3, 0, 3, 1, 4, 5, 7, 4, 7, 6, 0, 1, 5, 0, 5, 4, 2, 6, 7, 2, 7, 3, 0, 4, 6, 0, 6, 2, 1, 3, 7, 1, 7, 5];
+			const mesh = world.createMesh(new Float32Array(corners), new Uint32Array(faces));
+			const cube = world.addBody({ motion: 'dynamic', shapes: [{ type: 'mesh', mesh, mass: 1 }], position: [0, 3, 0], neverSleep: true });
+			for (let i = 0; i < 180; i++) world.step(1 / 60);
+			assert.ok(Math.abs(world.positions()[cube * 3 + 1] - 0.5) < 0.05, `rests on the floor at ${world.positions()[cube * 3 + 1]}`);
+			// 绕 Y 的转动惯量 m/6：冲量 1 得到角速度 6
+			world.applyImpulse(cube, undefined, [0, 1, 0]);
+			const angular = [0, 0, 0];
+			world.velocity(cube, [0, 0, 0], angular);
+			assert.ok(Math.abs(angular[1] - 6) < 0.1, `angular velocity ${angular}`);
 		} finally {
 			world.destroy();
 		}

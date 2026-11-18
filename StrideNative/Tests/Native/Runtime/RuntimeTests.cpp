@@ -367,9 +367,10 @@ TEST_CASE("物理：网格碰撞体和带本地位姿的复合碰撞体")
 	Step(world, 120);
 	CHECK(sn_physics_positions(world)[4] == doctest::Approx(0.5f).epsilon(0.05));
 
-	// 网格只能用在静态和运动学物体上
-	sn_body dynamic_mesh = Body(SN_MOTION_DYNAMIC, 0, 5, 0, 0);
-	CHECK(sn_physics_add_bodies(world, &dynamic_mesh, 1, &ground, 1, nullptr, 0, nullptr) == SN_ERROR_INVALID_ARGUMENT);
+	// 动态物体上的网格只能单独用（复合形状里的网格只能是静态的）
+	sn_shape mesh_and_box[] = { ground, BoxShape(1, 1, 1) };
+	sn_body dynamic_mesh = Body(SN_MOTION_DYNAMIC, 0, 5, 0, 0, 2);
+	CHECK(sn_physics_add_bodies(world, &dynamic_mesh, 1, mesh_and_box, 2, nullptr, 0, nullptr) == SN_ERROR_INVALID_ARGUMENT);
 
 	// 复合：两个盒子在本地 x = ±3，物体绕 Y 转 90°，本地 +x 转到世界 -z
 	sn_shape parts[] = { BoxShape(1, 1, 1), BoxShape(1, 1, 1) };

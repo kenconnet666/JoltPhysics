@@ -239,7 +239,7 @@ export type ShapeDesc = (
 	/** 沿本地 Y；length 是两端球心的距离（Stride 的 CapsuleCollider.Length）。 */
 	| { type: 'capsule'; radius: number; length: number }
 	| { type: 'cylinder'; radius: number; length: number }
-	/** 按实体的世界缩放缩放（Stride 的 MeshCollider）；只能用在静态和运动学物体上。 */
+	/** 按实体的世界缩放缩放（Stride 的 MeshCollider）。动态物体上只能单独用，质量属性按封闭网格算（同 Bepu；不封闭时按包围盒）。 */
 	| { type: 'mesh'; mesh: PhysicsMesh }
 	/** 按实体的世界缩放缩放（Stride 的 ConvexHullCollider）。 */
 	| { type: 'convexHull'; hull: PhysicsHull }

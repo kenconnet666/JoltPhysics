@@ -19,6 +19,7 @@
 #include <Jolt/Physics/Collision/ShapeCast.h>
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
 #include <Jolt/Physics/Collision/Shape/EmptyShape.h>
+#include <Jolt/Physics/Collision/Shape/OffsetCenterOfMassShape.h>
 #include <Jolt/Physics/Constraints/DistanceConstraint.h>
 #include <Jolt/Physics/Constraints/FixedConstraint.h>
 #include <Jolt/Physics/Constraints/GearConstraint.h>
@@ -230,6 +231,14 @@ namespace
 		}
 	};
 
+	/// 封闭网格按密度 1 的体积积分，见 IntegrateMesh
+	struct MeshVolume
+	{
+		float	mVolume = 0.0f;
+		Vec3	mFirst = Vec3::sZero();
+		float	mSecond[6] = {};
+	};
+
 	struct World
 	{
 		BroadPhaseLayers				mBroadPhaseLayers;
@@ -240,6 +249,7 @@ namespace
 		std::vector<BodyRecord>			mBodies;			///< 按编号（加入顺序）
 		std::vector<CharacterRecord>	mCharacters;
 		std::vector<RefConst<Shape>>	mMeshes;			///< 网格和凸包，句柄是下标加 1
+		std::vector<MeshVolume>			mMeshVolumes;		///< 和 mMeshes 对应；凸包的是空的（Jolt 自己算质量）
 		int32_t							mTransforms = 0;	///< 绑定用的变换存储句柄，0 表示没有
 		std::vector<float>				mPositions;			///< 每个物体的 xyz；只分配一次，调用方可以一直拿着视图
 		ContactCollector				mContacts;
@@ -336,6 +346,75 @@ namespace
 	{
 		Quat q(inValues[0], inValues[1], inValues[2], inValues[3]);
 		return q.IsNormalized() ? q : q.Normalized();
+	}
+
+	/// 封闭网格按密度 1 的体积积分（Bepu 的 ComputeClosedInertia 同样的做法）：体积、一阶矩 ∫r dV、二阶矩 ∫r rᵀ dV
+	/// （xx、yy、zz、xy、xz、yz）。动态的网格刚体用它算质心和转动惯量
+	MeshVolume IntegrateMesh(const VertexList &inVertices, const IndexedTriangleList &inTriangles)
+	{
+		MeshVolume m;
+		for (const IndexedTriangle &t : inTriangles)
+		{
+			// 原点和三角形组成的四面体
+			Vec3 a(inVertices[t.mIdx[0]]), b(inVertices[t.mIdx[1]]), c(inVertices[t.mIdx[2]]);
+			float v = a.Dot(b.Cross(c)) / 6.0f;
+			Vec3 s = a + b + c;
+			m.mVolume += v;
+			m.mFirst += v * s / 4.0f;
+			auto second = [&](int i, int j) { return v / 20.0f * (a[i] * a[j] + b[i] * b[j] + c[i] * c[j] + s[i] * s[j]); };
+			m.mSecond[0] += second(0, 0);
+			m.mSecond[1] += second(1, 1);
+			m.mSecond[2] += second(2, 2);
+			m.mSecond[3] += second(0, 1);
+			m.mSecond[4] += second(0, 2);
+			m.mSecond[5] += second(1, 2);
+		}
+		// 三角形朝里时体积是负的：整体取反
+		if (m.mVolume < 0.0f)
+		{
+			m.mVolume = -m.mVolume;
+			m.mFirst = -m.mFirst;
+			for (float &value : m.mSecond)
+				value = -value;
+		}
+		return m;
+	}
+
+	/// 动态的网格刚体的质量属性：网格按 inScale 缩放、总质量 inMass；质心写进 outCenterOfMass。网格不封闭（体积接近 0）时
+	/// 按包围盒的实心盒子算
+	MassProperties MeshMassProperties(const MeshVolume &inVolume, const Shape &inMesh, Vec3Arg inScale, float inMass, Vec3 &outCenterOfMass)
+	{
+		MassProperties properties;
+		float scale_volume = abs(inScale.GetX() * inScale.GetY() * inScale.GetZ());
+		float volume = inVolume.mVolume * scale_volume;
+		if (volume < 1.0e-6f)
+		{
+			AABox bounds = inMesh.GetLocalBounds().Scaled(inScale);
+			outCenterOfMass = bounds.GetCenter();
+			properties.SetMassAndInertiaOfSolidBox(Vec3::sMax(bounds.GetSize(), Vec3::sReplicate(1.0e-3f)), inMass);
+			return properties;
+		}
+		// 缩放 S 之后：一阶矩 det(S)·S·f，二阶矩 det(S)·S·C·S；再按总质量换算密度
+		float density = inMass / volume;
+		Vec3 first = inVolume.mFirst * inScale * scale_volume;
+		outCenterOfMass = first / volume;
+		const float *c = inVolume.mSecond;
+		float sx = inScale.GetX(), sy = inScale.GetY(), sz = inScale.GetZ();
+		float xx = c[0] * sx * sx, yy = c[1] * sy * sy, zz = c[2] * sz * sz;
+		float xy = c[3] * sx * sy, xz = c[4] * sx * sz, yz = c[5] * sy * sz;
+		// 关于原点的惯量 tr(C)·I - C，乘密度，再移到质心（平行轴定理）
+		Mat44 inertia = Mat44::sZero();
+		float k = density * scale_volume;
+		inertia.SetColumn4(0, Vec4(k * (yy + zz), -k * xy, -k * xz, 0));
+		inertia.SetColumn4(1, Vec4(-k * xy, k * (xx + zz), -k * yz, 0));
+		inertia.SetColumn4(2, Vec4(-k * xz, -k * yz, k * (xx + yy), 0));
+		inertia.SetColumn4(3, Vec4(0, 0, 0, 1));
+		Vec3 d = outCenterOfMass;
+		Mat44 shift = Mat44::sScale(inMass * d.LengthSq()) - Mat44::sOuterProduct(inMass * d, d);
+		properties.mMass = inMass;
+		properties.mInertia = inertia - shift;
+		properties.mInertia.SetColumn4(3, Vec4(0, 0, 0, 1));
+		return properties;
 	}
 
 	/// 盒子和圆柱的倒角半径不能超过最短的半边长
@@ -650,11 +729,13 @@ SN_API int32_t sn_physics_create_mesh(int32_t world, const float *positions, uin
 			return SetLastError(SN_ERROR_INVALID_ARGUMENT, "mesh index " + std::to_string(i) + " is out of range");
 		triangles[i / 3] = IndexedTriangle(indices[i], indices[i + 1], indices[i + 2]);
 	}
+	MeshVolume volume = IntegrateMesh(vertices, triangles);
 	MeshShapeSettings settings(std::move(vertices), std::move(triangles));
 	ShapeSettings::ShapeResult result = settings.Create();
 	if (result.HasError())
 		return SetLastError(SN_ERROR_FAILED, std::string("mesh shape: ") + result.GetError().c_str());
 	w->mMeshes.push_back(result.Get());
+	w->mMeshVolumes.push_back(volume);
 	return int32_t(w->mMeshes.size());
 }
 
@@ -673,6 +754,7 @@ SN_API int32_t sn_physics_create_hull(int32_t world, const float *positions, uin
 	if (result.HasError())
 		return SetLastError(SN_ERROR_FAILED, std::string("convex hull shape: ") + result.GetError().c_str());
 	w->mMeshes.push_back(result.Get());
+	w->mMeshVolumes.emplace_back();
 	return int32_t(w->mMeshes.size());
 }
 
@@ -693,6 +775,7 @@ SN_API int32_t sn_physics_add_bodies(int32_t world, const sn_body *bodies, uint3
 	TransformStore *store = nullptr;
 	std::vector<RefConst<Shape>> body_shapes(count);
 	std::vector<RMat44> poses(count);
+	std::vector<Vec3> mesh_scales(count, Vec3::sOne());
 	for (uint32_t i = 0; i < count; ++i)
 	{
 		const sn_body &body = bodies[i];
@@ -725,10 +808,11 @@ SN_API int32_t sn_physics_add_bodies(int32_t world, const sn_body *bodies, uint3
 		}
 		const sn_shape *own = shapes + body.first_shape;
 		for (uint32_t s = 0; s < body.shape_count; ++s)
-			if (own[s].type == SN_SHAPE_MESH && Moves(body.motion))
-				return SetLastError(SN_ERROR_INVALID_ARGUMENT, where + "mesh shapes are only allowed on static and kinematic bodies");
+			if (own[s].type == SN_SHAPE_MESH && Moves(body.motion) && (body.shape_count != 1 || body.motion == SN_MOTION_CHARACTER))
+				return SetLastError(SN_ERROR_INVALID_ARGUMENT, where + "a moving body with a mesh shape must have only that shape (and cannot be a character)");
 		std::string error;
 		body_shapes[i] = MakeBodyShape(*w, own, body.shape_count, scale, error);
+		mesh_scales[i] = scale;
 		if (body_shapes[i] == nullptr)
 			return SetLastError(SN_ERROR_INVALID_ARGUMENT, where + error);
 		poses[i] = pose;
@@ -806,12 +890,23 @@ SN_API int32_t sn_physics_add_bodies(int32_t world, const sn_body *bodies, uint3
 			settings.mGravityFactor = (body.flags & SN_BODY_NO_GRAVITY) != 0 ? 0.0f : 1.0f;
 			settings.mAllowSleeping = (body.flags & SN_BODY_NEVER_SLEEP) == 0;
 			settings.mIsSensor = (body.flags & SN_BODY_SENSOR) != 0;
-			// BodyComponent 能在动态和运动学之间切换；质量照动态的算，切过去时用得上。带网格形状的（只能是运动学）没有质量，不能切
+			// BodyComponent 能在动态和运动学之间切换；质量照动态的算，切过去时用得上。只有一个网格形状的按封闭网格算质量
+			// （Bepu 的动态网格，Stride 的 MeshCollider），质心挪到网格的质心；复合形状里有网格的只能是静态
+			const sn_shape &first_shape = shapes[body.first_shape];
+			bool single_mesh = body.shape_count == 1 && first_shape.type == SN_SHAPE_MESH;
 			bool has_mesh = false;
 			for (uint32_t s = 0; s < body.shape_count; ++s)
 				has_mesh |= shapes[body.first_shape + s].type == SN_SHAPE_MESH;
-			settings.mAllowDynamicOrKinematic = motion != EMotionType::Static && !has_mesh;
-			if (settings.mAllowDynamicOrKinematic && body.shape_count == 1 && shapes[body.first_shape].type == SN_SHAPE_EMPTY)
+			settings.mAllowDynamicOrKinematic = motion != EMotionType::Static && (!has_mesh || single_mesh);
+			if (settings.mAllowDynamicOrKinematic && single_mesh)
+			{
+				Vec3 center_of_mass;
+				const RefConst<Shape> &mesh = w->mMeshes[first_shape.mesh - 1];
+				settings.mOverrideMassProperties = EOverrideMassProperties::MassAndInertiaProvided;
+				settings.mMassPropertiesOverride = MeshMassProperties(w->mMeshVolumes[first_shape.mesh - 1], *mesh, mesh_scales[i], mass_of(body), center_of_mass);
+				settings.SetShape(new OffsetCenterOfMassShape(body_shapes[i], center_of_mass));
+			}
+			else if (settings.mAllowDynamicOrKinematic && body.shape_count == 1 && shapes[body.first_shape].type == SN_SHAPE_EMPTY)
 			{
 				// Bepu 的 EmptyCollider：转动惯量是质量为 m、半径 1 的实心球
 				float mass = mass_of(body);

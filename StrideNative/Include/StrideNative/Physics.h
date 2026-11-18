@@ -35,7 +35,7 @@ enum
 	SN_SHAPE_SPHERE = 1,			///< size[0]：半径
 	SN_SHAPE_CAPSULE = 2,			///< size[0]：半径，size[1]：两端球心的距离（CapsuleCollider.Length），沿本地 Y
 	SN_SHAPE_CYLINDER = 3,			///< size[0]：半径，size[1]：长度，沿本地 Y
-	SN_SHAPE_MESH = 4,				///< mesh：sn_physics_create_mesh 的结果；按实体的世界缩放缩放（Stride 的 MeshCollider）
+	SN_SHAPE_MESH = 4,				///< mesh：sn_physics_create_mesh 的结果；按实体的世界缩放缩放（Stride 的 MeshCollider）；动态物体上只能单独用，质量属性按封闭网格积分
 	SN_SHAPE_CONVEX_HULL = 5,		///< mesh：sn_physics_create_hull 的结果；同网格按实体的世界缩放缩放（Stride 的 ConvexHullCollider）
 	SN_SHAPE_EMPTY = 6,				///< 没有形状、不碰撞（Stride 的 EmptyCollider）；只能单独用，动态时转动惯量同 Bepu 的半径 1 的球
 };
