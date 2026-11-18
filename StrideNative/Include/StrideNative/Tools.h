@@ -85,6 +85,10 @@ enum
 	ST_BASIS_FLAG_MIPMAPS = 2,
 };
 
+/// Decodes a PNG, JPEG or TGA file into RGBA8. data must stay alive until the task finishes.
+/// Result [0]: width, [1]: height, [2]: channels in the file. Output [0]: the pixels, rows top-down.
+SN_API int32_t st_image_decode(const void *data, uint32_t size);
+
 /// Encodes an RGBA8 image into a KTX2 file. rgba must stay alive until the task finishes.
 /// quality 0-100, effort 0-10. Output [0]: the .ktx2 file.
 SN_API int32_t st_basis_encode(const uint8_t *rgba, uint32_t width, uint32_t height, int32_t mode, int32_t flags, int32_t quality, int32_t effort);

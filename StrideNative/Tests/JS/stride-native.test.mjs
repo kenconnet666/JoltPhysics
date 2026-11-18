@@ -5,6 +5,7 @@ import { readFile } from 'node:fs/promises';
 import { after, before, describe, it } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
+import { crc32, deflateSync } from 'node:zlib';
 
 const dist = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'JS', 'dist');
 const { createStrideNative, NativeError } = await import(pathToFileURL(path.join(dist, 'stride-native.js')));
@@ -25,6 +26,26 @@ function ground(size, cells) {
 			triangles.push(i, i + cells + 1, i + 1, i + 1, i + cells + 1, i + cells + 2);
 		}
 	return { vertices: new Float32Array(vertices), triangles: new Int32Array(triangles) };
+}
+
+/** 最小的 PNG 编码器（RGBA8，每行滤波类型 None），测试解码用。 */
+function encodePng(width, height, rgba) {
+	const raw = Buffer.alloc((width * 4 + 1) * height);
+	for (let y = 0; y < height; ++y) Buffer.from(rgba.buffer, y * width * 4, width * 4).copy(raw, y * (width * 4 + 1) + 1);
+	const chunk = (type, data) => {
+		const b = Buffer.alloc(12 + data.length);
+		b.writeUInt32BE(data.length, 0);
+		b.write(type, 4);
+		data.copy(b, 8);
+		b.writeUInt32BE(crc32(b.subarray(4, 8 + data.length)), 8 + data.length);
+		return b;
+	};
+	const header = Buffer.alloc(13);
+	header.writeUInt32BE(width, 0);
+	header.writeUInt32BE(height, 4);
+	header[8] = 8; // 每通道 8 位
+	header[9] = 6; // RGBA
+	return new Uint8Array(Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', header), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]));
 }
 
 describe('stride-native and stride-tools', () => {
@@ -151,12 +172,16 @@ describe('stride-native and stride-tools', () => {
 		assert.deepEqual(triangles(new Uint32Array(decodedIndices.buffer)), triangles(indices));
 	});
 
-	it('encodes KTX2 (tools) and transcodes every mip level in parallel (runtime)', async () => {
+	it('decodes PNG and encodes KTX2 (tools), then transcodes every mip level in parallel (runtime)', async () => {
 		const size = 128;
 		const rgba = new Uint8Array(size * size * 4);
 		for (let i = 0; i < size * size; ++i)
 			rgba.set([(i % size) * 2, Math.floor(i / size) * 2, 100, 255], i * 4);
-		const ktx2 = await tools.encodeBasis(rgba, size, size, { mode: 'uastc', mipmaps: true });
+		const decoded = await tools.decodeImage(encodePng(size, size, rgba));
+		assert.deepEqual([decoded.width, decoded.height, decoded.channels], [size, size, 4]);
+		assert.deepEqual(decoded.pixels, rgba);
+		await assert.rejects(tools.decodeImage(new Uint8Array(8)), /image decode failed/);
+		const ktx2 = await tools.encodeBasis(decoded.pixels, size, size, { mode: 'uastc', mipmaps: true });
 		const info = native.ktx2Info(ktx2);
 		assert.equal(info.width, size);
 		assert.equal(info.levels, 8);

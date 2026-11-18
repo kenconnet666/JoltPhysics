@@ -46,6 +46,15 @@ export interface ConvexOptions {
 	maxVerticesPerHull?: number;
 }
 
+export interface DecodedImage {
+	width: number;
+	height: number;
+	/** 文件里的通道数（1 到 4）；pixels 总是 RGBA8。 */
+	channels: number;
+	/** RGBA8，行从上到下。 */
+	pixels: Uint8Array;
+}
+
 export interface BasisOptions {
 	/** 默认 'uastc'。 */
 	mode?: BasisMode;
@@ -175,6 +184,17 @@ export class StrideTools extends NativeModule<ToolsExport> {
 				}
 				return hulls;
 			}));
+	}
+
+	/** 解码 PNG、JPEG、TGA，得到 RGBA8 像素。 */
+	decodeImage(bytes: Uint8Array): Promise<DecodedImage> {
+		return this.withArraysAsync([bytes], (data) =>
+			this.awaitTask(this.module._st_image_decode(data, bytes.byteLength), 'st_image_decode', (task) => ({
+				width: task.result(0),
+				height: task.result(1),
+				channels: task.result(2),
+				pixels: task.output(Uint8Array, 0),
+			})));
 	}
 
 	/** 把 RGBA8 像素编码成 KTX2 文件。 */
