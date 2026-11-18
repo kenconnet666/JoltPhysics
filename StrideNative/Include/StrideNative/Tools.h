@@ -6,8 +6,9 @@
 #include <StrideNative/Runtime.h>
 
 // ---------------------------------------------------------------------------------------------
-// Scene import (glTF/GLB via cgltf, FBX via ufbx). Meshes are triangulated, indexed, in the
-// mesh's own space, right-handed Y-up, meters.
+// Scene import (glTF/GLB via cgltf, FBX via ufbx). Meshes are triangulated and indexed, one per
+// node instance and material (like Stride's model import), with the node's world transform baked in:
+// model space, right-handed Y-up, meters.
 // ---------------------------------------------------------------------------------------------
 
 enum
@@ -17,19 +18,27 @@ enum
 	ST_FORMAT_FBX = 2,
 };
 
+enum
+{
+	ST_NO_MATERIAL = 0xffffffffu,	///< st_mesh_info.material of a mesh without a material
+};
+
 typedef struct st_mesh_info
 {
 	uint32_t vertex_count;
 	uint32_t index_count;
 	int32_t has_normals;
 	int32_t has_uvs;
+	uint32_t material;				///< index into the scene's materials, or ST_NO_MATERIAL
 } st_mesh_info;
 
 /// Parses a scene. data must stay alive until the task finishes. Result [0]: scene handle,
-/// [1]: mesh count.
+/// [1]: mesh count, [2]: material count.
 SN_API int32_t st_scene_load(const void *data, uint32_t size, int32_t format);
 SN_API void st_scene_destroy(int32_t scene);
 SN_API int32_t st_scene_mesh_info(int32_t scene, uint32_t mesh, st_mesh_info *out_info);
+/// Name of a material (UTF-8), valid until the scene is destroyed; null for a bad index.
+SN_API const char *st_scene_material_name(int32_t scene, uint32_t material);
 /// Copies a mesh; any output may be null. positions/normals xyz, uvs xy, indices uint32.
 SN_API int32_t st_scene_mesh_copy(int32_t scene, uint32_t mesh, float *positions, float *normals, float *uvs, uint32_t *indices);
 

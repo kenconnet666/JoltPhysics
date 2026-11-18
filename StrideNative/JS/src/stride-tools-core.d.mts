@@ -2,7 +2,7 @@
 import type { CoreFactory } from './native-module.js';
 
 export type ToolsExport =
-	| 'st_scene_load' | 'st_scene_mesh_info' | 'st_scene_mesh_copy' | 'st_scene_destroy' | 'st_generate_tangents'
+	| 'st_scene_load' | 'st_scene_mesh_info' | 'st_scene_material_name' | 'st_scene_mesh_copy' | 'st_scene_destroy' | 'st_generate_tangents'
 	| 'st_meshopt_optimize' | 'st_meshopt_simplify' | 'st_meshopt_encode_vertex_bound' | 'st_meshopt_encode_vertices'
 	| 'st_meshopt_encode_index_bound' | 'st_meshopt_encode_indices' | 'st_uv_unwrap' | 'st_convex_decompose'
 	| 'st_basis_encode' | 'st_font_msdf' | 'st_anim_build_skeleton' | 'st_anim_build_animation'

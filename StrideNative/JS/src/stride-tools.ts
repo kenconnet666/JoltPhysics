@@ -11,13 +11,18 @@ export type SceneFormat = 'auto' | 'gltf' | 'fbx';
 export type BasisMode = 'uastc' | 'etc1s';
 
 const SCENE_FORMATS: Record<SceneFormat, number> = { auto: 0, gltf: 1, fbx: 2 };
+/** ST_NO_MATERIAL */
+const NO_MATERIAL = 0xffffffff;
 const BASIS_MODES: Record<BasisMode, number> = { uastc: 0, etc1s: 1 };
 
 export interface MeshData {
+	/** 模型空间（节点的世界变换已经烘焙进去），每个顶点 xyz。 */
 	positions: Float32Array;
 	normals: Float32Array | null;
 	uvs: Float32Array | null;
 	indices: Uint32Array;
+	/** 在 Scene.materials 里的下标；没有材质时是 null。 */
+	material: number | null;
 }
 
 export interface UvUnwrap {
@@ -85,12 +90,15 @@ export async function createStrideTools(options: ModuleOptions = {}): Promise<St
 }
 
 export class StrideTools extends NativeModule<ToolsExport> {
-	/** 导入 glTF/GLB（内嵌缓冲）或 FBX（转换成右手、Y 向上、米）。 */
+	/**
+	 * 导入 glTF/GLB（内嵌缓冲）或 FBX（转换成右手、Y 向上、米）。和 Stride 的模型导入一样，每个节点实例上的网格
+	 * 按材质拆开，节点的世界变换烘焙进顶点。
+	 */
 	loadScene(bytes: Uint8Array, format: SceneFormat = 'auto'): Promise<Scene> {
 		const code = enumCode(SCENE_FORMATS, format, 'format');
 		return this.withArraysAsync([bytes], (data) =>
 			this.awaitTask(this.module._st_scene_load(data, bytes.byteLength, code), 'st_scene_load',
-				(task) => new Scene(this, task.result(0), task.result(1))));
+				(task) => new Scene(this, task.result(0), task.result(1), task.result(2))));
 	}
 
 	/** MikkTSpace 切线：每个索引（角）一个 xyzw。 */
@@ -237,19 +245,23 @@ export class StrideTools extends NativeModule<ToolsExport> {
 
 export class Scene extends NativeObject<StrideTools> {
 	readonly meshCount: number;
+	/** 材质名，MeshData.material 是这里的下标。 */
+	readonly materials: readonly string[];
 
 	/** @internal */
-	constructor(tools: StrideTools, handle: number, meshCount: number) {
+	constructor(tools: StrideTools, handle: number, meshCount: number, materialCount: number) {
 		super(tools, handle);
 		this.meshCount = meshCount;
+		this.materials = Array.from({ length: materialCount }, (_, i) => tools.module.UTF8ToString(tools.module._st_scene_material_name(handle, i)));
 	}
 
 	mesh(index: number): MeshData {
 		const t = this.native;
-		return t.withScratch(16, (infoPtr) => {
+		return t.withScratch(20, (infoPtr) => {
 			t.check(t.module._st_scene_mesh_info(this[HANDLE], index, infoPtr), 'st_scene_mesh_info');
-			const info = t.u32(infoPtr, 4);
+			const info = t.u32(infoPtr, 5);
 			const vertexCount = info[0]!, indexCount = info[1]!, hasNormals = !!info[2], hasUvs = !!info[3];
+			const material = info[4] === NO_MATERIAL ? null : info[4]!;
 			const positions = t.alloc(vertexCount * 12);
 			const normals = hasNormals ? t.alloc(vertexCount * 12) : 0;
 			const uvs = hasUvs ? t.alloc(vertexCount * 8) : 0;
@@ -261,6 +273,7 @@ export class Scene extends NativeObject<StrideTools> {
 					normals: hasNormals ? t.copyOut(Float32Array, normals, vertexCount * 3) : null,
 					uvs: hasUvs ? t.copyOut(Float32Array, uvs, vertexCount * 2) : null,
 					indices: t.copyOut(Uint32Array, indices, indexCount),
+					material,
 				};
 			} finally {
 				for (const ptr of [positions, normals, uvs, indices]) if (ptr) t.free(ptr);

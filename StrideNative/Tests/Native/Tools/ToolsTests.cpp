@@ -87,6 +87,44 @@ TEST_CASE("FBX and glTF scenes import as indexed meshes")
 	std::vector<float> positions(9);
 	REQUIRE(st_scene_mesh_copy(scene, 0, positions.data(), nullptr, nullptr, nullptr) == SN_OK);
 	CHECK(positions[3] == 1.0f);
+	CHECK(info.material == ST_NO_MATERIAL);
+	st_scene_destroy(scene);
+}
+
+TEST_CASE("场景导入：每个节点实例一个网格，节点变换烘焙进顶点，镜像时翻转绕序，记下材质")
+{
+	ModuleScope module;
+	// 同一个三角形网格挂在两个节点上：一个平移 (10, 0, 0)，一个沿 X 镜像；三角形用材质 Grid
+	const std::string gltf = R"({"asset":{"version":"2.0"},
+		"buffers":[{"byteLength":36,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}],
+		"bufferViews":[{"buffer":0,"byteLength":36}],
+		"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]}],
+		"materials":[{"name":"Grid"}],
+		"meshes":[{"primitives":[{"attributes":{"POSITION":0},"material":0}]}],
+		"nodes":[{"mesh":0,"translation":[10,0,0]},{"mesh":0,"scale":[-1,1,1]}],
+		"scenes":[{"nodes":[0,1]}]})";
+	int32_t task = st_scene_load(gltf.data(), uint32_t(gltf.size()), ST_FORMAT_GLTF);
+	REQUIRE(WaitForTask(task) == SN_TASK_DONE);
+	int32_t scene = sn_task_result(task, 0);
+	CHECK(sn_task_result(task, 1) == 2);
+	CHECK(sn_task_result(task, 2) == 1);
+	sn_task_release(task);
+	CHECK(std::string(st_scene_material_name(scene, 0)) == "Grid");
+	CHECK(st_scene_material_name(scene, 1) == nullptr);
+
+	st_mesh_info info;
+	std::vector<float> positions(9);
+	std::vector<uint32_t> indices(3);
+	REQUIRE(st_scene_mesh_info(scene, 0, &info) == SN_OK);
+	CHECK(info.material == 0);
+	REQUIRE(st_scene_mesh_copy(scene, 0, positions.data(), nullptr, nullptr, indices.data()) == SN_OK);
+	CHECK(positions[0] == 10.0f);	// 第一个顶点 (0, 0, 0) 平移到 (10, 0, 0)
+	CHECK(positions[3] == 11.0f);
+	CHECK((indices[0] == 0 && indices[1] == 1 && indices[2] == 2));
+
+	REQUIRE(st_scene_mesh_copy(scene, 1, positions.data(), nullptr, nullptr, indices.data()) == SN_OK);
+	CHECK(positions[3] == -1.0f);	// (1, 0, 0) 镜像到 (-1, 0, 0)
+	CHECK((indices[0] == 0 && indices[1] == 2 && indices[2] == 1));	// 绕序翻转，正面仍朝外
 	st_scene_destroy(scene);
 }
 
