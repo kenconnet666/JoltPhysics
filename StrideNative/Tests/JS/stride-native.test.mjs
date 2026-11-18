@@ -47,14 +47,18 @@ describe('stride-native and stride-tools', () => {
 
 	it('steps physics on the shared job system', () => {
 		const world = native.createPhysicsWorld(64);
-		world.addBox([0, -1, 0], [50, 1, 50], false);
-		for (let i = 0; i < 20; ++i)
-			world.addBox([(i % 5) * 2, 2 + Math.floor(i / 5) * 2, 0], [0.5, 0.5, 0.5], true);
+		assert.equal(world.addBox({ position: [0, -1, 0], halfExtent: [50, 1, 50], motion: 'static' }), 0);
+		const boxes = Array.from({ length: 20 }, (_, i) => ({ position: [(i % 5) * 2, 2 + Math.floor(i / 5) * 2, 0], halfExtent: [0.5, 0.5, 0.5] }));
+		assert.equal(world.addBoxes(boxes), 1);
+		const positions = world.positions();
+		assert.equal(positions.length, 21 * 3);
+		assert.equal(positions[1 * 3 + 1], 2, 'positions are written when bodies are added');
 		for (let i = 0; i < 240; ++i)
 			world.step(1 / 60);
-		const positions = world.positions();
+		assert.equal(world.positions(), positions, 'the view is reused, step() rewrites it in place');
 		for (let body = 1; body <= 20; ++body)
 			assert.ok(positions[body * 3 + 1] > 0.3 && positions[body * 3 + 1] < 8, `body ${body} rests on the floor or stack`);
+		assert.throws(() => world.addBox({ position: [0, 0, 0], halfExtent: [1, 1, 1], motion: 'kinematic' }), /motion/);
 		world.destroy();
 	});
 
@@ -118,11 +122,13 @@ describe('stride-native and stride-tools', () => {
 		assert.deepEqual(built.serialize().length, baked.length);
 
 		const crowd = navMesh.createCrowd(16, 0.6);
+		const positions = crowd.positions();
 		const agents = [-10, 0, 10].map((z) => crowd.addAgent([-20, 0, z]));
 		agents.forEach((agent, i) => crowd.requestMove(agent, [20, 0, (i - 1) * 10]));
 		for (let i = 0; i < 450; ++i)
 			crowd.update(1 / 30);
-		const positions = crowd.positions();
+		assert.equal(crowd.positions(), positions, 'the view is reused, update() rewrites it in place');
+		assert.ok(Number.isNaN(positions[15 * 3]), 'empty slots are NaN');
 		agents.forEach((agent) => assert.ok(Math.abs(positions[agent * 3] - 20) < 1, `agent ${agent} reached the target`));
 		crowd.destroy();
 		navMesh.destroy();

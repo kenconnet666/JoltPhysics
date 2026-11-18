@@ -10,11 +10,12 @@
 #include <DetourNavMesh.h>
 #include <DetourNavMeshQuery.h>
 
-#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <string>
+#include <vector>
 
 namespace
 {
@@ -38,10 +39,18 @@ namespace
 
 	struct Crowd
 	{
-		dtCrowd *	mCrowd = nullptr;
-		int32_t		mNavMesh = 0;					///< The navmesh must outlive the crowd
+		dtCrowd *			mCrowd = nullptr;
+		int32_t				mNavMesh = 0;			///< The navmesh must outlive the crowd
+		std::vector<float>	mPositions;				///< xyz per agent slot, NaN when empty; sized once so callers can keep a view
 
 		~Crowd() { dtFreeCrowd(mCrowd); }
+
+		void WritePosition(int inAgent)
+		{
+			const dtCrowdAgent *agent = mCrowd->getAgent(inAgent);
+			for (int axis = 0; axis < 3; ++axis)
+				mPositions[inAgent * 3 + axis] = agent->active ? agent->npos[axis] : std::numeric_limits<float>::quiet_NaN();
+		}
 	};
 
 	int32_t AddNavMesh(dtNavMesh *inNavMesh, std::string &outError)
@@ -166,6 +175,7 @@ SN_API int32_t sn_crowd_create(int32_t navmesh, uint32_t max_agents, float max_a
 	crowd->mCrowd = dtAllocCrowd();
 	if (crowd->mCrowd == nullptr || !crowd->mCrowd->init(int(max_agents), max_agent_radius, nav->mNavMesh))
 		return SetLastError(SN_ERROR_FAILED, "dtCrowd::init failed");
+	crowd->mPositions.assign(size_t(max_agents) * 3, std::numeric_limits<float>::quiet_NaN());
 	return GetTable<Crowd>().Add(std::move(crowd));
 }
 
@@ -190,13 +200,19 @@ SN_API int32_t sn_crowd_add_agent(int32_t crowd, const float *position3, float r
 	params.updateFlags = DT_CROWD_ANTICIPATE_TURNS | DT_CROWD_OPTIMIZE_VIS | DT_CROWD_OPTIMIZE_TOPO | DT_CROWD_OBSTACLE_AVOIDANCE | DT_CROWD_SEPARATION;
 	params.separationWeight = 2.0f;
 	int agent = c->mCrowd->addAgent(position3, &params);
-	return agent >= 0 ? agent : SetLastError(SN_ERROR_FAILED, "crowd is full or position is off the navmesh");
+	if (agent < 0)
+		return SetLastError(SN_ERROR_FAILED, "crowd is full or position is off the navmesh");
+	c->WritePosition(agent);
+	return agent;
 }
 
 SN_API void sn_crowd_remove_agent(int32_t crowd, int32_t agent)
 {
-	if (Crowd *c = Lookup<Crowd>(crowd, "crowd"))
-		c->mCrowd->removeAgent(agent);
+	Crowd *c = Lookup<Crowd>(crowd, "crowd");
+	if (c == nullptr || agent < 0 || agent >= c->mCrowd->getAgentCount())
+		return;
+	c->mCrowd->removeAgent(agent);
+	c->WritePosition(agent);
 }
 
 SN_API int32_t sn_crowd_request_move(int32_t crowd, int32_t agent, const float *target3)
@@ -218,22 +234,16 @@ SN_API int32_t sn_crowd_request_move(int32_t crowd, int32_t agent, const float *
 
 SN_API void sn_crowd_update(int32_t crowd, float delta_time)
 {
-	if (Crowd *c = Lookup<Crowd>(crowd, "crowd"))
-		c->mCrowd->update(delta_time, nullptr);
-}
-
-SN_API int32_t sn_crowd_get_positions(int32_t crowd, float *out_xyz, uint32_t max_agents)
-{
 	Crowd *c = Lookup<Crowd>(crowd, "crowd");
 	if (c == nullptr)
-		return SN_ERROR_INVALID_HANDLE;
+		return;
+	c->mCrowd->update(delta_time, nullptr);
+	for (int agent = 0; agent < c->mCrowd->getAgentCount(); ++agent)
+		c->WritePosition(agent);
+}
 
-	int count = std::min(int(max_agents), c->mCrowd->getAgentCount());
-	for (int i = 0; i < count; ++i)
-	{
-		const dtCrowdAgent *agent = c->mCrowd->getAgent(i);
-		for (int axis = 0; axis < 3; ++axis)
-			out_xyz[i * 3 + axis] = agent->active ? agent->npos[axis] : std::numeric_limits<float>::quiet_NaN();
-	}
-	return count;
+SN_API const float *sn_crowd_positions(int32_t crowd)
+{
+	Crowd *c = Lookup<Crowd>(crowd, "crowd");
+	return c != nullptr ? c->mPositions.data() : nullptr;
 }

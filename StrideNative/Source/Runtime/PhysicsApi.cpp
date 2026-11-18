@@ -7,7 +7,6 @@
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
 #include <Jolt/Physics/PhysicsSystem.h>
 
-#include <algorithm>
 #include <vector>
 
 namespace
@@ -55,12 +54,31 @@ namespace
 		ObjectVsBroadPhaseFilter		mObjectVsBroadPhase;
 		ObjectPairFilter				mObjectPairs;
 		PhysicsSystem					mSystem;
-		std::vector<BodyID>				mBodies;
+		std::vector<BodyID>				mBodies;			///< Creation order
+		std::vector<float>				mPositions;			///< xyz per body; sized once so callers can keep a view
 	};
 
 	World *GetWorld(int32_t inHandle)
 	{
 		return StrideNative::Lookup<World>(inHandle, "physics world");
+	}
+
+	size_t Capacity(const World &inWorld)
+	{
+		return inWorld.mPositions.size() / 3;
+	}
+
+	void WritePositions(World &ioWorld, size_t inFirst)
+	{
+		const BodyInterface &bodies = ioWorld.mSystem.GetBodyInterfaceNoLock();
+		for (size_t i = inFirst; i < ioWorld.mBodies.size(); ++i)
+		{
+			RVec3 position = bodies.GetCenterOfMassPosition(ioWorld.mBodies[i]);
+			float *out = &ioWorld.mPositions[i * 3];
+			out[0] = float(position.GetX());
+			out[1] = float(position.GetY());
+			out[2] = float(position.GetZ());
+		}
 	}
 }
 
@@ -78,38 +96,68 @@ SN_API int32_t sn_physics_create(uint32_t max_bodies)
 	auto world = std::make_unique<World>();
 	world->mSystem.Init(max_bodies, 0, max_bodies * cContactsPerBody, max_bodies * cContactsPerBody,
 		world->mBroadPhaseLayers, world->mObjectVsBroadPhase, world->mObjectPairs);
+	world->mBodies.reserve(max_bodies);
+	world->mPositions.resize(size_t(max_bodies) * 3);
 	return GetTable<World>().Add(std::move(world));
 }
 
 SN_API void sn_physics_destroy(int32_t world)
 {
 	std::unique_ptr<World> removed = GetTable<World>().Remove(world);
-	if (removed == nullptr)
+	if (removed == nullptr || removed->mBodies.empty())
 		return;
 	BodyInterface &bodies = removed->mSystem.GetBodyInterface();
-	for (BodyID id : removed->mBodies)
-	{
-		bodies.RemoveBody(id);
-		bodies.DestroyBody(id);
-	}
+	int count = int(removed->mBodies.size());
+	bodies.RemoveBodies(removed->mBodies.data(), count);
+	bodies.DestroyBodies(removed->mBodies.data(), count);
 }
 
-SN_API int32_t sn_physics_add_box(int32_t world, const float *position3, const float *half_extent3, int32_t dynamic)
+SN_API int32_t sn_physics_add_boxes(int32_t world, const sn_box *boxes, uint32_t count)
 {
 	World *w = GetWorld(world);
 	if (w == nullptr)
 		return SN_ERROR_INVALID_HANDLE;
-	if (position3 == nullptr || half_extent3 == nullptr)
-		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "position and half extent are required");
-
-	EMotionType motion = dynamic != 0 ? EMotionType::Dynamic : EMotionType::Static;
-	BodyCreationSettings settings(new BoxShape(Vec3(half_extent3[0], half_extent3[1], half_extent3[2])),
-		RVec3(position3[0], position3[1], position3[2]), Quat::sIdentity(), motion, dynamic != 0 ? Layers::cMoving : Layers::cStatic);
-	BodyID id = w->mSystem.GetBodyInterface().CreateAndAddBody(settings, dynamic != 0 ? EActivation::Activate : EActivation::DontActivate);
-	if (id.IsInvalid())
+	size_t first = w->mBodies.size();
+	if (count == 0)
+		return int32_t(first);
+	if (boxes == nullptr)
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "boxes are required");
+	if (first + count > Capacity(*w))
 		return SetLastError(SN_ERROR_FAILED, "body limit reached");
-	w->mBodies.push_back(id);
-	return int32_t(w->mBodies.size() - 1);
+
+	BodyInterface &bodies = w->mSystem.GetBodyInterface();
+	std::vector<BodyID> added;
+	added.reserve(count);
+	// Consecutive boxes of the same size share one shape, as Jolt recommends for identical bodies
+	RefConst<Shape> shape;
+	Vec3 shape_half_extent = Vec3::sZero();
+	for (uint32_t i = 0; i < count; ++i)
+	{
+		const sn_box &box = boxes[i];
+		Vec3 half_extent(box.half_extent[0], box.half_extent[1], box.half_extent[2]);
+		if (shape == nullptr || half_extent != shape_half_extent)
+		{
+			shape = new BoxShape(half_extent);
+			shape_half_extent = half_extent;
+		}
+		bool dynamic = (box.flags & SN_BODY_DYNAMIC) != 0;
+		BodyCreationSettings settings(shape, RVec3(box.position[0], box.position[1], box.position[2]), Quat::sIdentity(),
+			dynamic ? EMotionType::Dynamic : EMotionType::Static, dynamic ? Layers::cMoving : Layers::cStatic);
+		Body *body = bodies.CreateBody(settings);
+		if (body == nullptr)
+		{
+			bodies.DestroyBodies(added.data(), int(added.size()));
+			return SetLastError(SN_ERROR_FAILED, "body limit reached");
+		}
+		added.push_back(body->GetID());
+	}
+
+	// mBodies keeps creation order; AddBodiesPrepare reorders the array it is given
+	w->mBodies.insert(w->mBodies.end(), added.begin(), added.end());
+	BodyInterface::AddState state = bodies.AddBodiesPrepare(added.data(), int(count));
+	bodies.AddBodiesFinalize(added.data(), int(count), state, EActivation::Activate);
+	WritePositions(*w, first);
+	return int32_t(first);
 }
 
 SN_API int32_t sn_physics_step(int32_t world, float delta_time, int32_t collision_steps)
@@ -118,6 +166,7 @@ SN_API int32_t sn_physics_step(int32_t world, float delta_time, int32_t collisio
 	if (w == nullptr)
 		return SN_ERROR_INVALID_HANDLE;
 	EPhysicsUpdateError errors = w->mSystem.Update(delta_time, collision_steps > 0 ? collision_steps : 1, &GetTempAllocator(), &GetJobSystem());
+	WritePositions(*w, 0);
 	if (errors == EPhysicsUpdateError::None)
 		return SN_OK;
 	if ((errors & EPhysicsUpdateError::BodyPairCacheFull) != EPhysicsUpdateError::None)
@@ -127,19 +176,8 @@ SN_API int32_t sn_physics_step(int32_t world, float delta_time, int32_t collisio
 	return SetLastError(SN_ERROR_FAILED, "physics step: contact cache full (temp allocator too small)");
 }
 
-SN_API int32_t sn_physics_get_positions(int32_t world, float *out_xyz, uint32_t max_bodies)
+SN_API const float *sn_physics_positions(int32_t world)
 {
 	World *w = GetWorld(world);
-	if (w == nullptr)
-		return SN_ERROR_INVALID_HANDLE;
-	const BodyInterface &bodies = w->mSystem.GetBodyInterfaceNoLock();
-	uint32_t count = std::min(max_bodies, uint32_t(w->mBodies.size()));
-	for (uint32_t i = 0; i < count; ++i)
-	{
-		RVec3 position = bodies.GetCenterOfMassPosition(w->mBodies[i]);
-		out_xyz[i * 3 + 0] = float(position.GetX());
-		out_xyz[i * 3 + 1] = float(position.GetY());
-		out_xyz[i * 3 + 2] = float(position.GetZ());
-	}
-	return int32_t(count);
+	return w != nullptr ? w->mPositions.data() : nullptr;
 }

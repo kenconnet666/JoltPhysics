@@ -40,21 +40,32 @@ TEST_CASE("Init reports the worker count")
 	CHECK(sn_init(-1) == SN_ERROR_FAILED);
 }
 
+namespace
+{
+	const sn_box cFloor = { { 0, -1, 0 }, { 50, 1, 50 }, 0 };
+
+	sn_box DynamicBox(float inX, float inY, float inZ)
+	{
+		return { { inX, inY, inZ }, { 0.5f, 0.5f, 0.5f }, SN_BODY_DYNAMIC };
+	}
+}
+
 TEST_CASE("Physics box falls onto the floor")
 {
 	ModuleScope module;
 	int32_t world = sn_physics_create(16);
 	REQUIRE(world > 0);
-	const float floor_position[] = { 0, -1, 0 }, floor_half[] = { 50, 1, 50 };
-	const float box_position[] = { 0, 5, 0 }, box_half[] = { 0.5f, 0.5f, 0.5f };
-	REQUIRE(sn_physics_add_box(world, floor_position, floor_half, 0) == 0);
-	REQUIRE(sn_physics_add_box(world, box_position, box_half, 1) == 1);
+	const float *positions = sn_physics_positions(world);
+	REQUIRE(positions != nullptr);
+
+	const sn_box boxes[] = { cFloor, DynamicBox(0, 5, 0) };
+	REQUIRE(sn_physics_add_boxes(world, boxes, 2) == 0);
+	CHECK(positions[4] == doctest::Approx(5.0f));		// written when added, before any step
 
 	for (int i = 0; i < 180; ++i)
 		REQUIRE(sn_physics_step(world, 1.0f / 60.0f, 1) == SN_OK);
 
-	float positions[6];
-	REQUIRE(sn_physics_get_positions(world, positions, 2) == 2);
+	CHECK(sn_physics_positions(world) == positions);	// same buffer, rewritten in place
 	CHECK(positions[4] == doctest::Approx(0.5f).epsilon(0.05));
 	sn_physics_destroy(world);
 }
@@ -65,17 +76,27 @@ TEST_CASE("Physics world sized to its body count holds a settled stack")
 	constexpr int cColumns = 10, cRows = 10, cBodies = cColumns * cRows + 1;
 	int32_t world = sn_physics_create(cBodies);
 	REQUIRE(world > 0);
-	const float floor_position[] = { 0, -1, 0 }, floor_half[] = { 50, 1, 50 }, box_half[] = { 0.5f, 0.5f, 0.5f };
-	REQUIRE(sn_physics_add_box(world, floor_position, floor_half, 0) == 0);
+	REQUIRE(sn_physics_add_boxes(world, &cFloor, 1) == 0);
 	// Columns 1 m apart with 1 m boxes: every box rests on the one below and touches its neighbours.
+	std::vector<sn_box> boxes;
 	for (int i = 0; i < cColumns * cRows; ++i)
-	{
-		const float position[] = { float(i % cColumns), 0.5f + float(i / cColumns), 0 };
-		REQUIRE(sn_physics_add_box(world, position, box_half, 1) > 0);
-	}
+		boxes.push_back(DynamicBox(float(i % cColumns), 0.5f + float(i / cColumns), 0));
+	REQUIRE(sn_physics_add_boxes(world, boxes.data(), uint32_t(boxes.size())) == 1);
 
 	for (int i = 0; i < 120; ++i)
 		REQUIRE(sn_physics_step(world, 1.0f / 60.0f, 1) == SN_OK);
+	sn_physics_destroy(world);
+}
+
+TEST_CASE("Physics batch over capacity adds nothing")
+{
+	ModuleScope module;
+	int32_t world = sn_physics_create(4);
+	REQUIRE(world > 0);
+	std::vector<sn_box> boxes(5, DynamicBox(0, 1, 0));
+	CHECK(sn_physics_add_boxes(world, boxes.data(), 5) == SN_ERROR_FAILED);
+	CHECK(sn_physics_add_boxes(world, boxes.data(), 4) == 0);
+	CHECK(sn_physics_add_boxes(world, boxes.data(), 1) == SN_ERROR_FAILED);
 	sn_physics_destroy(world);
 }
 
@@ -143,15 +164,20 @@ TEST_CASE("Navmesh builds in tiles, finds paths, serializes and drives a crowd")
 
 	int32_t crowd = sn_crowd_create(loaded, 8, 0.6f);
 	REQUIRE(crowd > 0);
+	const float *positions = sn_crowd_positions(crowd);
+	REQUIRE(positions != nullptr);
+	CHECK(std::isnan(positions[0]));
 	const float agent_start[] = { -20, 0, 0 }, target[] = { 20, 0, 0 };
 	int32_t agent = sn_crowd_add_agent(crowd, agent_start, 0.5f, 2.0f, 3.5f, 8.0f);
 	REQUIRE(agent >= 0);
+	CHECK(positions[agent * 3] == doctest::Approx(-20.0f).epsilon(0.05));
 	REQUIRE(sn_crowd_request_move(crowd, agent, target) == SN_OK);
 	for (int i = 0; i < 450; ++i) // 15 s at 3.5 m/s covers the 40 m to the target
 		sn_crowd_update(crowd, 1.0f / 30.0f);
-	float agent_position[3];
-	REQUIRE(sn_crowd_get_positions(crowd, agent_position, 1) == 1);
-	CHECK(agent_position[0] == doctest::Approx(20.0f).epsilon(0.05));
+	CHECK(sn_crowd_positions(crowd) == positions);
+	CHECK(positions[agent * 3] == doctest::Approx(20.0f).epsilon(0.05));
+	sn_crowd_remove_agent(crowd, agent);
+	CHECK(std::isnan(positions[agent * 3]));
 
 	sn_crowd_destroy(crowd);
 	sn_nav_destroy(loaded);

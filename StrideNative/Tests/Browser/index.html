@@ -51,17 +51,17 @@ await check('crossOriginIsolated and module start', async () => {
 
 await check('physics steps on the shared job system (main thread waits and helps)', async () => {
 	const world = native.createPhysicsWorld(256);
-	world.addBox([0, -1, 0], [50, 1, 50], false);
-	for (let i = 0; i < 100; ++i)
-		world.addBox([(i % 10) * 1.5 - 7, 2 + Math.floor(i / 10) * 1.5, 0], [0.5, 0.5, 0.5], true);
+	world.addBox({ position: [0, -1, 0], halfExtent: [50, 1, 50], motion: 'static' });
+	world.addBoxes(Array.from({ length: 100 }, (_, i) => ({ position: [(i % 10) * 1.5 - 7, 2 + Math.floor(i / 10) * 1.5, 0], halfExtent: [0.5, 0.5, 0.5] })));
 	const start = performance.now();
 	for (let i = 0; i < 300; ++i)
 		world.step(1 / 60);
 	const perStep = (performance.now() - start) / 300;
+	// A view of the world's own buffer: read it before the world is destroyed
 	const y = world.positions();
-	world.destroy();
 	for (let b = 1; b <= 100; ++b)
 		assert(y[b * 3 + 1] > 0.3, `body ${b} fell through the floor`);
+	world.destroy();
 	return `100 boxes, ${perStep.toFixed(2)} ms per step`;
 });
 
@@ -95,7 +95,7 @@ await check('navmesh: parallel tiled build, baked load, path, crowd', async () =
 	agents.forEach((agent) => crowd.requestMove(agent, [40, 0, 0]));
 	for (let i = 0; i < 900; ++i)
 		crowd.update(1 / 30);
-	const p = crowd.positions();
+	const p = crowd.positions();	// a view of the crowd's buffer, read before destroy
 	agents.forEach((agent) => assert(p[agent * 3] > 30, `agent ${agent} did not arrive`));
 	crowd.destroy();
 	built.destroy();

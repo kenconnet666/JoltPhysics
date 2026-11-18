@@ -19,7 +19,7 @@ export class StrideNative extends NativeModule {
 	// Physics (smoke test)
 
 	createPhysicsWorld(maxBodies = 1024) {
-		return new PhysicsWorld(this, this.check(this.module._sn_physics_create(maxBodies), 'sn_physics_create'));
+		return new PhysicsWorld(this, this.check(this.module._sn_physics_create(maxBodies), 'sn_physics_create'), maxBodies);
 	}
 
 	// ---------------------------------------------------------------------------------------------
@@ -126,20 +126,49 @@ export class StrideNative extends NativeModule {
 	}
 }
 
+/** sn_box: position (3 floats), half extent (3 floats), flags (uint32). */
+const BOX_FLOATS = 7;
+const BODY_DYNAMIC = 1;
+
 export class PhysicsWorld {
-	constructor(native, handle) {
+	constructor(native, handle, maxBodies) {
 		this.native = native;
 		this.handle = handle;
+		this.maxBodies = maxBodies;
 		this.bodyCount = 0;
+		this.positionsAddress = native.module._sn_physics_positions(handle);
+		this.positionsView = native.f32(this.positionsAddress, 0);
+		// One sn_box reused by addBox, so adding a body allocates nothing
+		this.scratch = native.alloc(BOX_FLOATS * 4);
+		this.scratchFloats = native.f32(this.scratch, BOX_FLOATS);
+		this.scratchFlags = native.u32(this.scratch, BOX_FLOATS);
 	}
 
-	addBox(position, halfExtent, dynamic) {
+	/** Adds one box ({ position, halfExtent, motion }); returns its body index. */
+	addBox(box) {
+		writeBox(this.scratchFloats, this.scratchFlags, 0, box);
+		return this.add(this.scratch, 1);
+	}
+
+	/** Adds many boxes in one native call; Jolt inserts them into the broadphase as a batch. Returns the first index. */
+	addBoxes(boxes) {
+		if (boxes.length === 0) {
+			return this.bodyCount;
+		}
 		const n = this.native;
-		return n.withArrays([new Float32Array(position), new Float32Array(halfExtent)], (p, h) => {
-			const index = n.check(n.module._sn_physics_add_box(this.handle, p, h, dynamic ? 1 : 0), 'sn_physics_add_box');
-			this.bodyCount = index + 1;
-			return index;
+		return n.withScratch(boxes.length * BOX_FLOATS * 4, (table) => {
+			const floats = n.f32(table, boxes.length * BOX_FLOATS);
+			const flags = n.u32(table, boxes.length * BOX_FLOATS);
+			boxes.forEach((box, i) => writeBox(floats, flags, i, box));
+			return this.add(table, boxes.length);
 		});
+	}
+
+	add(table, count) {
+		const first = this.native.check(this.native.module._sn_physics_add_boxes(this.handle, table, count), 'sn_physics_add_boxes');
+		this.bodyCount = first + count;
+		this.positionsView = this.native.f32(this.positionsAddress, this.bodyCount * 3);
+		return first;
 	}
 
 	/** Steps on the shared job system; this thread runs physics jobs too while it waits. */
@@ -147,18 +176,33 @@ export class PhysicsWorld {
 		this.native.check(this.native.module._sn_physics_step(this.handle, deltaTime, collisionSteps), 'sn_physics_step');
 	}
 
-	/** xyz positions of all bodies in creation order. */
+	/**
+	 * xyz of every body in creation order, as a view of native memory that step() rewrites in place:
+	 * no copy, and the same object until bodies are added. Valid until the world is destroyed.
+	 */
 	positions() {
-		const n = this.native;
-		return n.withScratch(Math.max(1, this.bodyCount) * 12, (out) => {
-			const count = n.check(n.module._sn_physics_get_positions(this.handle, out, this.bodyCount), 'sn_physics_get_positions');
-			return n.copyOut(Float32Array, out, count * 3);
-		});
+		return this.positionsView;
 	}
 
 	destroy() {
 		this.native.module._sn_physics_destroy(this.handle);
+		this.native.free(this.scratch);
 	}
+}
+
+/** Writes box i of an sn_box table, seen as floats and as uint32 (for the flags). */
+function writeBox(floats, flags, i, { position, halfExtent, motion = 'dynamic' }) {
+	if (motion !== 'dynamic' && motion !== 'static') {
+		throw new TypeError(`box ${i}: motion must be 'dynamic' or 'static', not '${motion}'`);
+	}
+	const o = i * BOX_FLOATS;
+	floats[o] = position[0];
+	floats[o + 1] = position[1];
+	floats[o + 2] = position[2];
+	floats[o + 3] = halfExtent[0];
+	floats[o + 4] = halfExtent[1];
+	floats[o + 5] = halfExtent[2];
+	flags[o + 6] = motion === 'dynamic' ? BODY_DYNAMIC : 0;
 }
 
 export class NavMesh {
@@ -197,6 +241,7 @@ export class Crowd {
 		this.native = native;
 		this.handle = handle;
 		this.maxAgents = maxAgents;
+		this.positionsView = native.f32(native.module._sn_crowd_positions(handle), maxAgents * 3);
 	}
 
 	addAgent(position, { radius = 0.5, height = 2, maxSpeed = 3.5, maxAcceleration = 8 } = {}) {
@@ -218,13 +263,12 @@ export class Crowd {
 		this.native.module._sn_crowd_update(this.handle, deltaTime);
 	}
 
-	/** xyz per agent slot; NaN for empty slots. */
+	/**
+	 * xyz per agent slot (NaN for empty slots), as a view of native memory that update() rewrites in
+	 * place: no copy, always the same object. Valid until the crowd is destroyed.
+	 */
 	positions() {
-		const n = this.native;
-		return n.withScratch(this.maxAgents * 12, (out) => {
-			const count = n.check(n.module._sn_crowd_get_positions(this.handle, out, this.maxAgents), 'sn_crowd_get_positions');
-			return n.copyOut(Float32Array, out, count * 3);
-		});
+		return this.positionsView;
 	}
 
 	destroy() {

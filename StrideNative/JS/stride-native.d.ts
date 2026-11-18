@@ -101,14 +101,27 @@ export class StrideNative {
 	sampleAnimations(requests: AnimationSampleRequest[]): void;
 }
 
+export interface BoxDesc {
+	position: Vec3;
+	halfExtent: Vec3;
+	/** Defaults to 'dynamic'. */
+	motion?: 'dynamic' | 'static';
+}
+
 export class PhysicsWorld {
 	readonly handle: number;
+	readonly maxBodies: number;
 	readonly bodyCount: number;
-	/** Returns the body index (creation order). */
-	addBox(position: Vec3, halfExtent: Vec3, dynamic: boolean): number;
-	/** Steps on the shared job system; the calling thread runs jobs too while it waits. */
+	/** Returns the body index (creation order). Allocates nothing: the descriptor goes through a reused native buffer. */
+	addBox(box: BoxDesc): number;
+	/** Adds the boxes in one native call; Jolt inserts them into the broadphase as a batch. Returns the first body index. */
+	addBoxes(boxes: readonly BoxDesc[]): number;
+	/** Steps on the shared job system (the calling thread runs jobs too while it waits), then refreshes positions(). */
 	step(deltaTime: number, collisionSteps?: number): void;
-	/** xyz per body, creation order. */
+	/**
+	 * xyz per body in creation order: a view of native memory that step() rewrites in place, so no copy and
+	 * the same object until bodies are added. Valid until the world is destroyed.
+	 */
 	positions(): Float32Array;
 	destroy(): void;
 }
@@ -136,8 +149,12 @@ export class Crowd {
 	addAgent(position: Vec3, options?: AgentOptions): number;
 	removeAgent(agent: number): void;
 	requestMove(agent: number, target: Vec3): void;
+	/** Moves the agents and refreshes positions(). */
 	update(deltaTime: number): void;
-	/** xyz per agent slot; NaN for empty slots. */
+	/**
+	 * xyz per agent slot (NaN for empty slots): a view of native memory that update() rewrites in place,
+	 * always the same object. Valid until the crowd is destroyed.
+	 */
 	positions(): Float32Array;
 	destroy(): void;
 }

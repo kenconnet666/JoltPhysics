@@ -8,14 +8,29 @@
 // Physics (smoke test only; the Stride-shaped physics API is a separate milestone)
 // ---------------------------------------------------------------------------------------------
 
+enum
+{
+	SN_BODY_DYNAMIC = 1,			///< sn_box flag; without it the box is static
+};
+
+typedef struct sn_box
+{
+	float position[3];
+	float half_extent[3];
+	uint32_t flags;					///< SN_BODY_*
+} sn_box;
+
 /// Creates a world that steps on the shared job system. Returns a world handle.
 SN_API int32_t sn_physics_create(uint32_t max_bodies);
 SN_API void sn_physics_destroy(int32_t world);
-/// Adds a box; dynamic = 0 makes it static. Returns the body's index in creation order.
-SN_API int32_t sn_physics_add_box(int32_t world, const float *position3, const float *half_extent3, int32_t dynamic);
+/// Adds count boxes as one batch (Jolt builds their broadphase nodes together). Returns the index of
+/// the first new body; bodies are indexed in creation order.
+SN_API int32_t sn_physics_add_boxes(int32_t world, const sn_box *boxes, uint32_t count);
+/// Steps, then writes every body's position into the positions buffer.
 SN_API int32_t sn_physics_step(int32_t world, float delta_time, int32_t collision_steps);
-/// Writes xyz positions of all bodies in creation order; returns the body count.
-SN_API int32_t sn_physics_get_positions(int32_t world, float *out_xyz, uint32_t max_bodies);
+/// The world's positions buffer: xyz per body in creation order, room for max_bodies. It stays at this
+/// address until the world is destroyed, so callers keep one view of it; add_boxes and step update it.
+SN_API const float *sn_physics_positions(int32_t world);
 
 // ---------------------------------------------------------------------------------------------
 // Mesh decoding (EXT_meshopt_compression / KHR_meshopt_compression)
@@ -129,9 +144,11 @@ SN_API void sn_crowd_destroy(int32_t crowd);
 SN_API int32_t sn_crowd_add_agent(int32_t crowd, const float *position3, float radius, float height, float max_speed, float max_acceleration);
 SN_API void sn_crowd_remove_agent(int32_t crowd, int32_t agent);
 SN_API int32_t sn_crowd_request_move(int32_t crowd, int32_t agent, const float *target3);
+/// Moves the agents, then writes their positions into the positions buffer.
 SN_API void sn_crowd_update(int32_t crowd, float delta_time);
-/// Writes xyz per agent slot (NaN for empty slots); returns the slot count written.
-SN_API int32_t sn_crowd_get_positions(int32_t crowd, float *out_xyz, uint32_t max_agents);
+/// The crowd's positions buffer: xyz per agent slot (NaN for empty slots), room for max_agents. It stays
+/// at this address until the crowd is destroyed; add_agent, remove_agent and update keep it current.
+SN_API const float *sn_crowd_positions(int32_t crowd);
 
 // ---------------------------------------------------------------------------------------------
 // Animation (ozz-animation runtime)
