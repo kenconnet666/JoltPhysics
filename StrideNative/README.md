@@ -61,6 +61,7 @@ are taken from CLion.
 
 ```powershell
 pwsh StrideNative/Scripts/build-wasm.ps1          # wasm modules -> JS/dist, tsc, Node tests, pnpm pack
+pwsh StrideNative/Scripts/build-wasm.ps1 -SourceDebug  # debug runtime at -O0 with DWARF, local use only
 node StrideNative/Tests/Browser/serve.mjs 8190    # then open http://localhost:8190/
 ```
 
@@ -70,6 +71,15 @@ In CLion the CMake root is `StrideNative/`; profiles `Debug` (MinGW, runs
 `tools/build-jolt-wasm.ps1`).
 
 `-DSTRIDE_NATIVE_BASIS_DEBUG=ON` prints Basis Universal's internal error messages.
+
+The wasm modules keep their function names (`--profiling-funcs`, about 4% more after brotli), so
+stack traces and Chrome profiles show C++ functions. `-DSTRIDE_NATIVE_DEBUG_CHECKS=ON` builds only the
+runtime module, as `stride-native-core-debug`, with Jolt asserts (a failed assert logs to
+`console.error` with the call stack) and Emscripten's `ASSERTIONS` and stack overflow checks;
+`build-wasm.ps1` builds it into `Build/WASM_DebugChecks` next to the release modules, and
+`createStrideNative({ debug: true })` loads it (a dynamic import, so a page downloads only one).
+`-SourceDebug` compiles that module at `-O0` with DWARF for stepping through C++ in Chrome with the
+C/C++ DevTools Support extension; such a package is large, do not release it.
 
 ## Package and release
 

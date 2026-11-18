@@ -50,6 +50,11 @@ export type CoreFactory<E extends string> = (options: Record<string, unknown>) =
 export interface ModuleOptions {
 	/** 任务系统的工作线程数；默认 navigator.hardwareConcurrency - 1（至少 1）。 */
 	workerThreads?: number;
+	/**
+	 * 用调试版的运行时模块（stride-native-core-debug）：打开 Jolt 的断言（失败时 console.error 带 C++ 调用栈）和
+	 * Emscripten 的运行时检查（ASSERTIONS、栈溢出检查）。比正式版慢，开发时用。工具模块没有调试版，忽略这一项。
+	 */
+	debug?: boolean;
 	/** Emscripten 的 locateFile，wasm 放在别的路径时用。 */
 	locateFile?: (path: string, prefix: string) => string;
 }
@@ -68,7 +73,7 @@ export function defaultWorkerThreads(): number {
 /**
  * 实例化 Emscripten 模块并启动任务系统。浏览器里只有跨源隔离的页面（COOP + COEP 响应头）才能用共享内存。
  */
-export async function instantiate<E extends string>(factory: CoreFactory<E>, { workerThreads = defaultWorkerThreads(), locateFile }: ModuleOptions = {}): Promise<CoreModule<E>> {
+export async function instantiate<E extends string>(factory: CoreFactory<E>, { workerThreads = defaultWorkerThreads(), locateFile }: Omit<ModuleOptions, 'debug'> = {}): Promise<CoreModule<E>> {
 	if (!isNode && !globalThis.crossOriginIsolated) {
 		throw new NativeError('StrideNative needs a cross-origin isolated page: serve it with ' +
 			'"Cross-Origin-Opener-Policy: same-origin" and "Cross-Origin-Embedder-Policy: require-corp"', -4);

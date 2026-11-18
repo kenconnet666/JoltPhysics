@@ -65,6 +65,21 @@ describe('stride-native and stride-tools', () => {
 		assert.ok(native.buffer instanceof SharedArrayBuffer);
 	});
 
+	it('loads the debug runtime (Jolt asserts, Emscripten checks) and steps physics with it', async () => {
+		const debug = await createStrideNative({ debug: true, workerThreads: 2 });
+		try {
+			const world = debug.createPhysicsWorld(8);
+			world.addBox({ position: [0, -1, 0], halfExtent: [10, 1, 10], motion: 'static' });
+			world.addBox({ position: [0, 3, 0], halfExtent: [0.5, 0.5, 0.5] });
+			for (let i = 0; i < 120; ++i)
+				world.step(1 / 60);
+			assert.ok(Math.abs(world.positions()[4] - 0.5) < 0.05, 'the box rests on the floor');
+			world.destroy();
+		} finally {
+			debug.shutdown();
+		}
+	});
+
 	it('views native memory as int64 for decimal and date-time columns', () => {
 		const ptr = native.alloc(4 * 8);
 		try {

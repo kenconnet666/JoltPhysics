@@ -5,6 +5,10 @@
 #include <Jolt/Core/JobSystemThreadPool.h>
 #include <Jolt/RegisterTypes.h>
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten/emscripten.h>
+#endif
+
 #include <algorithm>
 #include <cstdarg>
 #include <cstdio>
@@ -35,7 +39,12 @@ namespace
 #ifdef JPH_ENABLE_ASSERTS
 	bool AssertFailedImpl(const char *inExpression, const char *inMessage, const char *inFile, JPH::uint inLine)
 	{
+#ifdef __EMSCRIPTEN__
+		// 浏览器里打到 console.error，带上调用栈（wasm 留着函数名，栈里是 C++ 的函数）
+		emscripten_log(EM_LOG_CONSOLE | EM_LOG_ERROR | EM_LOG_JS_STACK, "assert failed: %s:%u: (%s) %s", inFile, inLine, inExpression, inMessage != nullptr ? inMessage : "");
+#else
 		std::fprintf(stderr, "%s:%u: (%s) %s\n", inFile, inLine, inExpression, inMessage != nullptr ? inMessage : "");
+#endif
 		return true; // Break: an assert in our code or Jolt's means corrupted state
 	}
 #endif

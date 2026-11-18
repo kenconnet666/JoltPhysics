@@ -1,6 +1,6 @@
 {
   "name": "@stride-ts/native",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "StrideNative for the browser and Node: Jolt physics, Recast navigation, ozz animation, meshopt and KTX2 decoding as multithreaded SIMD WebAssembly, plus the asset tools",
   "license": "MIT",
   "type": "module",
@@ -28,6 +28,7 @@
       "default": "./dist/stride-tools.js"
     },
     "./stride-native-core.wasm": "./dist/stride-native-core.wasm",
+    "./stride-native-core-debug.wasm": "./dist/stride-native-core-debug.wasm",
     "./stride-tools-core.wasm": "./dist/stride-tools-core.wasm",
     "./package.json": "./package.json"
   },

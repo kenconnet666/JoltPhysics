@@ -35,6 +35,11 @@ set(JPH_USE_MTL OFF)
 set(JPH_USE_CPU_COMPUTE OFF)
 set(USE_WASM_SIMD ON)
 set(INTERPROCEDURAL_OPTIMIZATION OFF)
+# 调试版运行时（stride-native-core-debug）：打开 Jolt 的断言，链接时再加上 Emscripten 的运行时检查，见下面的 wasm 目标
+option(STRIDE_NATIVE_DEBUG_CHECKS "Build only the runtime module, as stride-native-core-debug, with Jolt asserts and Emscripten runtime checks" OFF)
+if (STRIDE_NATIVE_DEBUG_CHECKS)
+	set(USE_ASSERTS ON)
+endif()
 add_subdirectory(${REPO_ROOT}/Build ${CMAKE_CURRENT_BINARY_DIR}/Jolt EXCLUDE_FROM_ALL)
 
 # ---------------------------------------------------------------------------------------------
@@ -164,31 +169,43 @@ if (EMSCRIPTEN)
 		-sPTHREAD_POOL_SIZE=Module.workerPoolSize
 		# wasmMemory: JS reads memory.buffer, which always spans the current (grown) shared memory.
 		-sEXPORTED_RUNTIME_METHODS=wasmMemory,UTF8ToString
-		-sFILESYSTEM=0 --no-entry)
+		-sFILESYSTEM=0 --no-entry
+		# 留着函数名（name 段）：报错的调用栈和 Chrome 的性能分析里能看到 C++ 函数名，brotli 后约多 4%
+		--profiling-funcs)
 
-	add_executable(stride-native-core)
-	target_link_libraries(stride-native-core PRIVATE ${RUNTIME_OBJECTS})
-	target_link_options(stride-native-core PRIVATE ${WASM_COMMON_LINK_OPTIONS}
+	if (STRIDE_NATIVE_DEBUG_CHECKS)
+		set(RUNTIME_MODULE stride-native-core-debug)
+		list(APPEND WASM_COMMON_LINK_OPTIONS -sASSERTIONS=1 -sSTACK_OVERFLOW_CHECK=2)
+	else()
+		set(RUNTIME_MODULE stride-native-core)
+	endif()
+	add_executable(${RUNTIME_MODULE})
+	target_link_libraries(${RUNTIME_MODULE} PRIVATE ${RUNTIME_OBJECTS})
+	target_link_options(${RUNTIME_MODULE} PRIVATE ${WASM_COMMON_LINK_OPTIONS}
 		-sEXPORT_NAME=createStrideNativeCore -sENVIRONMENT=web,worker,node)
-	set_target_properties(stride-native-core PROPERTIES SUFFIX ".mjs")
+	set_target_properties(${RUNTIME_MODULE} PROPERTIES SUFFIX ".mjs")
+	set(PACKAGE_FILES $<TARGET_FILE:${RUNTIME_MODULE}> $<TARGET_FILE_DIR:${RUNTIME_MODULE}>/${RUNTIME_MODULE}.wasm)
+	set(PACKAGE_TARGETS ${RUNTIME_MODULE})
 
-	add_executable(stride-tools-core)
-	target_link_libraries(stride-tools-core PRIVATE ${TOOLS_OBJECTS})
-	target_link_options(stride-tools-core PRIVATE ${WASM_COMMON_LINK_OPTIONS}
-		-sEXPORT_NAME=createStrideToolsCore -sENVIRONMENT=node,worker)
-	set_target_properties(stride-tools-core PROPERTIES SUFFIX ".mjs")
+	# 工具模块只在 Node 里跑资源管线，没有调试版
+	if (NOT STRIDE_NATIVE_DEBUG_CHECKS)
+		add_executable(stride-tools-core)
+		target_link_libraries(stride-tools-core PRIVATE ${TOOLS_OBJECTS})
+		target_link_options(stride-tools-core PRIVATE ${WASM_COMMON_LINK_OPTIONS}
+			-sEXPORT_NAME=createStrideToolsCore -sENVIRONMENT=node,worker)
+		set_target_properties(stride-tools-core PROPERTIES SUFFIX ".mjs")
+		list(APPEND PACKAGE_FILES $<TARGET_FILE:stride-tools-core> $<TARGET_FILE_DIR:stride-tools-core>/stride-tools-core.wasm)
+		list(APPEND PACKAGE_TARGETS stride-tools-core)
+	endif()
 
 	# npm 包 @stride-ts/native（JS/）的 dist/ 放 Emscripten 的产出，旁边是 tsc 从 JS/src 编译出的绑定
-	# （JS/ 里 pnpm run build）。Debug 和 Release 写进同一个目录，最后编的那个生效。
+	# （JS/ 里 pnpm run build）。正式版和调试版的文件名不同，两次构建都写进同一个目录。
 	set(STRIDE_NATIVE_PACKAGE_DIST ${STRIDE_NATIVE_ROOT}/JS/dist CACHE PATH "Where the wasm modules of the @stride-ts/native package go")
 	# 每次构建都跑（只拷有变化的文件）：dist/ 被清掉以后，没有重新链接也能补回来
 	add_custom_target(stride-native-package ALL
 		COMMAND ${CMAKE_COMMAND} -E make_directory ${STRIDE_NATIVE_PACKAGE_DIST}
-		COMMAND ${CMAKE_COMMAND} -E copy_if_different
-			$<TARGET_FILE:stride-native-core> $<TARGET_FILE_DIR:stride-native-core>/stride-native-core.wasm
-			$<TARGET_FILE:stride-tools-core> $<TARGET_FILE_DIR:stride-tools-core>/stride-tools-core.wasm
-			${STRIDE_NATIVE_PACKAGE_DIST}
-		DEPENDS stride-native-core stride-tools-core
+		COMMAND ${CMAKE_COMMAND} -E copy_if_different ${PACKAGE_FILES} ${STRIDE_NATIVE_PACKAGE_DIST}
+		DEPENDS ${PACKAGE_TARGETS}
 		VERBATIM)
 else()
 	# Native test executables, one per module (the two link different zstd/transcoder builds):

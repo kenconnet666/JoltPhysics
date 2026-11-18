@@ -1,5 +1,4 @@
 // stride-native 运行时模块的 JS API（浏览器和 Node）。页面必须跨源隔离（COOP: same-origin，COEP: require-corp）。
-import createStrideNativeCore from './stride-native-core.mjs';
 import type { RuntimeExport } from './stride-native-core.mjs';
 import {
 	HANDLE, NAV_CONFIG_SIZE, NativeModule, NativeObject, enumCode, instantiate, writeNavConfig,
@@ -93,8 +92,10 @@ export interface AnimationSampleRequest {
 }
 
 /** 加载模块并启动任务系统。 */
-export async function createStrideNative(options: ModuleOptions = {}): Promise<StrideNative> {
-	return new StrideNative(await instantiate(createStrideNativeCore, options));
+export async function createStrideNative({ debug = false, ...options }: ModuleOptions = {}): Promise<StrideNative> {
+	// 动态导入：打包器把两个版本分开，页面只下载用到的那个
+	const core = debug ? await import('./stride-native-core-debug.mjs') : await import('./stride-native-core.mjs');
+	return new StrideNative(await instantiate(core.default, options));
 }
 
 export class StrideNative extends NativeModule<RuntimeExport> {
