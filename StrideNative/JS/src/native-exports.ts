@@ -1,0 +1,554 @@
+// 由 scripts/generate-exports.mjs 从 Include/StrideNative/*.h 生成，不要手改：改头文件后重新生成（pnpm run build 会做）。
+// 指针、句柄、整数和 float 在 JS 里都是 number。
+
+/** Emscripten 模块上的 C 函数（名字前加 `_`），参数名和注释同头文件。 */
+export interface NativeExports {
+	/**
+	 * 16-byte aligned allocation in module memory; free with sn_free.
+	 * C: Core.h
+	 */
+	_sn_alloc(size: number): number;
+	/** C: Runtime.h */
+	_sn_anim_animation_duration(animation: number): number;
+	/** C: Runtime.h */
+	_sn_anim_destroy_animation(animation: number): void;
+	/** C: Runtime.h */
+	_sn_anim_destroy_skeleton(skeleton: number): void;
+	/**
+	 * An instance owns the sampling context and the model-space matrices of one character.
+	 * C: Runtime.h
+	 */
+	_sn_anim_instance_create(skeleton: number): number;
+	/** C: Runtime.h */
+	_sn_anim_instance_destroy(instance: number): void;
+	/**
+	 * joint_count column-major 4x4 float matrices, valid while the instance lives.
+	 * C: Runtime.h
+	 */
+	_sn_anim_instance_model_matrices(instance: number): number;
+	/** C: Runtime.h */
+	_sn_anim_load_animation(data: number, size: number): number;
+	/**
+	 * Loads ozz archives (as produced by stride-tools). Return handles.
+	 * C: Runtime.h
+	 */
+	_sn_anim_load_skeleton(data: number, size: number): number;
+	/**
+	 * Samples and converts to model space for every request, in parallel; returns when all are done.
+	 * C: Runtime.h
+	 */
+	_sn_anim_sample_batch(requests: number, count: number): number;
+	/** C: Runtime.h */
+	_sn_anim_skeleton_joint_count(skeleton: number): number;
+	/**
+	 * Returns the agent index.
+	 * C: Navigation.h
+	 */
+	_sn_crowd_add_agent(crowd: number, position3: number, radius: number, height: number, maxSpeed: number, maxAcceleration: number): number;
+	/** C: Navigation.h */
+	_sn_crowd_create(navmesh: number, maxAgents: number, maxAgentRadius: number): number;
+	/** C: Navigation.h */
+	_sn_crowd_destroy(crowd: number): void;
+	/**
+	 * The crowd's positions buffer: xyz per agent slot (NaN for empty slots), room for max_agents. It stays
+	 * at this address until the crowd is destroyed; add_agent, remove_agent and update keep it current.
+	 * C: Navigation.h
+	 */
+	_sn_crowd_positions(crowd: number): number;
+	/** C: Navigation.h */
+	_sn_crowd_remove_agent(crowd: number, agent: number): void;
+	/** C: Navigation.h */
+	_sn_crowd_request_move(crowd: number, agent: number, target3: number): number;
+	/**
+	 * Moves the agents, then writes their positions into the positions buffer.
+	 * C: Navigation.h
+	 */
+	_sn_crowd_update(crowd: number, deltaTime: number): void;
+	/**
+	 * Adds one call that took `milliseconds` to a timing, e.g. "physics.step".
+	 * C: Debug.h
+	 */
+	_sn_debug_add_timing(name: number, milliseconds: number): void;
+	/**
+	 * Queued log lines as a JSON array [{"level":n,"message":"..."}], removed from the queue. The string
+	 * stays valid until the next call on the calling thread.
+	 * C: Debug.h
+	 */
+	_sn_debug_drain_log(): number;
+	/** C: Debug.h */
+	_sn_debug_enabled(): number;
+	/**
+	 * Queues a log line for JS. While collection is off only SN_LOG_ERROR lines are queued, so an error
+	 * before the debugger attaches is not lost. The queue is bounded (oldest lines are dropped).
+	 * C: Debug.h
+	 */
+	_sn_debug_log(level: number, message: number): void;
+	/**
+	 * Clears the timings (counters keep their last values).
+	 * C: Debug.h
+	 */
+	_sn_debug_reset_timings(): void;
+	/**
+	 * Sets a counter to its current value, e.g. "physics.bodies".
+	 * C: Debug.h
+	 */
+	_sn_debug_set_counter(name: number, value: number): void;
+	/** C: Debug.h */
+	_sn_debug_set_enabled(enabled: number): void;
+	/**
+	 * JSON object {"counters":{name:value},"timings":{name:{"calls":n,"ms":total,"maxMs":m}},"memory":{...}}.
+	 * The string stays valid until the next call on the calling thread.
+	 * C: Debug.h
+	 */
+	_sn_debug_snapshot(): number;
+	/** C: Core.h */
+	_sn_free(ptr: number): void;
+	/**
+	 * Starts the shared job system. worker_threads < 0 uses (hardware threads - 1); 0 is rejected because
+	 * tasks only run on worker threads. Call once.
+	 * C: Core.h
+	 */
+	_sn_init(workerThreads: number): number;
+	/** C: Texture.h */
+	_sn_ktx2_get_info(data: number, size: number, outInfo: number): number;
+	/**
+	 * Transcodes every mip level in parallel. data must stay alive until the task finishes.
+	 * Outputs: one buffer per level (level 0 first) for layer 0 / face 0.
+	 * Results: [0] width, [1] height, [2] level count, [3] bytes per block (or per pixel for RGBA8).
+	 * C: Texture.h
+	 */
+	_sn_ktx2_transcode(data: number, size: number, target: number): number;
+	/**
+	 * Message of the last failed call on the calling thread, or "" if none.
+	 * C: Core.h
+	 */
+	_sn_last_error(): number;
+	/**
+	 * Decodes one glTF buffer view into dst (count * stride bytes).
+	 * C: Runtime.h
+	 */
+	_sn_meshopt_decode(dst: number, count: number, stride: number, src: number, srcSize: number, mode: number, filter: number): number;
+	/**
+	 * Decodes many buffer views in parallel. The requests and buffers must stay alive until the task
+	 * finishes. Returns a task; it fails if any request failed (see each request's result).
+	 * C: Runtime.h
+	 */
+	_sn_meshopt_decode_batch(requests: number, count: number): number;
+	/**
+	 * Builds a tiled navmesh from a triangle soup, tiles in parallel. Inputs must stay alive until
+	 * the task finishes. Result [0]: navmesh handle; [1]: tile count.
+	 * C: Navigation.h
+	 */
+	_sn_nav_build(vertices: number, vertexCount: number, triangles: number, triangleCount: number, config: number): number;
+	/**
+	 * Fills a config with the Recast demo defaults for a human-sized agent.
+	 * C: Navigation.h
+	 */
+	_sn_nav_default_config(outConfig: number): void;
+	/** C: Navigation.h */
+	_sn_nav_destroy(navmesh: number): void;
+	/**
+	 * Straight path between two points (corners written as xyz). Returns the corner count.
+	 * C: Navigation.h
+	 */
+	_sn_nav_find_path(navmesh: number, start3: number, end3: number, searchExtents3: number, outPoints: number, maxPoints: number): number;
+	/**
+	 * Loads a navmesh serialized by sn_nav_serialize or the stride-tools bake. Returns a handle.
+	 * C: Navigation.h
+	 */
+	_sn_nav_load(data: number, size: number): number;
+	/**
+	 * Serializes a navmesh. Result buffer is allocated with sn_alloc; the caller frees it.
+	 * C: Navigation.h
+	 */
+	_sn_nav_serialize(navmesh: number, outData: number, outSize: number): number;
+	/**
+	 * sn_shutdown 时调用 fn(user)（后注册的先调用），插件在这里释放自己的对象。注册一直有效，跨多次 init/shutdown，
+	 * 所以只注册一次（比如第一次用到时）。
+	 * C: Plugin.h
+	 */
+	_sn_on_shutdown(fn: number, user: number): void;
+	/** C: Plugin.h */
+	_sn_parallel_for(count: number, fn: number, user: number): void;
+	/**
+	 * 一次加入 count 个物体（Jolt 成批插进宽相），返回第一个物体的编号；编号按加入顺序递增。
+	 * C: Physics.h
+	 */
+	_sn_physics_add_bodies(world: number, bodies: number, count: number, shapes: number, shapeCount: number, characters: number, characterCount: number): number;
+	/**
+	 * 角色是否站在可以站立的地面上（Stride 的 IsGrounded）：1 是，0 否，负数是错误。
+	 * C: Physics.h
+	 */
+	_sn_physics_character_grounded(world: number, body: number): number;
+	/**
+	 * 设下一步的移动：target 是世界 X、Z 方向的目标速度（Stride 的 MoveVector · Speed），jump 不为 0 时试着起跳
+	 * （同 TryJump：只在站稳时生效，下一步用掉）。
+	 * C: Physics.h
+	 */
+	_sn_physics_character_move(world: number, body: number, targetX: number, targetZ: number, jump: number): number;
+	/**
+	 * 建一个在共享任务系统上步进的世界，返回句柄。transforms 是物体可以绑定的变换存储（0 表示不用），它要比世界
+	 * 活得久，绑定的槽位在物体存在期间不能释放。settings 为空时用 Stride 的默认值（重力 -9.8、阻尼 0.05、全部层相互碰撞）。
+	 * C: Physics.h
+	 */
+	_sn_physics_create(maxBodies: number, transforms: number, settings: number): number;
+	/**
+	 * 三角网格形状，世界内的物体共用。positions 是 xyz，indices 每三个一个三角形（逆时针为正面）。返回网格句柄。
+	 * C: Physics.h
+	 */
+	_sn_physics_create_mesh(world: number, positions: number, vertexCount: number, indices: number, indexCount: number): number;
+	/** C: Physics.h */
+	_sn_physics_destroy(world: number): void;
+	/**
+	 * 插值的物体写回 alpha（0 是上一步，1 是这一步）处的位姿。
+	 * C: Physics.h
+	 */
+	_sn_physics_interpolate(world: number, alpha: number): number;
+	/**
+	 * 每个物体的位置 xyz，按编号排，能放 max_bodies 个；地址在世界销毁前不变，add_bodies 和 step 原地改写。
+	 * C: Physics.h
+	 */
+	_sn_physics_positions(world: number): number;
+	/**
+	 * 射线（Stride 的 RayCast）：direction 不用归一化，max_distance 是米。mask 的第 n 位为 1 表示层 n 的物体参与。
+	 * 返回 1 命中（写 hit），0 没有，负数是错误。
+	 * C: Physics.h
+	 */
+	_sn_physics_ray_cast(world: number, origin: number, direction: number, maxDistance: number, mask: number, hit: number): number;
+	/**
+	 * 球体扫掠（Stride 的 SweepCast 加 Sphere），同 sn_physics_ray_cast；flags 是 SN_CAST_*。
+	 * C: Physics.h
+	 */
+	_sn_physics_sphere_cast(world: number, radius: number, origin: number, direction: number, maxDistance: number, mask: number, flags: number, hit: number): number;
+	/**
+	 * 步进一个固定步长：先跑角色逻辑，再 Jolt 步进，再更新角色的支撑状态，最后写回位姿（插值的物体记下前后两步）。
+	 * C: Physics.h
+	 */
+	_sn_physics_step(world: number, deltaTime: number, collisionSteps: number): number;
+	/**
+	 * 正在运行的核心的插件 ABI 版本。
+	 * C: Plugin.h
+	 */
+	_sn_plugin_abi_version(): number;
+	/**
+	 * 启动任务，返回任务 id（> 0）。name 要一直有效（用字符串字面量），性能分析里显示它。free_user 不为空时，
+	 * fn 返回后用 user 调用它。
+	 * C: Plugin.h
+	 */
+	_sn_run_task(name: number, fn: number, user: number, freeUser: number): number;
+	/**
+	 * 记下当前线程的错误消息（JS 通过 sn_last_error 读），返回 code。
+	 * C: Plugin.h
+	 */
+	_sn_set_last_error(code: number, message: number): number;
+	/** C: Core.h */
+	_sn_shutdown(): void;
+	/**
+	 * 加一个归任务所有的输出缓冲（sn_task_release 时释放），返回它的地址，由 fn 填写。
+	 * C: Plugin.h
+	 */
+	_sn_task_add_output(task: number, size: number): number;
+	/** C: Core.h */
+	_sn_task_error(task: number): number;
+	/**
+	 * 标记任务失败；第一条消息有效。
+	 * C: Plugin.h
+	 */
+	_sn_task_fail(task: number, message: number): void;
+	/**
+	 * Output buffers produced by the task. They stay valid until sn_task_release.
+	 * C: Core.h
+	 */
+	_sn_task_output_count(task: number): number;
+	/** C: Core.h */
+	_sn_task_output_data(task: number, index: number): number;
+	/** C: Core.h */
+	_sn_task_output_size(task: number, index: number): number;
+	/**
+	 * Frees the task and its outputs. A running task is released as soon as it finishes.
+	 * C: Core.h
+	 */
+	_sn_task_release(task: number): void;
+	/**
+	 * Small integer results (handles, counts, dimensions); meaning depends on the operation.
+	 * C: Core.h
+	 */
+	_sn_task_result(task: number, index: number): number;
+	/**
+	 * 小整数结果，index 是 0..3。
+	 * C: Plugin.h
+	 */
+	_sn_task_set_result(task: number, index: number, value: number): void;
+	/** C: Core.h */
+	_sn_task_status(task: number): number;
+	/** C: Core.h */
+	_sn_task_status_address(task: number): number;
+	/**
+	 * 分配 count 个槽位写进 out_slots：位置 0、旋转单位、缩放 1、没有父节点。返回 count；容量不够时什么都不分配。
+	 * C: Runtime.h
+	 */
+	_sn_transforms_alloc(transforms: number, outSlots: number, count: number): number;
+	/** C: Runtime.h */
+	_sn_transforms_columns(transforms: number, outColumns: number): number;
+	/**
+	 * 创建能放 capacity 个槽位的变换存储，返回句柄。
+	 * C: Runtime.h
+	 */
+	_sn_transforms_create(capacity: number): number;
+	/**
+	 * 视锥剔除：实例的变换槽位按批次连续排在 slots 里，batch_ends[b] 是第 b 批的结束下标；同一批（同一个网格）共用一个本地
+	 * 包围盒，bounds 每批 6 个 float（中心 xyz、半长 xyz）。包围盒用槽位的世界矩阵变换（中心按点变换，半长按矩阵分量的绝对值
+	 * 变换，同 Stride 的 BoundingBoxExt.Transform），半长为 0 的包围盒总是可见、不参与量距离。第 v 个视图的结果写进
+	 * out_slots 的第 v * slot_count 段：每批可见的槽位按原顺序紧凑地放在这批原来的起点，个数写进 out_counts[v * batch_count + b]。
+	 * C: Runtime.h
+	 */
+	_sn_transforms_cull(transforms: number, slots: number, slotCount: number, batchEnds: number, bounds: number, batchCount: number, views: number, viewCount: number, outSlots: number, outCounts: number): number;
+	/** C: Runtime.h */
+	_sn_transforms_destroy(transforms: number): void;
+	/**
+	 * 释放这些槽位。还有子节点留着的槽位不能释放（一起释放的子节点不算），这时什么都不释放。
+	 * C: Runtime.h
+	 */
+	_sn_transforms_free(transforms: number, slots: number, count: number): number;
+	/**
+	 * 把 slot 挂到 parent 下（parent 为 0 表示变成根）。不能形成环。
+	 * C: Runtime.h
+	 */
+	_sn_transforms_set_parent(transforms: number, slot: number, parent: number): number;
+	/**
+	 * 发出去过的最大槽位号（释放了也不降）：用到的槽位都在 1..它 之内，上传世界矩阵时只传这一段。
+	 * C: Runtime.h
+	 */
+	_sn_transforms_slot_limit(transforms: number): number;
+	/**
+	 * 按父节点在前的顺序算出所有槽位的世界矩阵：world = parent.world * T * R * S。
+	 * C: Runtime.h
+	 */
+	_sn_transforms_update(transforms: number): number;
+	/** C: Core.h */
+	_sn_worker_thread_count(): number;
+	/**
+	 * Builds an ozz animation archive. For each joint, key_counts holds (translation, rotation,
+	 * scale) counts; keys are packed per joint in that order: translation = time,x,y,z;
+	 * rotation = time,x,y,z,w; scale = time,x,y,z. Times are in seconds.
+	 * C: Tools.h
+	 */
+	_st_anim_build_animation(duration: number, jointCount: number, keyCounts: number, keys: number, outData: number, outSize: number): number;
+	/**
+	 * Builds an ozz skeleton archive. names: joint_count NUL-terminated strings back to back (may
+	 * be null). Output buffer is allocated with sn_alloc; the caller frees it.
+	 * C: Tools.h
+	 */
+	_st_anim_build_skeleton(joints: number, jointCount: number, names: number, outData: number, outSize: number): number;
+	/**
+	 * Encodes an RGBA8 image into a KTX2 file. rgba must stay alive until the task finishes.
+	 * quality 0-100, effort 0-10. Output [0]: the .ktx2 file.
+	 * C: Tools.h
+	 */
+	_st_basis_encode(rgba: number, width: number, height: number, mode: number, flags: number, quality: number, effort: number): number;
+	/**
+	 * Convex decomposition (V-HACD) for physics. Inputs must stay alive until the task finishes.
+	 * Outputs: [0] int32 pairs (vertex count, triangle count) per hull, [1] float3 vertices of all
+	 * hulls, [2] uint32 triangle indices, local to their hull. Result [0]: hull count.
+	 * C: Tools.h
+	 */
+	_st_convex_decompose(positions: number, vertexCount: number, indices: number, indexCount: number, maxHulls: number, voxelResolution: number, maxVerticesPerHull: number): number;
+	/**
+	 * Prefilters a radiance cubemap for GGX environment lighting like Stride's RadiancePrefilteringGGX:
+	 * level 0 of the out_size cube is the source resampled, level i is filtered with roughness i / (levels - 1)
+	 * using samples GGX importance samples. faces is level 0 of a size x size cube (mipmaps are generated);
+	 * both sizes must be powers of two. faces must stay alive until the task finishes.
+	 * Output [0]: every level from out_size down to 1, each 6 faces, concatenated.
+	 * C: Tools.h
+	 */
+	_st_cubemap_prefilter_ggx(faces: number, size: number, outSize: number, samples: number): number;
+	/**
+	 * Projects a radiance cubemap onto order-3 spherical harmonics with the Lambertian cosine lobe, like Stride's
+	 * LambertianPrefilteringSH; the coefficients are already multiplied by the basis constants, so evaluating
+	 * them only needs the polynomials. faces must stay alive until the task finishes.
+	 * Output [0]: 9 RGB coefficients (27 floats).
+	 * C: Tools.h
+	 */
+	_st_cubemap_sh_lambert(faces: number, size: number): number;
+	/**
+	 * Multi-channel signed distance field glyphs (stb_truetype outlines, msdfgen), in parallel.
+	 * font and codepoints must stay alive until the task finishes. Outputs: [0] st_glyph_metrics per
+	 * codepoint, then one RGB8 bitmap per codepoint (empty for glyphs without outline).
+	 * C: Tools.h
+	 */
+	_st_font_msdf(font: number, fontSize: number, codepoints: number, codepointCount: number, pixelSize: number, distanceRange: number): number;
+	/**
+	 * MikkTSpace tangents, one xyzw per index (corner); weld afterwards if needed.
+	 * C: Tools.h
+	 */
+	_st_generate_tangents(positions: number, normals: number, uvs: number, indices: number, indexCount: number, outTangents4: number): number;
+	/**
+	 * Decodes a PNG, JPEG or TGA file into RGBA8. data must stay alive until the task finishes.
+	 * Result [0]: width, [1]: height, [2]: channels in the file. Output [0]: the pixels, rows top-down.
+	 * C: Tools.h
+	 */
+	_st_image_decode(data: number, size: number): number;
+	/** C: Tools.h */
+	_st_meshopt_encode_index_bound(indexCount: number, vertexCount: number): number;
+	/** C: Tools.h */
+	_st_meshopt_encode_indices(dst: number, dstCapacity: number, indices: number, indexCount: number): number;
+	/** C: Tools.h */
+	_st_meshopt_encode_vertex_bound(vertexCount: number, vertexSize: number): number;
+	/**
+	 * Encode for SN_MESHOPT_MODE_ATTRIBUTES / SN_MESHOPT_MODE_TRIANGLES. Return the encoded size (0 on failure).
+	 * C: Tools.h
+	 */
+	_st_meshopt_encode_vertices(dst: number, dstCapacity: number, vertices: number, vertexCount: number, vertexSize: number): number;
+	/**
+	 * Vertex cache plus overdraw optimization, in place.
+	 * C: Tools.h
+	 */
+	_st_meshopt_optimize(indices: number, indexCount: number, positions: number, vertexCount: number, positionStride: number): number;
+	/**
+	 * Returns the new index count; out_error receives the relative error reached.
+	 * C: Tools.h
+	 */
+	_st_meshopt_simplify(outIndices: number, indices: number, indexCount: number, positions: number, vertexCount: number, positionStride: number, targetIndexCount: number, targetError: number, outError: number): number;
+	/**
+	 * Same tiled parallel build as sn_nav_build, but outputs the serialized navmesh for
+	 * sn_nav_load. Output [0]: navmesh data. Result [0]: tile count.
+	 * C: Tools.h
+	 */
+	_st_nav_bake(vertices: number, vertexCount: number, triangles: number, triangleCount: number, config: number): number;
+	/** C: Tools.h */
+	_st_scene_destroy(scene: number): void;
+	/**
+	 * Parses a scene. data must stay alive until the task finishes. Result [0]: scene handle,
+	 * [1]: mesh count, [2]: material count.
+	 * C: Tools.h
+	 */
+	_st_scene_load(data: number, size: number, format: number): number;
+	/**
+	 * Name of a material (UTF-8), valid until the scene is destroyed; null for a bad index.
+	 * C: Tools.h
+	 */
+	_st_scene_material_name(scene: number, material: number): number;
+	/**
+	 * Copies a mesh; any output may be null. positions/normals xyz, uvs xy, indices uint32.
+	 * C: Tools.h
+	 */
+	_st_scene_mesh_copy(scene: number, mesh: number, positions: number, normals: number, uvs: number, indices: number): number;
+	/** C: Tools.h */
+	_st_scene_mesh_info(scene: number, mesh: number, outInfo: number): number;
+	/**
+	 * Lightmap UV unwrap (xatlas). Inputs must stay alive until the task finishes.
+	 * Outputs: [0] uint32 original-vertex index per new vertex, [1] float2 uv in [0,1] per new
+	 * vertex, [2] uint32 new indices. Results: [0] atlas width, [1] atlas height, [2] new vertex count.
+	 * C: Tools.h
+	 */
+	_st_uv_unwrap(positions: number, normals: number, vertexCount: number, indices: number, indexCount: number, texelsPerUnit: number): number;
+}
+
+/** Core.h、Debug.h 里的函数。 */
+export type CoreExport =
+	| 'sn_init'
+	| 'sn_shutdown'
+	| 'sn_worker_thread_count'
+	| 'sn_last_error'
+	| 'sn_alloc'
+	| 'sn_free'
+	| 'sn_task_status'
+	| 'sn_task_status_address'
+	| 'sn_task_error'
+	| 'sn_task_result'
+	| 'sn_task_output_count'
+	| 'sn_task_output_data'
+	| 'sn_task_output_size'
+	| 'sn_task_release'
+	| 'sn_debug_set_enabled'
+	| 'sn_debug_enabled'
+	| 'sn_debug_set_counter'
+	| 'sn_debug_add_timing'
+	| 'sn_debug_log'
+	| 'sn_debug_snapshot'
+	| 'sn_debug_reset_timings'
+	| 'sn_debug_drain_log';
+
+/** Runtime.h、Plugin.h、Physics.h、Texture.h、Navigation.h 里的函数。 */
+export type RuntimeExport =
+	| 'sn_nav_default_config'
+	| 'sn_nav_build'
+	| 'sn_nav_load'
+	| 'sn_nav_serialize'
+	| 'sn_nav_destroy'
+	| 'sn_nav_find_path'
+	| 'sn_crowd_create'
+	| 'sn_crowd_destroy'
+	| 'sn_crowd_add_agent'
+	| 'sn_crowd_remove_agent'
+	| 'sn_crowd_request_move'
+	| 'sn_crowd_update'
+	| 'sn_crowd_positions'
+	| 'sn_physics_create'
+	| 'sn_physics_destroy'
+	| 'sn_physics_create_mesh'
+	| 'sn_physics_add_bodies'
+	| 'sn_physics_step'
+	| 'sn_physics_interpolate'
+	| 'sn_physics_positions'
+	| 'sn_physics_character_move'
+	| 'sn_physics_character_grounded'
+	| 'sn_physics_ray_cast'
+	| 'sn_physics_sphere_cast'
+	| 'sn_plugin_abi_version'
+	| 'sn_set_last_error'
+	| 'sn_parallel_for'
+	| 'sn_run_task'
+	| 'sn_task_set_result'
+	| 'sn_task_add_output'
+	| 'sn_task_fail'
+	| 'sn_on_shutdown'
+	| 'sn_transforms_create'
+	| 'sn_transforms_destroy'
+	| 'sn_transforms_columns'
+	| 'sn_transforms_alloc'
+	| 'sn_transforms_free'
+	| 'sn_transforms_set_parent'
+	| 'sn_transforms_update'
+	| 'sn_transforms_slot_limit'
+	| 'sn_transforms_cull'
+	| 'sn_meshopt_decode'
+	| 'sn_meshopt_decode_batch'
+	| 'sn_anim_load_skeleton'
+	| 'sn_anim_load_animation'
+	| 'sn_anim_destroy_skeleton'
+	| 'sn_anim_destroy_animation'
+	| 'sn_anim_skeleton_joint_count'
+	| 'sn_anim_animation_duration'
+	| 'sn_anim_instance_create'
+	| 'sn_anim_instance_destroy'
+	| 'sn_anim_instance_model_matrices'
+	| 'sn_anim_sample_batch'
+	| 'sn_ktx2_get_info'
+	| 'sn_ktx2_transcode';
+
+/** Tools.h 加上 sn_nav_default_config 里的函数。 */
+export type ToolsExport =
+	| 'st_scene_load'
+	| 'st_scene_destroy'
+	| 'st_scene_mesh_info'
+	| 'st_scene_material_name'
+	| 'st_scene_mesh_copy'
+	| 'st_generate_tangents'
+	| 'st_meshopt_optimize'
+	| 'st_meshopt_simplify'
+	| 'st_meshopt_encode_vertex_bound'
+	| 'st_meshopt_encode_index_bound'
+	| 'st_meshopt_encode_vertices'
+	| 'st_meshopt_encode_indices'
+	| 'st_uv_unwrap'
+	| 'st_convex_decompose'
+	| 'st_image_decode'
+	| 'st_cubemap_prefilter_ggx'
+	| 'st_cubemap_sh_lambert'
+	| 'st_basis_encode'
+	| 'st_font_msdf'
+	| 'st_anim_build_skeleton'
+	| 'st_anim_build_animation'
+	| 'st_nav_bake'
+	| 'sn_nav_default_config';

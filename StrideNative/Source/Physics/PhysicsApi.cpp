@@ -1,6 +1,7 @@
 // Stride.BepuPhysics 形状的物理层，内核是 Jolt：静态体、动态体、角色（CharacterComponent 的行为），
 // 32 个碰撞层加碰撞矩阵，射线和球体扫掠，固定步长加插值。
 #include <Core/Core.h>
+#include <Core/Debug.h>
 #include <Core/HandleTable.h>
 #include <Runtime/Transforms.h>
 #include <StrideNative/Physics.h>
@@ -645,9 +646,16 @@ SN_API int32_t sn_physics_step(int32_t world, float delta_time, int32_t collisio
 	TransformStore *store = nullptr;
 	if (w->mTransforms != 0 && (store = BoundStore(*w)) == nullptr)
 		return SN_ERROR_INVALID_HANDLE;
+	SN_DEBUG_SCOPE("physics.step");
 	for (CharacterRecord &character : w->mCharacters)
 		UpdateCharacter(*w, character, delta_time);
 	EPhysicsUpdateError errors = w->mSystem.Update(delta_time, collision_steps > 0 ? collision_steps : 1, &GetTempAllocator(), &GetJobSystem());
+	if (DebugEnabled())
+	{
+		sn_debug_set_counter("physics.bodies", w->mSystem.GetNumBodies());
+		sn_debug_set_counter("physics.activeBodies", w->mSystem.GetNumActiveBodies(EBodyType::RigidBody));
+		sn_debug_set_counter("physics.characters", double(w->mCharacters.size()));
+	}
 	// 地面状态按这一步结束时的接触算（Bepu 也是用这一步的接触判断支撑）
 	constexpr float cMaxSeparationDistance = 0.05f;
 	for (CharacterRecord &character : w->mCharacters)
@@ -656,6 +664,7 @@ SN_API int32_t sn_physics_step(int32_t world, float delta_time, int32_t collisio
 	RecordPoses(*w, store);
 	if (errors == EPhysicsUpdateError::None)
 		return SN_OK;
+	DebugLog(SN_LOG_ERROR, "physics step failed: error flags %u", uint32_t(errors));
 	if ((errors & EPhysicsUpdateError::BodyPairCacheFull) != EPhysicsUpdateError::None)
 		return SetLastError(SN_ERROR_FAILED, "physics step: body pair limit reached");
 	if ((errors & EPhysicsUpdateError::ContactConstraintsFull) != EPhysicsUpdateError::None)

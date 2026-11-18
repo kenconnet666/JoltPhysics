@@ -184,6 +184,28 @@ describe('stride-native and stride-tools', () => {
 		assert.throws(() => world.step(1 / 60), (error) => error instanceof NativeError && error.code === 'invalid-handle' && /PhysicsWorld was destroyed/.test(error.message));
 	});
 
+	it('collects debug counters, timings and memory only while collecting is on', () => {
+		native.drainDebugLog();
+		assert.equal(native.debugCollecting, false);
+		native.debugCollecting = true;
+		native.resetDebugTimings();
+		try {
+			using world = native.createPhysicsWorld(4);
+			world.addBox({ position: [0, -1, 0], halfExtent: [5, 1, 5], motion: 'static' });
+			world.step(1 / 60);
+			world.step(1 / 60);
+			const snapshot = native.debugSnapshot();
+			assert.equal(snapshot.counters['physics.bodies'], 1);
+			assert.equal(snapshot.timings['physics.step'].calls, 2);
+			assert.ok(snapshot.memory.heapBytes > 0 && snapshot.memory.allocatedBytes > 0);
+			native.resetDebugTimings();
+			assert.equal(native.debugSnapshot().timings['physics.step'], undefined);
+		} finally {
+			native.debugCollecting = false;
+		}
+		assert.deepEqual(native.drainDebugLog(), []);
+	});
+
 	it('runs a Stride-style character on compound and mesh colliders, with layered queries', () => {
 		// Third Person Platformer 的设置：重力 -40、阻尼 0.05；层 1（柱子）和层 2（角色）照常碰撞
 		using transforms = native.createTransforms(4);

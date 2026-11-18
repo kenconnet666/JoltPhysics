@@ -1,6 +1,7 @@
 // 视锥剔除（sn_transforms_cull）：每个实例的世界包围盒和视图的平面比较，可见的槽位按批次紧凑地写出。
 // 判定和量距离的公式照 Stride 的 VisibilityGroup（FrustumContainsBox、CalculateMinMaxDistance）。
 #include <Core/Core.h>
+#include <Core/Debug.h>
 #include <Runtime/Transforms.h>
 #include <StrideNative/Runtime.h>
 
@@ -96,6 +97,7 @@ SN_API int32_t sn_transforms_cull(int32_t transforms, const int32_t *slots, uint
 		return SN_ERROR_INVALID_HANDLE;
 	if (view_count > 8)
 		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "sn_transforms_cull: at most 8 views per call, got " + std::to_string(view_count));
+	SN_DEBUG_SCOPE("transforms.cull");
 	if (batch_count > 0 && batch_ends[batch_count - 1] != slot_count)
 		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "sn_transforms_cull: the last batch must end at slot_count");
 	for (uint32_t i = 0; i < slot_count; ++i)

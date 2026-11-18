@@ -1,4 +1,5 @@
 #include <Core/Core.h>
+#include <Core/Debug.h>
 #include <Core/Tasks.h>
 
 #include <Jolt/Core/JobSystemThreadPool.h>
@@ -27,16 +28,20 @@ namespace
 
 	void TraceImpl(const char *inFormat, ...)
 	{
+		char message[1024];
 		va_list list;
 		va_start(list, inFormat);
-		std::vfprintf(stderr, inFormat, list);
+		std::vsnprintf(message, sizeof(message), inFormat, list);
 		va_end(list);
-		std::fputc('\n', stderr);
+		std::fprintf(stderr, "%s\n", message);
+		// 调试 CLI 连着时也转给 JS（stride logs 里 source 是 native）
+		sn_debug_log(SN_LOG_INFO, message);
 	}
 
 #ifdef JPH_ENABLE_ASSERTS
 	bool AssertFailedImpl(const char *inExpression, const char *inMessage, const char *inFile, JPH::uint inLine)
 	{
+		StrideNative::DebugLog(SN_LOG_ERROR, "assert failed: %s:%u: (%s) %s", inFile, inLine, inExpression, inMessage != nullptr ? inMessage : "");
 #ifdef __EMSCRIPTEN__
 		// 浏览器里打到 console.error，带上调用栈（wasm 留着函数名，栈里是 C++ 的函数）
 		emscripten_log(EM_LOG_CONSOLE | EM_LOG_ERROR | EM_LOG_JS_STACK, "assert failed: %s:%u: (%s) %s", inFile, inLine, inExpression, inMessage != nullptr ? inMessage : "");

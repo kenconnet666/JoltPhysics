@@ -6,7 +6,7 @@ import {
 } from './native-module.ts';
 
 export { NativeError, defaultWorkerThreads } from './native-module.ts';
-export type { ModuleOptions, NativeErrorCode, NativeFeature, NavConfig } from './native-module.ts';
+export type { ModuleOptions, NativeDebugSnapshot, NativeErrorCode, NativeFeature, NativeLogLine, NavConfig } from './native-module.ts';
 
 /** xyz；数组、元组和 Vector3 之类的 ArrayLike 都行。 */
 export type Vec3 = ArrayLike<number>;

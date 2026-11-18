@@ -1,5 +1,6 @@
 // Skeletal animation sampling with ozz-animation; a batch of characters is sampled in parallel.
 #include <Core/Core.h>
+#include <Core/Debug.h>
 #include <Core/HandleTable.h>
 #include <StrideNative/Runtime.h>
 
@@ -142,6 +143,9 @@ SN_API int32_t sn_anim_sample_batch(sn_anim_sample_request *requests, uint32_t c
 	if (requests == nullptr && count > 0)
 		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "requests is null");
 
+	SN_DEBUG_SCOPE("animation.sample");
+	if (DebugEnabled())
+		sn_debug_set_counter("animation.sampled", count);
 	// Each request touches only its own instance, so requests for distinct instances run in parallel.
 	ParallelFor(count, [requests](uint32_t inBegin, uint32_t inEnd)
 	{

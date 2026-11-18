@@ -1,6 +1,7 @@
 // Navmeshes (Detour) and crowds (DetourCrowd). Building runs as a parallel task; queries and crowd
 // updates are synchronous and meant for the thread that owns the navmesh (the game loop).
 #include <Core/Core.h>
+#include <Core/Debug.h>
 #include <Core/HandleTable.h>
 #include <Core/Tasks.h>
 #include <Shared/NavMeshBuilder.h>
@@ -240,6 +241,9 @@ SN_API void sn_crowd_update(int32_t crowd, float delta_time)
 	Crowd *c = Lookup<Crowd>(crowd, "crowd");
 	if (c == nullptr)
 		return;
+	SN_DEBUG_SCOPE("navigation.crowd");
+	if (DebugEnabled())
+		sn_debug_set_counter("navigation.agents", c->mCrowd->getAgentCount());
 	c->mCrowd->update(delta_time, nullptr);
 	for (int agent = 0; agent < c->mCrowd->getAgentCount(); ++agent)
 		c->WritePosition(agent);

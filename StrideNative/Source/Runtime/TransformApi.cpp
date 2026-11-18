@@ -1,4 +1,5 @@
 // 变换存储和它的 C API。世界矩阵用 Jolt 的 Mat44（SIMD）算，按父节点在前的顺序一遍算完。
+#include <Core/Debug.h>
 #include <Core/HandleTable.h>
 #include <Runtime/Transforms.h>
 #include <StrideNative/Runtime.h>
@@ -298,6 +299,9 @@ SN_API int32_t sn_transforms_update(int32_t transforms)
 	TransformStore *store = GetStore(transforms);
 	if (store == nullptr)
 		return SN_ERROR_INVALID_HANDLE;
+	SN_DEBUG_SCOPE("transforms.update");
 	store->Update();
+	if (DebugEnabled())
+		sn_debug_set_counter("transforms.slotHighWater", store->SlotLimit());
 	return SN_OK;
 }

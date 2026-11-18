@@ -239,11 +239,11 @@ if (EMSCRIPTEN)
 	include(${STRIDE_NATIVE_ROOT}/CMake/StrideNativePlugin.cmake)
 	stride_native_plugin(example-plugin ${STRIDE_NATIVE_ROOT}/Plugins/Example/ExamplePlugin.cpp)
 
-	# 核心的 C API（Core.h、Runtime.h、Plugin.h 里的 SN_API）全部列进 EXPORTED_FUNCTIONS。emcc 把侧模块导入的符号记成
+	# 核心的 C API（Core.h、Debug.h、Runtime.h、Plugin.h 里的 SN_API）全部列进 EXPORTED_FUNCTIONS。emcc 把侧模块导入的符号记成
 	# "已请求的导出"，不再按 EMSCRIPTEN_KEEPALIVE 放到 Module 上（emscripten.py 的 should_export 只认 EXPORTED_FUNCTIONS），
 	# 不列出来的话，被插件或侧模块用到的 sn_alloc、sn_transforms_columns 之类在 JS 里就没有了
 	set(CORE_API_EXPORTS)
-	foreach (HEADER Core.h Runtime.h Plugin.h)
+	foreach (HEADER Core.h Debug.h Runtime.h Plugin.h)
 		file(STRINGS ${STRIDE_NATIVE_ROOT}/Include/StrideNative/${HEADER} API_LINES REGEX "^SN_API ")
 		foreach (LINE IN LISTS API_LINES)
 			if (LINE MATCHES "^SN_API [^(]*[ *]([A-Za-z0-9_]+)\\(")
@@ -288,7 +288,7 @@ if (EMSCRIPTEN)
 	# npm 包 @stride-ts/native（JS/）的 dist/ 放 Emscripten 的产出，旁边是 tsc 从 JS/src 编译出的绑定
 	# （JS/ 里 pnpm run build）。正式版和调试版的文件名不同，两次构建都写进同一个目录。
 	set(STRIDE_NATIVE_PACKAGE_DIST ${STRIDE_NATIVE_ROOT}/JS/dist CACHE PATH "Where the wasm modules of the @stride-ts/native package go")
-	set(PLUGIN_SDK_HEADERS ${STRIDE_NATIVE_ROOT}/Include/StrideNative/Core.h ${STRIDE_NATIVE_ROOT}/Include/StrideNative/Runtime.h ${STRIDE_NATIVE_ROOT}/Include/StrideNative/Plugin.h)
+	set(PLUGIN_SDK_HEADERS ${STRIDE_NATIVE_ROOT}/Include/StrideNative/Core.h ${STRIDE_NATIVE_ROOT}/Include/StrideNative/Debug.h ${STRIDE_NATIVE_ROOT}/Include/StrideNative/Runtime.h ${STRIDE_NATIVE_ROOT}/Include/StrideNative/Plugin.h)
 	# 每次构建都跑（只拷有变化的文件）：dist/ 被清掉以后，没有重新链接也能补回来
 	add_custom_target(stride-native-package ALL
 		COMMAND ${CMAKE_COMMAND} -E make_directory ${STRIDE_NATIVE_PACKAGE_DIST}

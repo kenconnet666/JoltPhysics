@@ -1,4 +1,5 @@
 #include <TestSupport.h>
+#include <StrideNative/Debug.h>
 #include <StrideNative/Navigation.h>
 #include <StrideNative/Physics.h>
 #include <StrideNative/Runtime.h>
@@ -10,6 +11,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <string>
 #include <vector>
 
 namespace
@@ -736,4 +738,39 @@ TEST_CASE("Navmesh builds in tiles, finds paths, serializes and drives a crowd")
 	sn_crowd_destroy(crowd);
 	sn_nav_destroy(loaded);
 	sn_nav_destroy(navmesh);
+}
+
+TEST_CASE("Debug counters, timings and log lines reach the JSON snapshot and drain")
+{
+	ModuleScope module;
+	sn_debug_set_enabled(0);
+	sn_debug_reset_timings();
+	sn_debug_drain_log();
+	// 关着时：计数器和普通日志不记，错误照样排队（调试器连上之前的错误不丢）
+	sn_debug_set_counter("test.off", 1);
+	sn_debug_log(SN_LOG_INFO, "ignored");
+	sn_debug_log(SN_LOG_ERROR, "kept \"quoted\"\n");
+	CHECK(std::string(sn_debug_snapshot()).find("test.off") == std::string::npos);
+	CHECK(std::string(sn_debug_drain_log()) == R"([{"level":3,"message":"kept \"quoted\"\n"}])");
+	CHECK(std::string(sn_debug_drain_log()) == "[]");
+
+	sn_debug_set_enabled(1);
+	sn_debug_set_counter("test.value", 2.5);
+	sn_debug_add_timing("test.timing", 1.0);
+	sn_debug_add_timing("test.timing", 3.0);
+	int32_t world = sn_physics_create(16, 0, nullptr);
+	REQUIRE(world > 0);
+	const TestBox boxes[] = { cFloor, DynamicBox(0, 5, 0) };
+	REQUIRE(AddBoxes(world, boxes, 2) == 0);
+	REQUIRE(sn_physics_step(world, 1.0f / 60.0f, 1) == SN_OK);
+	sn_physics_destroy(world);
+
+	std::string snapshot = sn_debug_snapshot();
+	CHECK(snapshot.find(R"("test.value":2.5)") != std::string::npos);
+	CHECK(snapshot.find(R"("test.timing":{"calls":2,"ms":4,"maxMs":3})") != std::string::npos);
+	CHECK(snapshot.find(R"("physics.bodies":2)") != std::string::npos);
+	CHECK(snapshot.find(R"("physics.step":{"calls":1,)") != std::string::npos);
+	sn_debug_reset_timings();
+	CHECK(std::string(sn_debug_snapshot()).find("physics.step") == std::string::npos);
+	sn_debug_set_enabled(0);
 }

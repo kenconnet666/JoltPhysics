@@ -9,7 +9,7 @@
 ## 能做什么、不能做什么
 
 - **只用 C API**：[Plugin.h](../Include/StrideNative/Plugin.h)（任务、并行、错误、关机钩子）、Core.h（内存、任务结果）、
-  Runtime.h（变换存储）。不要用 StrideNative 的 C++ 内部实现（`Core/*.h`）：句柄表之类的模板静态变量每个模块各有一份。
+  Runtime.h（变换存储）、[Debug.h](../Include/StrideNative/Debug.h)（计数器、计时和日志，stride-ts 的调试 CLI 里看得到）。不要用 StrideNative 的 C++ 内部实现（`Core/*.h`）：句柄表之类的模板静态变量每个模块各有一份。
 - **标准库只用示例插件用到的那些**。核心模块恰好导出示例插件（"ABI 探针"，它在核心的链接行上）导入的符号，插件用了别的
   库函数，加载时报 `undefined symbol`。需要新的库功能时，在示例插件里用上它、重编运行时，下一个版本就有了。
 - **和运行时用同一个 emsdk 版本**（README 的"Build and test"里写着），C++ 标准库的 ABI 要一致。

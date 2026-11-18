@@ -26,23 +26,37 @@ export class NativeError extends Error {
 	}
 }
 
-/** 两个模块都有的 C 函数（Core.h）。各模块自己的列表在 *-core.d.mts 里。 */
-export type CoreExport =
-	| 'sn_init' | 'sn_shutdown' | 'sn_worker_thread_count' | 'sn_last_error' | 'sn_alloc' | 'sn_free'
-	| 'sn_task_status_address' | 'sn_task_error' | 'sn_task_result' | 'sn_task_output_count'
-	| 'sn_task_output_size' | 'sn_task_output_data' | 'sn_task_release';
+import type { CoreExport, NativeExports } from './native-exports.ts';
+
+export type { CoreExport };
+
+export interface NativeDebugSnapshot {
+	readonly counters: Readonly<Record<string, number>>;
+	/** 每项：调用次数、总毫秒数、最长一次。 */
+	readonly timings: Readonly<Record<string, { readonly calls: number; readonly ms: number; readonly maxMs: number }>>;
+	/** wasm 里有：堆大小（heapBytes）和 malloc 分出去的字节（allocatedBytes）。 */
+	readonly memory: Readonly<Record<string, number>>;
+}
+
+export interface NativeLogLine {
+	readonly level: 'debug' | 'info' | 'warn' | 'error';
+	readonly message: string;
+}
+
+/** SN_LOG_DEBUG..SN_LOG_ERROR。 */
+const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const;
 
 /** C 函数在 JS 里的样子：指针、句柄、整数和 float 都是 number（int64 参数会是 bigint，目前没有）。 */
 export type NativeFunction = (...args: number[]) => number;
 
 /**
- * Emscripten 编出的模块：C 函数以 `_` 加名字导出，外加我们要用的运行时成员。函数名逐个列出而不用
- * `_sn_${string}` 这样的索引签名：写错名字在编译期就报，而且不会因为 noUncheckedIndexedAccess 变成可能 undefined。
+ * Emscripten 编出的模块：C 函数以 `_` 加名字导出，外加我们要用的运行时成员。签名（参数名、个数、注释）从头文件生成
+ * （native-exports.ts），这个模块有哪些按名字挑出来：写错名字、传错参数个数在编译期就报，IDE 能跳到声明。
  */
 export type CoreModule<E extends string = never> = {
 	readonly wasmMemory: WebAssembly.Memory;
 	UTF8ToString(ptr: number): string;
-} & { readonly [K in CoreExport | E as `_${K}`]: NativeFunction };
+} & Pick<NativeExports, Extract<`_${CoreExport | E}`, keyof NativeExports>>;
 
 /** Emscripten 的模块工厂（MODULARIZE + EXPORT_ES6 生成的默认导出）。 */
 export type CoreFactory<E extends string> = (options: Record<string, unknown>) => Promise<CoreModule<E>>;
@@ -229,6 +243,33 @@ export class NativeModule<E extends string = never> implements Disposable {
 	/** 任务系统的工作线程数（等待任务时当前线程也会帮着跑）。 */
 	get workerThreadCount(): number {
 		return this.module._sn_worker_thread_count();
+	}
+
+	/**
+	 * 收集调试数据（Include/StrideNative/Debug.h 的计数器、计时和日志）。默认关，关着时埋点几乎没有开销；
+	 * stride-ts 的调试桥连上调试 CLI 时打开。
+	 */
+	get debugCollecting(): boolean {
+		return this.module._sn_debug_enabled() !== 0;
+	}
+
+	set debugCollecting(on: boolean) {
+		this.module._sn_debug_set_enabled(on ? 1 : 0);
+	}
+
+	/** 计数器的当前值、各项计时（打开收集以来或上次 resetDebugTimings 以来）和内存。 */
+	debugSnapshot(): NativeDebugSnapshot {
+		return JSON.parse(this.module.UTF8ToString(this.module._sn_debug_snapshot())) as NativeDebugSnapshot;
+	}
+
+	resetDebugTimings(): void {
+		this.module._sn_debug_reset_timings();
+	}
+
+	/** 取走排队的原生日志（Jolt 的 Trace、断言、物理步进出错……）。收集关着时只有错误会排队。 */
+	drainDebugLog(): NativeLogLine[] {
+		return (JSON.parse(this.module.UTF8ToString(this.module._sn_debug_drain_log())) as { level: number; message: string }[])
+			.map(({ level, message }) => ({ level: LOG_LEVELS[level] ?? 'info', message }));
 	}
 
 	/** 停掉任务系统、释放所有原生对象；之后模块不能再用。 */
