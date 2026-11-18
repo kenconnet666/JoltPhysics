@@ -399,6 +399,13 @@ export class PhysicsWorld extends NativeObject<StrideNative> {
 		return this.#bodyCount;
 	}
 
+	/** 运行中改重力（Stride 的 PoseGravity）；睡着的物体要被碰到或唤醒才受新的重力。 */
+	setWorldGravity(gravity: Vec3): void {
+		const f = this.#queryFloats;
+		f[0] = gravity[0]!; f[1] = gravity[1]!; f[2] = gravity[2]!;
+		this.native.check(this.native.module._sn_physics_set_gravity(this[HANDLE], this.#query), 'sn_physics_set_gravity');
+	}
+
 	/** 三角网格形状：positions 是 xyz，indices 每三个一个三角形（逆时针为正面）。 */
 	createMesh(positions: Float32Array, indices: Uint32Array): PhysicsMesh {
 		const n = this.native;

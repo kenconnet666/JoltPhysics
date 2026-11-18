@@ -607,6 +607,18 @@ SN_API void sn_physics_destroy(int32_t world)
 	bodies.DestroyBodies(ids.data(), int(ids.size()));
 }
 
+SN_API int32_t sn_physics_set_gravity(int32_t world, const float *gravity)
+{
+	World *w = GetWorld(world);
+	if (w == nullptr)
+		return SN_ERROR_INVALID_HANDLE;
+	if (gravity == nullptr)
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "gravity is required");
+	w->mSystem.SetGravity(Load3(gravity));
+	std::copy(gravity, gravity + 3, w->mSettings.gravity);
+	return SN_OK;
+}
+
 SN_API int32_t sn_physics_create_mesh(int32_t world, const float *positions, uint32_t vertex_count, const uint32_t *indices, uint32_t index_count)
 {
 	World *w = GetWorld(world);

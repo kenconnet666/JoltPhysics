@@ -22,6 +22,8 @@ typedef struct sn_physics_settings
 /// 活得久，绑定的槽位在物体存在期间不能释放。settings 为空时用 Stride 的默认值（重力 -9.8、阻尼 0.05、全部层相互碰撞）。
 SN_API int32_t sn_physics_create(uint32_t max_bodies, int32_t transforms, const sn_physics_settings *settings);
 SN_API void sn_physics_destroy(int32_t world);
+/// 运行中改重力（Stride 的 BepuSimulation.PoseGravity）；睡着的物体要被碰到或唤醒才受新的重力。
+SN_API int32_t sn_physics_set_gravity(int32_t world, const float *gravity);
 
 // ---------------------------------------------------------------------------------------------
 // 形状和物体

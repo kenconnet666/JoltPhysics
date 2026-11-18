@@ -300,6 +300,13 @@ describe('stride-native and stride-tools', () => {
 			world.setGravity(crate, true);
 			for (let i = 0; i < 30; i++) world.step(1 / 60);
 			assert.ok(transforms.position[slot * 3 + 1] < 9);
+			// 运行中改重力：朝上，下落的箱子（约 -4.9 m/s）一秒后往上走
+			world.setWorldGravity([0, 9.8, 0]);
+			for (let i = 0; i < 60; i++) world.step(1 / 60);
+			const rising = [0, 0, 0];
+			world.velocity(crate, rising, [0, 0, 0]);
+			assert.ok(rising[1] > 0, 'gravity changed at run time');
+			world.setWorldGravity([0, -9.8, 0]);
 			world.setNeverSleep(crate, false);
 			for (let i = 0; i < 240; i++) world.step(1 / 60);
 			assert.equal(world.isAwake(crate), false, 'resting bodies fall asleep once allowed');
