@@ -178,25 +178,18 @@ if (EMSCRIPTEN)
 		-sEXPORT_NAME=createStrideToolsCore -sENVIRONMENT=node,worker)
 	set_target_properties(stride-tools-core PROPERTIES SUFFIX ".mjs")
 
-	# dist/ holds what JS consumers load: the Emscripten output next to our hand-written wrappers.
-	set(DIST_DIR ${CMAKE_BINARY_DIR}/dist)
-	foreach (TARGET_NAME stride-native-core stride-tools-core)
-		add_custom_command(TARGET ${TARGET_NAME} POST_BUILD
-			COMMAND ${CMAKE_COMMAND} -E make_directory ${DIST_DIR}
-			COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:${TARGET_NAME}> $<TARGET_FILE_DIR:${TARGET_NAME}>/${TARGET_NAME}.wasm ${DIST_DIR}
-			VERBATIM)
-	endforeach()
-	# The wrappers are copied by their own target: changing only JS relinks nothing, so a POST_BUILD step
-	# on the wasm targets would leave dist/ with the old wrappers.
-	file(GLOB JS_WRAPPERS ${STRIDE_NATIVE_ROOT}/JS/*)
-	set(JS_STAMP ${CMAKE_BINARY_DIR}/js-wrappers.stamp)
-	add_custom_command(OUTPUT ${JS_STAMP}
-		COMMAND ${CMAKE_COMMAND} -E make_directory ${DIST_DIR}
-		COMMAND ${CMAKE_COMMAND} -E copy_if_different ${JS_WRAPPERS} ${DIST_DIR}
-		COMMAND ${CMAKE_COMMAND} -E touch ${JS_STAMP}
-		DEPENDS ${JS_WRAPPERS}
+	# npm 包 @stride-ts/native（JS/）的 dist/ 放 Emscripten 的产出，旁边是 tsc 从 JS/src 编译出的绑定
+	# （JS/ 里 pnpm run build）。Debug 和 Release 写进同一个目录，最后编的那个生效。
+	set(STRIDE_NATIVE_PACKAGE_DIST ${STRIDE_NATIVE_ROOT}/JS/dist CACHE PATH "Where the wasm modules of the @stride-ts/native package go")
+	# 每次构建都跑（只拷有变化的文件）：dist/ 被清掉以后，没有重新链接也能补回来
+	add_custom_target(stride-native-package ALL
+		COMMAND ${CMAKE_COMMAND} -E make_directory ${STRIDE_NATIVE_PACKAGE_DIST}
+		COMMAND ${CMAKE_COMMAND} -E copy_if_different
+			$<TARGET_FILE:stride-native-core> $<TARGET_FILE_DIR:stride-native-core>/stride-native-core.wasm
+			$<TARGET_FILE:stride-tools-core> $<TARGET_FILE_DIR:stride-tools-core>/stride-tools-core.wasm
+			${STRIDE_NATIVE_PACKAGE_DIST}
+		DEPENDS stride-native-core stride-tools-core
 		VERBATIM)
-	add_custom_target(stride-native-js ALL DEPENDS ${JS_STAMP})
 else()
 	# Native test executables, one per module (the two link different zstd/transcoder builds):
 	# the same C API as the wasm modules, debuggable in the IDE.

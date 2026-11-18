@@ -1,5 +1,5 @@
 // Emscripten 生成的 stride-tools-core.mjs 的类型：模块工厂和这个模块导出的 C 函数（Tools.h）。
-import type { CoreFactory } from './native-module.ts';
+import type { CoreFactory } from './native-module.js';
 
 export type ToolsExport =
 	| 'st_scene_load' | 'st_scene_mesh_info' | 'st_scene_mesh_copy' | 'st_scene_destroy' | 'st_generate_tangents'

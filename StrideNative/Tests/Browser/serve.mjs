@@ -1,17 +1,16 @@
 // Serves the browser test page with the headers shared memory needs (COOP/COEP).
 // Fixtures the runtime consumes are produced here first with stride-tools, as the editor would.
-//   node StrideNative/Tests/Browser/serve.mjs [port]     (STRIDE_NATIVE_DIST = build dist folder)
+//   node StrideNative/Tests/Browser/serve.mjs [port]     (测的是 npm 包的 JS/dist，先跑 Scripts/build-wasm.ps1)
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { stripTypeScriptTypes } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const dist = process.env.STRIDE_NATIVE_DIST ?? path.join(here, '..', '..', 'Build', 'WASM_Release', 'dist');
+const dist = path.join(here, '..', '..', 'JS', 'dist');
 const port = Number(process.argv[2] ?? 8190);
 
-const { createStrideTools } = await import(pathToFileURL(path.join(dist, 'stride-tools.ts')));
+const { createStrideTools } = await import(pathToFileURL(path.join(dist, 'stride-tools.js')));
 
 async function makeFixtures() {
 	const tools = await createStrideTools();
@@ -57,7 +56,7 @@ async function makeFixtures() {
 }
 
 const fixtures = await makeFixtures();
-const types = { '.html': 'text/html', '.mjs': 'text/javascript', '.js': 'text/javascript', '.ts': 'text/javascript', '.wasm': 'application/wasm' };
+const types = { '.html': 'text/html', '.mjs': 'text/javascript', '.js': 'text/javascript', '.map': 'application/json', '.wasm': 'application/wasm' };
 
 createServer(async (request, response) => {
 	const url = new URL(request.url, 'http://localhost');
@@ -75,8 +74,6 @@ createServer(async (request, response) => {
 			file = url.pathname === '/' ? path.join(here, 'index.html') : path.join(dist, path.normalize(url.pathname.replace(/^\/dist\//, '')));
 			if (!file.startsWith(here) && !file.startsWith(dist)) throw new Error('outside served folders');
 			body = await readFile(file);
-			// 绑定是 TypeScript，浏览器拿到的是去掉类型的版本（只用了可擦除的语法，行列不变）
-			if (file.endsWith('.ts')) body = stripTypeScriptTypes(body.toString('utf8'));
 		}
 		response.writeHead(200, { ...headers, 'Content-Type': types[path.extname(file ?? '')] ?? 'application/octet-stream' });
 		response.end(body);

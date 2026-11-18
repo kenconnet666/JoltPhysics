@@ -1,5 +1,6 @@
 // stride-native 运行时模块的 JS API（浏览器和 Node）。页面必须跨源隔离（COOP: same-origin，COEP: require-corp）。
-import createStrideNativeCore, { type RuntimeExport } from './stride-native-core.mjs';
+import createStrideNativeCore from './stride-native-core.mjs';
+import type { RuntimeExport } from './stride-native-core.mjs';
 import {
 	HANDLE, NAV_CONFIG_SIZE, NativeModule, NativeObject, enumCode, instantiate, writeNavConfig,
 	type Branded, type ModuleOptions, type NavConfig,

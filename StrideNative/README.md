@@ -21,13 +21,16 @@ StrideNative/
   Source/Shared/        code both modules use (tiled navmesh builder and its file format)
   Source/Runtime/       stride-native exports
   Source/Tools/         stride-tools exports
-  JS/                   TypeScript bindings: native-module.ts (shared), stride-native.ts, stride-tools.ts;
-                        *-core.d.mts type the Emscripten factories
+  JS/                   the npm package @stride-ts/native: src/ holds the TypeScript bindings
+                        (native-module.ts, stride-native.ts, stride-tools.ts, *-core.d.mts for the
+                        Emscripten factories); dist/ (generated) holds the compiled bindings next to
+                        the wasm modules
   ThirdParty/           libraries copied once; versions and licenses in ThirdParty/README.md
   Tests/Native/         doctest executables, one per module (debug these in CLion)
   Tests/JS/             Node tests: tools produce assets, the runtime consumes them
   Tests/Browser/        COOP/COEP server and test page for a real browser
-  Scripts/build-wasm.ps1
+  Scripts/build-wasm.ps1     build, test and pack the npm package
+  Scripts/release-native.ps1 publish the packed package as a GitHub Release
 ```
 
 Each third-party library is a static library; our code is object libraries so every exported
@@ -53,11 +56,11 @@ function reaches the module; each wasm module is the final link of those.
 
 ## Build and test
 
-Requirements: emsdk 6.0.8 at `C:\Users\Administrator\emsdk`, Node 22.18+ or 24 (runs the
-TypeScript bindings by stripping types); CMake and Ninja are taken from CLion.
+Requirements: emsdk 6.0.8 at `C:\Users\Administrator\emsdk`, Node 22+, pnpm 10; CMake and Ninja
+are taken from CLion.
 
 ```powershell
-pwsh StrideNative/Scripts/build-wasm.ps1          # both modules + Node tests -> Build/WASM_Release/dist
+pwsh StrideNative/Scripts/build-wasm.ps1          # wasm modules -> JS/dist, tsc, Node tests, pnpm pack
 node StrideNative/Tests/Browser/serve.mjs 8190    # then open http://localhost:8190/
 ```
 
@@ -68,10 +71,33 @@ In CLion the CMake root is `StrideNative/`; profiles `Debug` (MinGW, runs
 
 `-DSTRIDE_NATIVE_BASIS_DEBUG=ON` prints Basis Universal's internal error messages.
 
+## Package and release
+
+`JS/` is the npm package `@stride-ts/native`. `build-wasm.ps1` puts the wasm modules into `JS/dist`
+(the `stride-native-package` CMake target), compiles `JS/src` with tsc (relative imports are written
+with `.ts` and rewritten to `.js`), runs the Node tests against `JS/dist` and packs
+`JS/stride-ts-native-<version>.tgz`. The tests and the browser page load `JS/dist`, i.e. what ships.
+
+Until the package is on npm it is released on GitHub: bump `version` in `JS/package.json`, run
+`build-wasm.ps1`, commit and push to `origin/stride`, then `pwsh StrideNative/Scripts/release-native.ps1`.
+It creates the release `native-v<version>` on kenconnet666/JoltPhysics with the tarball attached and
+prints its download URL. Consumers install it with a pnpm override (stride-ts does this in
+`pnpm-workspace.yaml`):
+
+```yaml
+overrides:
+  '@stride-ts/native': https://github.com/kenconnet666/JoltPhysics/releases/download/native-v0.1.0/stride-ts-native-0.1.0.tgz
+```
+
+and depend on `"@stride-ts/native": "^0.1.0"` as usual. Bundlers must not pre-bundle it (Vite:
+`optimizeDeps.exclude`), because the Emscripten modules find their `.wasm` and worker through
+`import.meta.url`. The wasm files are also exported (`@stride-ts/native/stride-native-core.wasm`) for
+setups that pass `locateFile`.
+
 ## JS usage
 
 ```ts
-import { createStrideNative } from './dist/stride-native.ts';
+import { createStrideNative } from '@stride-ts/native';
 
 const native = await createStrideNative();             // workers: hardwareConcurrency - 1
 const texture = await native.transcodeKtx2(ktx2Bytes, 'bc7');
@@ -79,9 +105,7 @@ using navMesh = native.loadNavMesh(bakedBytes);        // or navMesh.destroy()
 const path = navMesh.findPath([0, 0, 0], [10, 0, 5]);
 ```
 
-The bindings only use erasable TypeScript syntax: Node runs them directly, bundlers (Vite) compile
-them, and the browser test server strips the types before serving. Enumerations are string unions,
-handles are hidden, ids are branded (`BodyId`, `AgentId`), and failures are `NativeError` with a
+Enumerations are string unions, handles are hidden, ids are branded (`BodyId`, `AgentId`), and failures are `NativeError` with a
 string `code` (`'invalid-argument' | 'invalid-handle' | 'failed' | 'not-initialized'`).
 
 Inputs are copied into module memory and outputs copied back, except

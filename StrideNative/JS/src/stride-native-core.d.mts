@@ -1,5 +1,5 @@
 // Emscripten 生成的 stride-native-core.mjs 的类型：模块工厂和这个模块导出的 C 函数（Runtime.h）。
-import type { CoreFactory } from './native-module.ts';
+import type { CoreFactory } from './native-module.js';
 
 export type RuntimeExport =
 	| 'sn_transforms_create' | 'sn_transforms_destroy' | 'sn_transforms_columns' | 'sn_transforms_alloc'

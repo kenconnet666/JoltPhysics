@@ -1,7 +1,7 @@
 // StrideNative 两个 wasm 模块（stride-native、stride-tools）共用的 JS 侧：实例化、内存视图、结构体读写、
 // 错误和原生任务的等待。两个模块都是多线程的，内存是 SharedArrayBuffer。
-// 这份代码是 TypeScript，只用可擦除的语法：Node 24 直接运行，浏览器测试页由 serve.mjs 去掉类型再发出去，
-// stride-ts 原样拷进 packages/native/dist。
+// 这是 npm 包 @stride-ts/native 的源码：tsc 编译进 dist/（相对导入写 .ts，产出里改成 .js），
+// 和 Emscripten 产出的 .mjs、.wasm 放在一起，用 pnpm pack 打包。
 
 /** C 侧 SN_ERROR_* 对应的错误种类。 */
 export type NativeErrorCode = 'invalid-argument' | 'invalid-handle' | 'failed' | 'not-initialized';

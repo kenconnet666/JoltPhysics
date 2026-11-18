@@ -1,0 +1,29 @@
+{
+  // @stride-ts/native 的编译配置：src/*.ts 编译成 dist/*.js 加 .d.ts（带 declarationMap，使用方跳转能到源码）。
+  // Emscripten 的 *-core.mjs、*.wasm 由 CMake 放进 dist/，*-core.d.mts 由 scripts/copy-declarations.mjs 拷过去。
+  "compilerOptions": {
+    "target": "es2024",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "lib": ["es2024", "esnext.disposable", "dom"],
+    "types": ["node"],
+    "strict": true,
+    "exactOptionalPropertyTypes": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "verbatimModuleSyntax": true,
+    "erasableSyntaxOnly": true,
+    "skipLibCheck": true,
+    "rootDir": "src",
+    "outDir": "dist",
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    // 源码里的相对导入写的是 .ts，产出的 JS 里改成 .js
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true
+  },
+  "include": ["src"]
+}

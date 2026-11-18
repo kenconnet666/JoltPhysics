@@ -1,16 +1,14 @@
 // End-to-end tests of both wasm modules in Node: tools produce assets, the runtime consumes them.
-// Run through Scripts/build-wasm.ps1, which sets STRIDE_NATIVE_DIST to the build's dist folder.
+// 测的是打包出去的东西：npm 包 @stride-ts/native 的 JS/dist（Scripts/build-wasm.ps1 先构建它）。
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { after, before, describe, it } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
 
-const dist = process.env.STRIDE_NATIVE_DIST;
-assert.ok(dist, 'STRIDE_NATIVE_DIST must point at the build dist folder');
-// 绑定是 TypeScript：Node 24 直接去掉类型运行
-const { createStrideNative, NativeError } = await import(pathToFileURL(path.join(dist, 'stride-native.ts')));
-const { createStrideTools } = await import(pathToFileURL(path.join(dist, 'stride-tools.ts')));
+const dist = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'JS', 'dist');
+const { createStrideNative, NativeError } = await import(pathToFileURL(path.join(dist, 'stride-native.js')));
+const { createStrideTools } = await import(pathToFileURL(path.join(dist, 'stride-tools.js')));
 
 const testData = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'Data');
 const fontPath = process.env.STRIDE_TEST_FONT ?? 'C:/Windows/Fonts/arial.ttf';

@@ -1,6 +1,7 @@
 // stride-tools 资源管线模块的 JS API（Node）。耗时的操作返回原生任务背后的 Promise，可以同时处理多个资源：
 // 一起发起、一起 await，它们共用模块的任务系统。
-import createStrideToolsCore, { type ToolsExport } from './stride-tools-core.mjs';
+import createStrideToolsCore from './stride-tools-core.mjs';
+import type { ToolsExport } from './stride-tools-core.mjs';
 import { NAV_CONFIG_SIZE, NativeModule, NativeObject, HANDLE, enumCode, instantiate, writeNavConfig, type ModuleOptions, type NavConfig } from './native-module.ts';
 
 export { NativeError, defaultWorkerThreads } from './native-module.ts';
