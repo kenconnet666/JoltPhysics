@@ -8,7 +8,7 @@ import path from 'node:path';
 import { crc32, deflateSync } from 'node:zlib';
 
 const dist = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'JS', 'dist');
-const { createStrideNative, NativeError } = await import(pathToFileURL(path.join(dist, 'stride-native.js')));
+const { createStrideNative, NativeError, AnimationBatch } = await import(pathToFileURL(path.join(dist, 'stride-native.js')));
 const { createStrideTools } = await import(pathToFileURL(path.join(dist, 'stride-tools.js')));
 const [{ physics }, { texture }, { navigation }] = await Promise.all(['physics', 'texture', 'navigation'].map((name) => import(pathToFileURL(path.join(dist, `${name}.js`)))));
 const features = [physics, texture, navigation];
@@ -445,12 +445,40 @@ describe('stride-native and stride-tools', () => {
 		assert.equal(animation.duration, 1);
 
 		const instances = Array.from({ length: 64 }, () => skeleton.createInstance());
-		native.sampleAnimations(instances.map((instance) => ({ instance, animation, ratio: 1 })));
+		using batch = new AnimationBatch(native);
+		for (const instance of instances) batch.instance(instance).push(animation, 1);
+		batch.evaluate();
 		// At the end the root is rotated 90 degrees around Z: the child at local (0, 1, 0) ends up at (-1, 0, 0).
 		for (const instance of instances) {
 			const child = instance.modelMatrices().subarray(16, 32);
 			assert.ok(Math.abs(child[12] + 1) < 1e-3 && Math.abs(child[13]) < 1e-3, `child translation ${child[12]}, ${child[13]}`);
 		}
+
+		// 混合（同 Stride 的 AnimationBlender）：0 秒是 0°、1 秒是 90°，各取一份按 0.5 混合是 45°；再叠加一份 1 秒的姿势（加 90°）是 135°
+		const [a] = instances;
+		const childAngle = () => {
+			const child = a.modelMatrices().subarray(16, 32);
+			// + 0：-0 换成 0（strictEqual 区分它们）
+			return Math.round(Math.atan2(-child[12], child[13]) * 180 / Math.PI) + 0;
+		};
+		batch.clear().instance(a).push(animation, 0).push(animation, 1).blend(0.5).evaluate();
+		assert.equal(childAngle(), 45);
+		batch.clear().instance(a).push(animation, 0.5).push(animation, 1).add(1).evaluate();
+		assert.equal(childAngle(), 135);
+		batch.clear().instance(a).push(animation, 1).push(animation, 1).subtract(1).evaluate();
+		assert.equal(childAngle(), 0);
+		batch.clear().instance(a).evaluate();
+		assert.equal(childAngle(), 0, 'no operations: rest pose');
+		assert.throws(() => batch.clear().instance(a).push(animation, 0).blend(0.5).evaluate(), /animation evaluation request 0 failed/);
+
+		// 蒙皮矩阵 = 关节的模型矩阵 × 逆绑定；绑定时 child 在 (0, 1, 0)，逆绑定是平移 (0, -1, 0)
+		const skin = native.createSkin(new Uint32Array([1]), new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, -1, 0, 1]));
+		using palette = skin.createPalette();
+		batch.clear().instance(a).push(animation, 1).skin(skin, palette).evaluate();
+		// 绑定时在 child 原点的顶点 (0, 1, 0) 现在在 (-1, 0, 0)：蒙皮矩阵把 (0, 1, 0) 变到 (-1, 0, 0)
+		const m = palette.matrices();
+		assert.ok(Math.abs(m[4] * 1 + m[12] + 1) < 1e-3 && Math.abs(m[5] * 1 + m[13]) < 1e-3, `skinned (${m[4] + m[12]}, ${m[5] + m[13]})`);
+		skin.destroy();
 		instances.forEach((instance) => instance.destroy());
 		animation.destroy();
 		skeleton.destroy();

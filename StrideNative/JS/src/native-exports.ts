@@ -15,14 +15,20 @@ export interface NativeExports {
 	/** C: Runtime.h */
 	_sn_anim_destroy_skeleton(skeleton: number): void;
 	/**
-	 * An instance owns the sampling context and the model-space matrices of one character.
+	 * Runs every request's program (at most 8 poses deep, leaving one pose), converts to model space, in
+	 * parallel; returns when all are done.
+	 * C: Runtime.h
+	 */
+	_sn_anim_evaluate_batch(ops: number, requests: number, count: number): number;
+	/**
+	 * An instance owns the sampling contexts, the pose stack and the model-space matrices of one character.
 	 * C: Runtime.h
 	 */
 	_sn_anim_instance_create(skeleton: number): number;
 	/** C: Runtime.h */
 	_sn_anim_instance_destroy(instance: number): void;
 	/**
-	 * joint_count column-major 4x4 float matrices, valid while the instance lives.
+	 * joint_count column-major 4x4 float matrices (joint-to-model), valid while the instance lives.
 	 * C: Runtime.h
 	 */
 	_sn_anim_instance_model_matrices(instance: number): number;
@@ -33,13 +39,23 @@ export interface NativeExports {
 	 * C: Runtime.h
 	 */
 	_sn_anim_load_skeleton(data: number, size: number): number;
-	/**
-	 * Samples and converts to model space for every request, in parallel; returns when all are done.
-	 * C: Runtime.h
-	 */
-	_sn_anim_sample_batch(requests: number, count: number): number;
 	/** C: Runtime.h */
 	_sn_anim_skeleton_joint_count(skeleton: number): number;
+	/**
+	 * Writes the skinning matrices of every request, in parallel.
+	 * C: Runtime.h
+	 */
+	_sn_anim_skin_batch(requests: number, count: number): number;
+	/**
+	 * A skin binds a mesh to joints of a skeleton: joints are skeleton joint indices, inverse_binds one
+	 * column-major 4x4 matrix per joint (mesh to joint space at bind time).
+	 * C: Runtime.h
+	 */
+	_sn_anim_skin_create(joints: number, inverseBinds: number, jointCount: number): number;
+	/** C: Runtime.h */
+	_sn_anim_skin_destroy(skin: number): void;
+	/** C: Runtime.h */
+	_sn_anim_skin_joint_count(skin: number): number;
 	/**
 	 * Returns the agent index.
 	 * C: Navigation.h
@@ -415,11 +431,25 @@ export interface NativeExports {
 	 * C: Tools.h
 	 */
 	_st_nav_bake(vertices: number, vertexCount: number, triangles: number, triangleCount: number, config: number): number;
+	/**
+	 * Bakes an animation (FBX only) into linearly interpolated local-transform keys for every node, resampled
+	 * at sample_rate keys per second, times starting at 0. Returns a task; outputs: [0] key counts (uint32,
+	 * translation, rotation, scale per node), [1] keys in st_anim_build_animation's layout, [2] the duration
+	 * in seconds (one float). Nodes the animation leaves alone get one key of their rest transform.
+	 * C: Tools.h
+	 */
+	_st_scene_animation_bake(scene: number, animation: number, sampleRate: number): number;
+	/**
+	 * Name of an animation (FBX animation stack), valid until the scene is destroyed; null for a bad index.
+	 * C: Tools.h
+	 */
+	_st_scene_animation_name(scene: number, animation: number): number;
 	/** C: Tools.h */
 	_st_scene_destroy(scene: number): void;
 	/**
 	 * Parses a scene. data must stay alive until the task finishes. Result [0]: scene handle,
-	 * [1]: mesh count, [2]: material count.
+	 * [1]: mesh count, [2]: material count, [3]: node count, [4]: animation count.
+	 * FBX's root node is named "RootNode" (like Stride's importer); nodes keep the file's order.
 	 * C: Tools.h
 	 */
 	_st_scene_load(data: number, size: number, format: number): number;
@@ -435,6 +465,22 @@ export interface NativeExports {
 	_st_scene_mesh_copy(scene: number, mesh: number, positions: number, normals: number, uvs: number, indices: number): number;
 	/** C: Tools.h */
 	_st_scene_mesh_info(scene: number, mesh: number, outInfo: number): number;
+	/**
+	 * Skin of a skinned mesh (st_mesh_info.joint_count > 0); any output may be null.
+	 * joint_nodes: joint_count node indices. inverse_binds: joint_count column-major 4x4 matrices taking the
+	 * mesh's (baked, model-space) vertices to the joint's space at bind time, so a joint's skinning matrix is
+	 * its current node-to-model matrix times its inverse bind. joints/weights: 4 per vertex, indices into
+	 * joint_nodes sorted by decreasing weight, weights normalized (unused slots have weight 0).
+	 * C: Tools.h
+	 */
+	_st_scene_mesh_skin(scene: number, mesh: number, jointNodes: number, inverseBinds: number, joints: number, weights: number): number;
+	/** C: Tools.h */
+	_st_scene_node_info(scene: number, node: number, outInfo: number): number;
+	/**
+	 * Name of a node (UTF-8), valid until the scene is destroyed; null for a bad index.
+	 * C: Tools.h
+	 */
+	_st_scene_node_name(scene: number, node: number): number;
 	/**
 	 * Lightmap UV unwrap (xatlas). Inputs must stay alive until the task finishes.
 	 * Outputs: [0] uint32 original-vertex index per new vertex, [1] float2 uv in [0,1] per new
@@ -523,7 +569,11 @@ export type RuntimeExport =
 	| 'sn_anim_instance_create'
 	| 'sn_anim_instance_destroy'
 	| 'sn_anim_instance_model_matrices'
-	| 'sn_anim_sample_batch'
+	| 'sn_anim_evaluate_batch'
+	| 'sn_anim_skin_create'
+	| 'sn_anim_skin_destroy'
+	| 'sn_anim_skin_joint_count'
+	| 'sn_anim_skin_batch'
 	| 'sn_ktx2_get_info'
 	| 'sn_ktx2_transcode';
 
@@ -534,6 +584,11 @@ export type ToolsExport =
 	| 'st_scene_mesh_info'
 	| 'st_scene_material_name'
 	| 'st_scene_mesh_copy'
+	| 'st_scene_node_info'
+	| 'st_scene_node_name'
+	| 'st_scene_mesh_skin'
+	| 'st_scene_animation_name'
+	| 'st_scene_animation_bake'
 	| 'st_generate_tangents'
 	| 'st_meshopt_optimize'
 	| 'st_meshopt_simplify'

@@ -108,19 +108,58 @@ SN_API void sn_anim_destroy_animation(int32_t animation);
 SN_API int32_t sn_anim_skeleton_joint_count(int32_t skeleton);
 SN_API float sn_anim_animation_duration(int32_t animation);
 
-/// An instance owns the sampling context and the model-space matrices of one character.
+/// An instance owns the sampling contexts, the pose stack and the model-space matrices of one character.
 SN_API int32_t sn_anim_instance_create(int32_t skeleton);
 SN_API void sn_anim_instance_destroy(int32_t instance);
-/// joint_count column-major 4x4 float matrices, valid while the instance lives.
+/// joint_count column-major 4x4 float matrices (joint-to-model), valid while the instance lives.
 SN_API const float *sn_anim_instance_model_matrices(int32_t instance);
 
-typedef struct sn_anim_sample_request
+// A pose is computed by a small postfix program per instance, like Stride's AnimationOperation list:
+// PUSH samples a clip onto the stack; BLEND, ADD and SUBTRACT pop the top two poses (a below b) and
+// push the result. The blending math is Stride's AnimationBlender: per joint, translation and scale
+// lerp(a, a op b) and rotation slerp(a, a op b) by factor, where for BLEND "a op b" is b, for ADD
+// a + b (rotation b·a), for SUBTRACT a − b (rotation conj(b)·a).
+enum
+{
+	SN_ANIM_PUSH = 0,
+	SN_ANIM_BLEND = 1,
+	SN_ANIM_ADD = 2,
+	SN_ANIM_SUBTRACT = 3,
+};
+
+typedef struct sn_anim_op
+{
+	int32_t type;					///< SN_ANIM_*
+	int32_t animation;				///< SN_ANIM_PUSH: the clip
+	float time;						///< SN_ANIM_PUSH: seconds into the clip, clamped to [0, duration]
+	float factor;					///< blends: 0 keeps a, 1 applies b fully
+} sn_anim_op;
+
+typedef struct sn_anim_evaluate_request
 {
 	int32_t instance;
-	int32_t animation;
-	float ratio;					///< Normalized time in [0, 1]
+	uint32_t first_op;				///< index into the ops array
+	uint32_t op_count;				///< 0 evaluates the rest pose
 	int32_t result;					///< Written by the call
-} sn_anim_sample_request;
+} sn_anim_evaluate_request;
 
-/// Samples and converts to model space for every request, in parallel; returns when all are done.
-SN_API int32_t sn_anim_sample_batch(sn_anim_sample_request *requests, uint32_t count);
+/// Runs every request's program (at most 8 poses deep, leaving one pose), converts to model space, in
+/// parallel; returns when all are done.
+SN_API int32_t sn_anim_evaluate_batch(const sn_anim_op *ops, sn_anim_evaluate_request *requests, uint32_t count);
+
+/// A skin binds a mesh to joints of a skeleton: joints are skeleton joint indices, inverse_binds one
+/// column-major 4x4 matrix per joint (mesh to joint space at bind time).
+SN_API int32_t sn_anim_skin_create(const uint32_t *joints, const float *inverse_binds, uint32_t joint_count);
+SN_API void sn_anim_skin_destroy(int32_t skin);
+SN_API int32_t sn_anim_skin_joint_count(int32_t skin);
+
+typedef struct sn_anim_skin_request
+{
+	int32_t instance;				///< evaluated with sn_anim_evaluate_batch
+	int32_t skin;
+	float *output;					///< joint_count column-major 4x4 matrices: model matrix of the joint times its inverse bind
+	int32_t result;					///< Written by the call
+} sn_anim_skin_request;
+
+/// Writes the skinning matrices of every request, in parallel.
+SN_API int32_t sn_anim_skin_batch(sn_anim_skin_request *requests, uint32_t count);

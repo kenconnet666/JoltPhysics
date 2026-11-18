@@ -16,13 +16,47 @@ const NO_MATERIAL = 0xffffffff;
 const BASIS_MODES: Record<BasisMode, number> = { uastc: 0, etc1s: 1 };
 
 export interface MeshData {
-	/** 模型空间（节点的世界变换已经烘焙进去），每个顶点 xyz。 */
+	/** 模型空间（节点的世界变换已经烘焙进去；蒙皮网格按绑定时的姿势），每个顶点 xyz。 */
 	positions: Float32Array;
 	normals: Float32Array | null;
 	uvs: Float32Array | null;
 	indices: Uint32Array;
 	/** 在 Scene.materials 里的下标；没有材质时是 null。 */
 	material: number | null;
+	/** 挂着这个网格的节点（Scene.nodes 的下标）。 */
+	node: number;
+	/** 蒙皮网格的蒙皮；别的网格是 null。 */
+	skin: MeshSkin | null;
+}
+
+export interface MeshSkin {
+	/** 影响这个网格的关节，Scene.nodes 的下标。 */
+	jointNodes: Uint32Array;
+	/** 每个关节一个列主序 4x4：烘焙后的顶点到关节空间（绑定时）。关节当前的节点到模型矩阵乘它就是蒙皮矩阵。 */
+	inverseBinds: Float32Array;
+	/** 每个顶点 4 个，jointNodes 的下标，按权重从大到小。 */
+	joints: Uint16Array;
+	/** 每个顶点 4 个，和为 1，没用的是 0。 */
+	weights: Float32Array;
+}
+
+/** 场景的节点（静止姿势，文件里的默认姿势）。按深度优先排，父节点在前；FBX 的根节点叫 RootNode。 */
+export interface SceneNode {
+	name: string;
+	/** 根是 -1。 */
+	parent: number;
+	translation: [number, number, number];
+	/** 四元数 xyzw。 */
+	rotation: [number, number, number, number];
+	scale: [number, number, number];
+	/** 列主序的节点到模型矩阵。 */
+	world: Float32Array;
+}
+
+/** 烘焙好的动画：每个节点（按 Scene.nodes 的顺序）一条轨道，可以直接交给 buildAnimation。 */
+export interface BakedAnimation {
+	duration: number;
+	tracks: JointTrack[];
 }
 
 export interface UvUnwrap {
@@ -122,7 +156,7 @@ export class StrideTools extends NativeModule<ToolsExport> {
 		const code = enumCode(SCENE_FORMATS, format, 'format');
 		return this.withArraysAsync([bytes], (data) =>
 			this.awaitTask(this.module._st_scene_load(data, bytes.byteLength, code), 'st_scene_load',
-				(task) => new Scene(this, task.result(0), task.result(1), task.result(2))));
+				(task) => new Scene(this, task.result(0), task.result(1), task.result(2), task.result(3), task.result(4))));
 	}
 
 	/** MikkTSpace 切线：每个索引（角）一个 xyzw。 */
@@ -305,21 +339,40 @@ export class Scene extends NativeObject<StrideTools> {
 	readonly meshCount: number;
 	/** 材质名，MeshData.material 是这里的下标。 */
 	readonly materials: readonly string[];
+	readonly nodes: readonly SceneNode[];
+	/** 动画名（FBX 的动画栈），bakeAnimation 的下标。 */
+	readonly animations: readonly string[];
 
 	/** @internal */
-	constructor(tools: StrideTools, handle: number, meshCount: number, materialCount: number) {
+	constructor(tools: StrideTools, handle: number, meshCount: number, materialCount: number, nodeCount: number, animationCount: number) {
 		super(tools, handle);
+		const name = (ptr: number) => tools.module.UTF8ToString(ptr);
 		this.meshCount = meshCount;
-		this.materials = Array.from({ length: materialCount }, (_, i) => tools.module.UTF8ToString(tools.module._st_scene_material_name(handle, i)));
+		this.materials = Array.from({ length: materialCount }, (_, i) => name(tools.module._st_scene_material_name(handle, i)));
+		this.animations = Array.from({ length: animationCount }, (_, i) => name(tools.module._st_scene_animation_name(handle, i)));
+		// st_node_info：parent、translation[3]、rotation[4]、scale[3]、world[16]，27 个字
+		this.nodes = Array.from({ length: nodeCount }, (_, i) => tools.withScratch(27 * 4, (ptr) => {
+			tools.check(tools.module._st_scene_node_info(handle, i, ptr), 'st_scene_node_info');
+			const f = tools.f32(ptr, 27);
+			return {
+				name: name(tools.module._st_scene_node_name(handle, i)),
+				parent: tools.i32(ptr, 1)[0]!,
+				translation: [f[1]!, f[2]!, f[3]!],
+				rotation: [f[4]!, f[5]!, f[6]!, f[7]!],
+				scale: [f[8]!, f[9]!, f[10]!],
+				world: f.slice(11, 27),
+			} satisfies SceneNode;
+		}));
 	}
 
 	mesh(index: number): MeshData {
 		const t = this.native;
-		return t.withScratch(20, (infoPtr) => {
+		return t.withScratch(28, (infoPtr) => {
 			t.check(t.module._st_scene_mesh_info(this[HANDLE], index, infoPtr), 'st_scene_mesh_info');
-			const info = t.u32(infoPtr, 5);
+			const info = t.u32(infoPtr, 7);
 			const vertexCount = info[0]!, indexCount = info[1]!, hasNormals = !!info[2], hasUvs = !!info[3];
 			const material = info[4] === NO_MATERIAL ? null : info[4]!;
+			const node = info[5]!, jointCount = info[6]!;
 			const positions = t.alloc(vertexCount * 12);
 			const normals = hasNormals ? t.alloc(vertexCount * 12) : 0;
 			const uvs = hasUvs ? t.alloc(vertexCount * 8) : 0;
@@ -332,10 +385,51 @@ export class Scene extends NativeObject<StrideTools> {
 					uvs: hasUvs ? t.copyOut(Float32Array, uvs, vertexCount * 2) : null,
 					indices: t.copyOut(Uint32Array, indices, indexCount),
 					material,
+					node,
+					skin: jointCount > 0 ? this.#skin(index, vertexCount, jointCount) : null,
 				};
 			} finally {
 				for (const ptr of [positions, normals, uvs, indices]) if (ptr) t.free(ptr);
 			}
+		});
+	}
+
+	#skin(index: number, vertexCount: number, jointCount: number): MeshSkin {
+		const t = this.native;
+		const buffers = [jointCount * 4, jointCount * 64, vertexCount * 8, vertexCount * 16].map((size) => t.alloc(size));
+		const [jointNodes, inverseBinds, joints, weights] = buffers as [number, number, number, number];
+		try {
+			t.check(t.module._st_scene_mesh_skin(this[HANDLE], index, jointNodes, inverseBinds, joints, weights), 'st_scene_mesh_skin');
+			return {
+				jointNodes: t.copyOut(Uint32Array, jointNodes, jointCount),
+				inverseBinds: t.copyOut(Float32Array, inverseBinds, jointCount * 16),
+				joints: t.copyOut(Uint16Array, joints, vertexCount * 4),
+				weights: t.copyOut(Float32Array, weights, vertexCount * 4),
+			};
+		} finally {
+			for (const ptr of buffers) t.free(ptr);
+		}
+	}
+
+	/** 把一个动画（只支持 FBX）按 sampleRate 重采样烘焙成每个节点的线性关键帧，时间从 0 起。 */
+	bakeAnimation(index: number, sampleRate = 30): Promise<BakedAnimation> {
+		const t = this.native;
+		return t.awaitTask(t.module._st_scene_animation_bake(this[HANDLE], index, sampleRate), 'st_scene_animation_bake', (task) => {
+			const counts = task.output(Uint32Array, 0);
+			const keys = task.output(Float32Array, 1);
+			const duration = task.output(Float32Array, 2)[0]!;
+			let at = 0;
+			const take = (count: number, width: number) => Array.from({ length: count }, () => {
+				const key = Array.from(keys.subarray(at, at + width));
+				at += width;
+				return key;
+			});
+			const tracks = this.nodes.map((_, n) => ({
+				translations: take(counts[n * 3]!, 4),
+				rotations: take(counts[n * 3 + 1]!, 5),
+				scales: take(counts[n * 3 + 2]!, 4),
+			}));
+			return { duration, tracks };
 		});
 	}
 

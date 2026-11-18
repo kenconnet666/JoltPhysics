@@ -128,6 +128,54 @@ TEST_CASE("场景导入：每个节点实例一个网格，节点变换烘焙进
 	st_scene_destroy(scene);
 }
 
+TEST_CASE("场景导入：节点按深度优先排，蒙皮网格带关节、逆绑定矩阵和按权重排好的影响，不受自己节点的变换影响")
+{
+	ModuleScope module;
+	// root → tip（在 (0, 1, 0)）；body 挂着一个三角形，蒙皮到 root 和 tip；body 自己的平移 (5, 0, 0) 按 glTF 规范不作用于蒙皮网格
+	const std::string gltf = R"({"asset":{"version":"2.0"},
+		"buffers":[{"byteLength":224,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAEAAAEAAAABAAAAAACAPgAAQD8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAAA/AAAAPwAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAAAAAACAPwAAgD8AAAAAAAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAIC/AAAAAAAAgD8="}],
+		"bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36},{"buffer":0,"byteOffset":36,"byteLength":12},{"buffer":0,"byteOffset":48,"byteLength":48},{"buffer":0,"byteOffset":96,"byteLength":128}],
+		"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]},
+			{"bufferView":1,"componentType":5121,"count":3,"type":"VEC4"},
+			{"bufferView":2,"componentType":5126,"count":3,"type":"VEC4"},
+			{"bufferView":3,"componentType":5126,"count":2,"type":"MAT4"}],
+		"meshes":[{"primitives":[{"attributes":{"POSITION":0,"JOINTS_0":1,"WEIGHTS_0":2}}]}],
+		"skins":[{"joints":[0,1],"inverseBindMatrices":3}],
+		"nodes":[{"name":"root","children":[1]},{"name":"tip","translation":[0,1,0]},{"name":"body","mesh":0,"skin":0,"translation":[5,0,0]}],
+		"scenes":[{"nodes":[0,2]}]})";
+	int32_t task = st_scene_load(gltf.data(), uint32_t(gltf.size()), ST_FORMAT_GLTF);
+	REQUIRE(WaitForTask(task) == SN_TASK_DONE);
+	int32_t scene = sn_task_result(task, 0);
+	CHECK(sn_task_result(task, 3) == 3);
+	sn_task_release(task);
+
+	st_node_info node;
+	REQUIRE(st_scene_node_info(scene, 1, &node) == SN_OK);
+	CHECK(std::string(st_scene_node_name(scene, 1)) == "tip");
+	CHECK(node.parent == 0);
+	CHECK(node.translation[1] == 1.0f);
+	CHECK(node.world[13] == 1.0f);
+	CHECK(std::string(st_scene_node_name(scene, 2)) == "body");
+
+	st_mesh_info info;
+	REQUIRE(st_scene_mesh_info(scene, 0, &info) == SN_OK);
+	CHECK(info.node == 2);
+	REQUIRE(info.joint_count == 2);
+	std::vector<float> positions(9), inverse_binds(32), weights(12);
+	std::vector<uint32_t> joint_nodes(2);
+	std::vector<uint16_t> joints(12);
+	REQUIRE(st_scene_mesh_copy(scene, 0, positions.data(), nullptr, nullptr, nullptr) == SN_OK);
+	CHECK(positions[3] == 1.0f);	// 没有加上 body 的平移
+	REQUIRE(st_scene_mesh_skin(scene, 0, joint_nodes.data(), inverse_binds.data(), joints.data(), weights.data()) == SN_OK);
+	CHECK((joint_nodes[0] == 0 && joint_nodes[1] == 1));
+	CHECK(inverse_binds[16 + 13] == -1.0f);	// tip 的逆绑定：平移 (0, -1, 0)
+	// 第一个顶点：tip 0.75、root 0.25，按权重从大到小
+	CHECK((joints[0] == 1 && joints[1] == 0));
+	CHECK((weights[0] == 0.75f && weights[1] == 0.25f && weights[2] == 0.0f));
+	CHECK(st_scene_animation_bake(scene, 0, 30) < 0);	// glTF 的动画还不支持
+	st_scene_destroy(scene);
+}
+
 TEST_CASE("Tangents, meshopt, UV unwrap and convex decomposition")
 {
 	ModuleScope module;

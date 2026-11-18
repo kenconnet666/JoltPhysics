@@ -192,7 +192,7 @@ export interface TaskResult {
 	output<A extends TypedArray>(type: TypedArrayType<A>, index: number): A;
 }
 
-export type TypedArray = Uint8Array | Int32Array | Uint32Array | Float32Array | Float64Array | BigInt64Array | BigUint64Array;
+export type TypedArray = Uint8Array | Uint16Array | Int32Array | Uint32Array | Float32Array | Float64Array | BigInt64Array | BigUint64Array;
 export interface TypedArrayType<A extends TypedArray> {
 	new (buffer: ArrayBufferLike, byteOffset: number, length: number): A;
 	readonly BYTES_PER_ELEMENT: number;

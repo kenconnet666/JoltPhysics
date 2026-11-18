@@ -30,10 +30,23 @@ typedef struct st_mesh_info
 	int32_t has_normals;
 	int32_t has_uvs;
 	uint32_t material;				///< index into the scene's materials, or ST_NO_MATERIAL
+	uint32_t node;					///< the node instancing the mesh (index into the scene's nodes)
+	uint32_t joint_count;			///< skinned meshes: joints influencing it (st_scene_mesh_skin); 0 otherwise
 } st_mesh_info;
 
+/// A node of the scene hierarchy at rest (the file's default pose).
+typedef struct st_node_info
+{
+	int32_t parent;					///< -1 for the root; parents come before their children
+	float translation[3];			///< local transform
+	float rotation[4];				///< xyzw
+	float scale[3];
+	float world[16];				///< column-major node-to-model matrix
+} st_node_info;
+
 /// Parses a scene. data must stay alive until the task finishes. Result [0]: scene handle,
-/// [1]: mesh count, [2]: material count.
+/// [1]: mesh count, [2]: material count, [3]: node count, [4]: animation count.
+/// FBX's root node is named "RootNode" (like Stride's importer); nodes keep the file's order.
 SN_API int32_t st_scene_load(const void *data, uint32_t size, int32_t format);
 SN_API void st_scene_destroy(int32_t scene);
 SN_API int32_t st_scene_mesh_info(int32_t scene, uint32_t mesh, st_mesh_info *out_info);
@@ -41,6 +54,24 @@ SN_API int32_t st_scene_mesh_info(int32_t scene, uint32_t mesh, st_mesh_info *ou
 SN_API const char *st_scene_material_name(int32_t scene, uint32_t material);
 /// Copies a mesh; any output may be null. positions/normals xyz, uvs xy, indices uint32.
 SN_API int32_t st_scene_mesh_copy(int32_t scene, uint32_t mesh, float *positions, float *normals, float *uvs, uint32_t *indices);
+
+SN_API int32_t st_scene_node_info(int32_t scene, uint32_t node, st_node_info *out_info);
+/// Name of a node (UTF-8), valid until the scene is destroyed; null for a bad index.
+SN_API const char *st_scene_node_name(int32_t scene, uint32_t node);
+/// Skin of a skinned mesh (st_mesh_info.joint_count > 0); any output may be null.
+/// joint_nodes: joint_count node indices. inverse_binds: joint_count column-major 4x4 matrices taking the
+/// mesh's (baked, model-space) vertices to the joint's space at bind time, so a joint's skinning matrix is
+/// its current node-to-model matrix times its inverse bind. joints/weights: 4 per vertex, indices into
+/// joint_nodes sorted by decreasing weight, weights normalized (unused slots have weight 0).
+SN_API int32_t st_scene_mesh_skin(int32_t scene, uint32_t mesh, uint32_t *joint_nodes, float *inverse_binds, uint16_t *joints, float *weights);
+
+/// Name of an animation (FBX animation stack), valid until the scene is destroyed; null for a bad index.
+SN_API const char *st_scene_animation_name(int32_t scene, uint32_t animation);
+/// Bakes an animation (FBX only) into linearly interpolated local-transform keys for every node, resampled
+/// at sample_rate keys per second, times starting at 0. Returns a task; outputs: [0] key counts (uint32,
+/// translation, rotation, scale per node), [1] keys in st_anim_build_animation's layout, [2] the duration
+/// in seconds (one float). Nodes the animation leaves alone get one key of their rest transform.
+SN_API int32_t st_scene_animation_bake(int32_t scene, uint32_t animation, float sample_rate);
 
 // ---------------------------------------------------------------------------------------------
 // Geometry processing

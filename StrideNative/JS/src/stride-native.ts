@@ -66,13 +66,6 @@ export interface AgentOptions {
 	maxAcceleration?: number;
 }
 
-export interface AnimationSampleRequest {
-	instance: AnimationInstance;
-	animation: Animation;
-	/** 归一化时间，[0, 1]。 */
-	ratio: number;
-}
-
 /**
  * 加载运行时模块并启动任务系统。物理、贴图转码、导航是单独的侧模块，用 features 选用，比如
  * `createStrideNative({ features: [physics, navigation] })`；没选用的功能，调用它的方法会抛 NativeError。
@@ -192,18 +185,10 @@ export class StrideNative extends NativeModule<RuntimeExport> {
 			new Animation(this, this.check(this.module._sn_anim_load_animation(data, ozzArchive.byteLength), 'sn_anim_load_animation')));
 	}
 
-	/** 并行采样所有请求；返回时每个实例的矩阵都已更新。 */
-	sampleAnimations(requests: readonly AnimationSampleRequest[]): void {
-		const REQUEST_SIZE = 16;
-		this.withScratch(Math.max(1, requests.length) * REQUEST_SIZE, (table) => {
-			requests.forEach(({ instance, animation, ratio }, i) => {
-				const view = this.view(table + i * REQUEST_SIZE, REQUEST_SIZE);
-				view.setInt32(0, instance[HANDLE], true);
-				view.setInt32(4, animation[HANDLE], true);
-				view.setFloat32(8, ratio, true);
-			});
-			this.check(this.module._sn_anim_sample_batch(table, requests.length), 'sn_anim_sample_batch');
-		});
+	/** 蒙皮：joints 是骨架的关节下标，inverseBinds 每个关节一个列主序 4x4（网格到绑定时的关节空间）。 */
+	createSkin(joints: Uint32Array, inverseBinds: Float32Array): Skin {
+		if (inverseBinds.length !== joints.length * 16) throw new NativeError(`createSkin: ${joints.length} joints need ${joints.length * 16} inverse bind floats, got ${inverseBinds.length}`, -1);
+		return this.withArrays([joints, inverseBinds], (j, b) => new Skin(this, this.check(this.module._sn_anim_skin_create(j, b, joints.length), 'sn_anim_skin_create'), joints.length));
 	}
 }
 
@@ -863,5 +848,194 @@ export class AnimationInstance extends NativeObject<StrideNative> {
 
 	protected override release(): void {
 		this.native.module._sn_anim_instance_destroy(this[HANDLE]);
+	}
+}
+
+/**
+ * 一帧要算的动画：每个实例一段后缀程序（push 采样剪辑，blend、add、subtract 合并栈顶两个姿势，同 Stride 的
+ * AnimationOperation），可选地再算蒙皮矩阵。请求直接写在原生内存里，每帧 clear() 后重填，不分配 JS 对象。
+ *
+ *   batch.clear();
+ *   batch.instance(a).push(idle, t0).push(walk, t1).blend(0.3).skin(skin, palette);
+ *   batch.evaluate();
+ */
+export class AnimationBatch implements Disposable {
+	readonly #native: StrideNative;
+	#ops = new NativeBuffer(16);
+	#requests = new NativeBuffer(16);
+	#skins = new NativeBuffer(16);
+	#opCount = 0;
+	#requestCount = 0;
+	#skinCount = 0;
+	/** 当前实例的请求下标。 */
+	#current = -1;
+
+	constructor(native: StrideNative) {
+		this.#native = native;
+	}
+
+	clear(): this {
+		this.#opCount = this.#requestCount = this.#skinCount = 0;
+		this.#current = -1;
+		return this;
+	}
+
+	/** 开始一个实例的程序；之后的 push、blend 等都属于它。没有操作的实例求出静止姿势。 */
+	instance(instance: AnimationInstance): this {
+		const at = this.#requests.ensure(this.#native, this.#requestCount + 1) + this.#requestCount * 16;
+		const view = this.#native.i32(at, 4);
+		view[0] = instance[HANDLE];
+		view[1] = this.#opCount;
+		view[2] = 0;
+		view[3] = 0;
+		this.#current = this.#requestCount++;
+		return this;
+	}
+
+	/** 把剪辑在 time 秒处的姿势压栈（time 截到 [0, 时长]）。 */
+	push(animation: Animation, time: number): this {
+		return this.#op(ANIM_OPS.push, animation[HANDLE], time, 0);
+	}
+
+	/** 弹出 a、b，压入 lerp(a, b, factor)（旋转是 slerp）。 */
+	blend(factor: number): this {
+		return this.#op(ANIM_OPS.blend, 0, 0, factor);
+	}
+
+	/** 弹出 a、b，压入从 a 往 a + b 插值 factor 的结果（b 是叠加动画）。 */
+	add(factor: number): this {
+		return this.#op(ANIM_OPS.add, 0, 0, factor);
+	}
+
+	/** 弹出 a、b，压入从 a 往 a − b 插值 factor 的结果。 */
+	subtract(factor: number): this {
+		return this.#op(ANIM_OPS.subtract, 0, 0, factor);
+	}
+
+	/** 求值之后，把当前实例的蒙皮矩阵写进 palette。 */
+	skin(skin: Skin, palette: SkinPalette): this {
+		if (this.#current < 0) throw new NativeError('AnimationBatch.skin: call instance() first', -1);
+		if (palette.jointCount !== skin.jointCount) throw new NativeError(`AnimationBatch.skin: the palette holds ${palette.jointCount} joints, the skin has ${skin.jointCount}`, -1);
+		const at = this.#skins.ensure(this.#native, this.#skinCount + 1) + this.#skinCount * 16;
+		const view = this.#native.i32(at, 4);
+		view[0] = this.#native.i32(this.#requests.address + this.#current * 16, 1)[0]!;
+		view[1] = skin[HANDLE];
+		view[2] = palette.address;
+		view[3] = 0;
+		this.#skinCount++;
+		return this;
+	}
+
+	/** 并行求所有实例的姿势（模型空间的关节矩阵），再算所有蒙皮矩阵。 */
+	evaluate(): void {
+		const m = this.#native.module;
+		if (this.#requestCount > 0) this.#native.check(m._sn_anim_evaluate_batch(this.#ops.address, this.#requests.address, this.#requestCount), 'sn_anim_evaluate_batch');
+		if (this.#skinCount > 0) this.#native.check(m._sn_anim_skin_batch(this.#skins.address, this.#skinCount), 'sn_anim_skin_batch');
+	}
+
+	[Symbol.dispose](): void {
+		for (const buffer of [this.#ops, this.#requests, this.#skins]) buffer.free(this.#native);
+	}
+
+	#op(type: number, animation: number, time: number, factor: number): this {
+		if (this.#current < 0) throw new NativeError('AnimationBatch: call instance() before adding operations', -1);
+		const at = this.#ops.ensure(this.#native, this.#opCount + 1) + this.#opCount * 16;
+		const ints = this.#native.i32(at, 2);
+		ints[0] = type;
+		ints[1] = animation;
+		const floats = this.#native.f32(at + 8, 2);
+		floats[0] = time;
+		floats[1] = factor;
+		this.#opCount++;
+		// 当前实例的 op_count
+		this.#native.i32(this.#requests.address + this.#current * 16 + 8, 1)[0]! += 1;
+		return this;
+	}
+}
+
+/** sn_anim_op.type。 */
+const ANIM_OPS = { push: 0, blend: 1, add: 2, subtract: 3 } as const;
+
+/** 原生内存里按元素大小增长的数组（AnimationBatch 的几张请求表）。 */
+class NativeBuffer {
+	readonly #itemSize: number;
+	#address = 0;
+	#capacity = 0;
+
+	constructor(itemSize: number) {
+		this.#itemSize = itemSize;
+	}
+
+	get address(): number {
+		return this.#address;
+	}
+
+	/** 至少能放 count 个元素（不够时翻倍，保留已有内容），返回地址。 */
+	ensure(native: StrideNative, count: number): number {
+		if (count <= this.#capacity) return this.#address;
+		const capacity = Math.max(count, this.#capacity * 2, 16);
+		const address = native.alloc(capacity * this.#itemSize);
+		if (this.#address) {
+			new Uint8Array(native.buffer, address, this.#capacity * this.#itemSize).set(new Uint8Array(native.buffer, this.#address, this.#capacity * this.#itemSize));
+			native.free(this.#address);
+		}
+		this.#address = address;
+		this.#capacity = capacity;
+		return address;
+	}
+
+	free(native: StrideNative): void {
+		if (this.#address) native.free(this.#address);
+		this.#address = this.#capacity = 0;
+	}
+}
+
+export class Skin extends NativeObject<StrideNative> {
+	readonly jointCount: number;
+
+	/** @internal */
+	constructor(native: StrideNative, handle: number, jointCount: number) {
+		super(native, handle);
+		this.jointCount = jointCount;
+	}
+
+	/** 放这个蒙皮的蒙皮矩阵的原生缓冲（每个画出来的角色一个）。 */
+	createPalette(): SkinPalette {
+		return new SkinPalette(this.native, this.jointCount);
+	}
+
+	protected override release(): void {
+		this.native.module._sn_anim_skin_destroy(this[HANDLE]);
+	}
+}
+
+/** 蒙皮矩阵：每个关节一个列主序 4x4，在原生内存里，AnimationBatch.evaluate 写，渲染器直接上传。 */
+export class SkinPalette implements Disposable {
+	readonly jointCount: number;
+	readonly #native: StrideNative;
+	#address: number;
+
+	/** @internal */
+	constructor(native: StrideNative, jointCount: number) {
+		this.#native = native;
+		this.jointCount = jointCount;
+		this.#address = native.alloc(jointCount * 64);
+		this.matrices().fill(0);
+	}
+
+	/** @internal */
+	get address(): number {
+		return this.#address;
+	}
+
+	/** 原生内存上的视图，不拷贝（内存增长后要重新取）。 */
+	matrices(): Float32Array {
+		if (!this.#address) throw new NativeError('SkinPalette was destroyed', -2);
+		return this.#native.f32(this.#address, this.jointCount * 16);
+	}
+
+	[Symbol.dispose](): void {
+		if (this.#address) this.#native.free(this.#address);
+		this.#address = 0;
 	}
 }

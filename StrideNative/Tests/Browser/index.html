@@ -15,7 +15,7 @@
 <p id="summary">Running…</p>
 <ul id="results"></ul>
 <script type="module">
-import { createStrideNative } from '/dist/stride-native.js';
+import { AnimationBatch, createStrideNative } from '/dist/stride-native.js';
 import { physics } from '/dist/physics.js';
 import { texture } from '/dist/texture.js';
 import { navigation } from '/dist/navigation.js';
@@ -154,7 +154,9 @@ await check('animation: batch sampling of 256 characters (parallel)', async () =
 	const skeleton = native.loadSkeleton(await fixture('skeleton.ozz'));
 	const animation = native.loadAnimation(await fixture('animation.ozz'));
 	const instances = Array.from({ length: 256 }, () => skeleton.createInstance());
-	native.sampleAnimations(instances.map((instance) => ({ instance, animation, ratio: 1 })));
+	using batch = new AnimationBatch(native);
+	for (const instance of instances) batch.instance(instance).push(animation, animation.duration);
+	batch.evaluate();
 	for (const instance of instances) {
 		const child = instance.modelMatrices().subarray(16, 32);
 		assert(Math.abs(child[12] + 1) < 1e-3 && Math.abs(child[13]) < 1e-3, 'child joint not rotated to (-1, 0, 0)');
