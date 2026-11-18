@@ -1048,7 +1048,8 @@ SN_API const float *sn_physics_positions(int32_t world)
 namespace
 {
 	/// 按编号找动态或运动学物体（BodyComponent）；不是时记下错误、返回 nullptr。
-	BodyRecord *GetMovableBody(World *inWorld, int32_t inBody, const char *inWhat)
+	/// 动态或运动学的物体；inAllowCharacter 时角色也行（角色的速度由它自己每步设，只开放读速度和瞬移）
+	BodyRecord *GetMovableBody(World *inWorld, int32_t inBody, const char *inWhat, bool inAllowCharacter = false)
 	{
 		if (inWorld == nullptr)
 			return nullptr;
@@ -1063,9 +1064,9 @@ namespace
 			SetLastError(SN_ERROR_INVALID_ARGUMENT, std::string(inWhat) + ": body " + std::to_string(inBody) + " was removed");
 			return nullptr;
 		}
-		if (record.mMotion != SN_MOTION_DYNAMIC && record.mMotion != SN_MOTION_KINEMATIC)
+		if (record.mMotion != SN_MOTION_DYNAMIC && record.mMotion != SN_MOTION_KINEMATIC && !(inAllowCharacter && record.mMotion == SN_MOTION_CHARACTER))
 		{
-			SetLastError(SN_ERROR_INVALID_ARGUMENT, std::string(inWhat) + ": body " + std::to_string(inBody) + " is not a dynamic or kinematic body");
+			SetLastError(SN_ERROR_INVALID_ARGUMENT, std::string(inWhat) + ": body " + std::to_string(inBody) + (inAllowCharacter ? " is not a dynamic, kinematic or character body" : " is not a dynamic or kinematic body"));
 			return nullptr;
 		}
 		return &record;
@@ -1462,7 +1463,7 @@ SN_API int32_t sn_physics_body_awake(int32_t world, int32_t body)
 SN_API int32_t sn_physics_body_teleport(int32_t world, int32_t body, const float *position, const float *rotation)
 {
 	World *w = GetWorld(world);
-	BodyRecord *record = GetMovableBody(w, body, "sn_physics_body_teleport");
+	BodyRecord *record = GetMovableBody(w, body, "sn_physics_body_teleport", true);
 	if (record == nullptr)
 		return w == nullptr ? SN_ERROR_INVALID_HANDLE : SN_ERROR_INVALID_ARGUMENT;
 	if (position == nullptr || rotation == nullptr)
@@ -1487,7 +1488,7 @@ SN_API int32_t sn_physics_body_teleport(int32_t world, int32_t body, const float
 SN_API int32_t sn_physics_body_velocity(int32_t world, int32_t body, float *linear, float *angular)
 {
 	World *w = GetWorld(world);
-	BodyRecord *record = GetMovableBody(w, body, "sn_physics_body_velocity");
+	BodyRecord *record = GetMovableBody(w, body, "sn_physics_body_velocity", true);
 	if (record == nullptr)
 		return w == nullptr ? SN_ERROR_INVALID_HANDLE : SN_ERROR_INVALID_ARGUMENT;
 	const BodyInterface &bodies = w->mSystem.GetBodyInterface();

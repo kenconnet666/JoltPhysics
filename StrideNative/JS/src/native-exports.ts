@@ -243,12 +243,13 @@ export interface NativeExports {
 	 */
 	_sn_physics_body_set_velocity(world: number, body: number, linear: number, angular: number): number;
 	/**
-	 * 瞬移到世界位姿（Stride 的 Teleport），并唤醒；绑定了变换的立即写回槽位，插值也从这里重新开始。
+	 * 瞬移到世界位姿（Stride 的 Teleport），并唤醒；绑定了变换的立即写回槽位，插值也从这里重新开始。角色也可以（转身改朝向，
+	 * Stride 的 CharacterComponent.Orientation），之后的 MoveVector 按新的朝向换到世界。
 	 * C: Physics.h
 	 */
 	_sn_physics_body_teleport(world: number, body: number, position: number, rotation: number): number;
 	/**
-	 * 读线速度和角速度（世界空间，各 xyz）；不要的传 null。
+	 * 读线速度和角速度（世界空间，各 xyz）；不要的传 null。角色也可以读（它的速度由移动目标每步设，不能直接设）。
 	 * C: Physics.h
 	 */
 	_sn_physics_body_velocity(world: number, body: number, linear: number, angular: number): number;

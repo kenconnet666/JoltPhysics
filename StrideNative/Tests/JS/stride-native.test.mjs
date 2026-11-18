@@ -244,6 +244,15 @@ describe('stride-native and stride-tools', () => {
 			const halfway = transforms.position[playerSlot * 3 + 1];
 			assert.ok(halfway > before && halfway < world.positions()[player * 3 + 1], 'interpolation writes a pose between the last two steps');
 
+			// 角色也能瞬移、转身（Stride 的 CharacterComponent.Orientation），朝向一直保持；能读速度
+			world.teleport(player, [0, 3, 2], [0, 1, 0, 0]);
+			for (let i = 0; i < 5; i++) world.step(1 / 60);
+			assert.ok(Math.abs(Math.abs(transforms.rotation[playerSlot * 4 + 1]) - 1) < 1e-3, 'the turn is kept');
+			// 瞬移不改速度：还在起跳后的上升里（13 减去 8 步的重力）
+			const velocity = [0, 0, 0];
+			world.velocity(player, velocity, [0, 0, 0]);
+			assert.ok(velocity[1] > 6 && velocity[1] < 9, `still rising at ${velocity[1]}`);
+
 			// 射线：层 0 的墙在 4.5，只看层 1 时打到柱子的 7.75，角色在层 2
 			const hit = world.rayCast([0, 2, -6], [1, 0, 0], 20, { mask: 1 << 0 });
 			assert.ok(hit && Math.abs(hit.distance - 4.5) < 1e-3 && hit.body === wall && hit.normal[0] < -0.99);
