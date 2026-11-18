@@ -247,3 +247,8 @@ enum
 
 /// 球体扫掠（Stride 的 SweepCast 加 Sphere），同 sn_physics_ray_cast；flags 是 SN_CAST_*。
 SN_API int32_t sn_physics_sphere_cast(int32_t world, float radius, const float *origin, const float *direction, float max_distance, uint32_t mask, uint32_t flags, sn_hit *hit);
+
+/// 静态物体表面的三角形（导航网格的输入，同 Stride 的 RecastMeshSystem 收集静态碰撞体）：mask 的第 n 位为 1 表示层 n 的物体参与，
+/// 传感器（触发器）不算。三角形按世界坐标连续写，每个 9 个 float，从外面看是逆时针（法线朝外）。各种形状（盒、球、网格、
+/// 复合……）都按 Jolt 的三角化。*out_vertices 用 sn_alloc 分配，调用方 sn_free（没有三角形时是 null）。返回三角形个数。
+SN_API int32_t sn_physics_static_triangles(int32_t world, uint32_t mask, float **out_vertices);

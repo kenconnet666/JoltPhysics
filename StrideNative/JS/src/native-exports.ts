@@ -324,6 +324,13 @@ export interface NativeExports {
 	 */
 	_sn_physics_sphere_cast(world: number, radius: number, origin: number, direction: number, maxDistance: number, mask: number, flags: number, hit: number): number;
 	/**
+	 * 静态物体表面的三角形（导航网格的输入，同 Stride 的 RecastMeshSystem 收集静态碰撞体）：mask 的第 n 位为 1 表示层 n 的物体参与，
+	 * 传感器（触发器）不算。三角形按世界坐标连续写，每个 9 个 float，从外面看是逆时针（法线朝外）。各种形状（盒、球、网格、
+	 * 复合……）都按 Jolt 的三角化。*out_vertices 用 sn_alloc 分配，调用方 sn_free（没有三角形时是 null）。返回三角形个数。
+	 * C: Physics.h
+	 */
+	_sn_physics_static_triangles(world: number, mask: number, outVertices: number): number;
+	/**
 	 * 步进一个固定步长：先跑角色逻辑，再 Jolt 步进，再更新角色的支撑状态，最后写回位姿（插值的物体记下前后两步）。
 	 * C: Physics.h
 	 */
@@ -666,6 +673,7 @@ export type RuntimeExport =
 	| 'sn_physics_character_grounded'
 	| 'sn_physics_ray_cast'
 	| 'sn_physics_sphere_cast'
+	| 'sn_physics_static_triangles'
 	| 'sn_plugin_abi_version'
 	| 'sn_set_last_error'
 	| 'sn_parallel_for'

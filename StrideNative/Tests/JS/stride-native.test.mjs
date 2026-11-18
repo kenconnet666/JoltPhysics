@@ -696,6 +696,33 @@ describe('stride-native and stride-tools', () => {
 		built.destroy();
 	});
 
+	it('builds a navmesh at runtime from the static bodies of a physics world (Stride RecastMeshSystem)', async () => {
+		const world = native.createPhysicsWorld(16);
+		try {
+			// 地面 20 x 20（层 6），中间一堵墙（层 6）；同一处一个触发器（层 6）和一个层 0 的箱子都不算
+			world.addBody({ shapes: [{ type: 'box', size: [20, 1, 20] }], position: [0, -0.5, 0], layer: 6 });
+			world.addBody({ shapes: [{ type: 'box', size: [1, 2, 16] }], position: [0, 1, -2], layer: 6 });
+			world.addBody({ shapes: [{ type: 'box', size: [4, 4, 4] }], position: [0, 2, 8], layer: 6, sensor: true });
+			world.addBody({ shapes: [{ type: 'box', size: [4, 4, 4] }], position: [0, 2, 8], layer: 0 });
+			world.addBody({ motion: 'dynamic', shapes: [{ type: 'sphere', radius: 1 }], position: [5, 5, 5], layer: 6 });
+			const triangles = world.staticTriangles(1 << 6);
+			assert.equal(triangles.length % 9, 0);
+			// 两个盒子，每个面至少两个三角形
+			assert.ok(triangles.length / 9 >= 24, `${triangles.length / 9} triangles`);
+			const ys = triangles.filter((_, i) => i % 3 === 1);
+			assert.ok(Math.max(...ys) < 2.01, 'the sensor and the layer-0 box are left out');
+			const navMesh = await native.buildNavMesh(triangles, Int32Array.from(triangles.subarray(0, triangles.length / 3), (_, i) => i),
+				{ cellSize: 0.1, cellHeight: 0.1, agentRadius: 0.5, agentHeight: 1.2, tileSize: 32 });
+			// 墙从 z = -10 挡到 z = 6：从墙左边到右边要绕过 z = 6 那头
+			const path = navMesh.findPath([-3, 0, -5], [3, 0, -5]);
+			assert.ok(path.length >= 9, `${path.length / 3} corners`);
+			assert.ok(Math.max(...path.filter((_, i) => i % 3 === 2)) > 6, 'the path goes around the end of the wall');
+			navMesh.destroy();
+		} finally {
+			world.destroy();
+		}
+	});
+
 	it('builds ozz assets (tools) and samples characters in parallel (runtime)', () => {
 		const skeletonBytes = tools.buildSkeleton([
 			{ parent: -1, name: 'root' },

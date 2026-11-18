@@ -42,6 +42,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstring>
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
@@ -1610,6 +1611,43 @@ SN_API int32_t sn_physics_ray_cast(int32_t world, const float *origin, const flo
 	normal.StoreFloat3(reinterpret_cast<Float3 *>(hit->normal));
 	hit->body = BodyIndexOf(*w, result.mBodyID);
 	return 1;
+}
+
+SN_API int32_t sn_physics_static_triangles(int32_t world, uint32_t mask, float **out_vertices)
+{
+	World *w = GetWorld(world);
+	if (w == nullptr)
+		return SN_ERROR_INVALID_HANDLE;
+	if (out_vertices == nullptr)
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "out_vertices is required");
+	*out_vertices = nullptr;
+	std::vector<Float3> vertices;
+	constexpr int cBatch = Shape::cGetTrianglesMinTrianglesRequested;
+	Float3 batch[3 * cBatch];
+	for (const BodyRecord &record : w->mBodies)
+	{
+		if (record.mRemoved || record.mMotion != SN_MOTION_STATIC || (record.mFlags & SN_BODY_SENSOR) != 0)
+			continue;
+		BodyLockRead lock(w->mSystem.GetBodyLockInterface(), record.mID);
+		if (!lock.Succeeded())
+			continue;
+		const Body &body = lock.GetBody();
+		if ((mask >> CollisionLayerOf(body.GetObjectLayer()) & 1) == 0)
+			continue;
+		const Shape *shape = body.GetShape();
+		Shape::GetTrianglesContext context;
+		shape->GetTrianglesStart(context, AABox::sBiggest(), body.GetCenterOfMassPosition(), body.GetRotation(), Vec3::sOne());
+		for (int count; (count = shape->GetTrianglesNext(context, cBatch, batch)) > 0;)
+			vertices.insert(vertices.end(), batch, batch + 3 * count);
+	}
+	if (vertices.empty())
+		return 0;
+	void *data = sn_alloc(uint32_t(vertices.size() * sizeof(Float3)));
+	if (data == nullptr)
+		return SetLastError(SN_ERROR_FAILED, "sn_physics_static_triangles: out of memory");
+	std::memcpy(data, vertices.data(), vertices.size() * sizeof(Float3));
+	*out_vertices = static_cast<float *>(data);
+	return int32_t(vertices.size() / 3);
 }
 
 SN_API int32_t sn_physics_sphere_cast(int32_t world, float radius, const float *origin, const float *direction, float max_distance, uint32_t mask, uint32_t flags, sn_hit *hit)

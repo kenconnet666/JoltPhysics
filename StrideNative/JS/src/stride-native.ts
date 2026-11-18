@@ -635,6 +635,22 @@ export class PhysicsWorld extends NativeObject<StrideNative> {
 		return this.#hit(this.native.check(result, 'sn_physics_ray_cast'), hit);
 	}
 
+	/**
+	 * 静态物体表面的三角形（导航网格的输入，同 Stride 的 RecastMeshSystem）：mask 选层，不含传感器（触发器）。每个三角形 9 个
+	 * float（世界坐标，从外面看逆时针），可以直接和顺序的下标一起交给 buildNavMesh。
+	 */
+	staticTriangles(mask = ALL_LAYERS): Float32Array {
+		const n = this.native;
+		return n.withScratch(4, (out) => {
+			const count = n.check(n.module._sn_physics_static_triangles(this[HANDLE], mask >>> 0, out), 'sn_physics_static_triangles');
+			const data = n.u32(out, 1)[0]!;
+			if (count === 0) return new Float32Array(0);
+			const triangles = n.copyOut(Float32Array, data, count * 9);
+			n.free(data);
+			return triangles;
+		});
+	}
+
 	/** 球体扫掠（Stride 的 SweepCast 加 Sphere），同 rayCast；默认从一开始就重叠的物体算距离 0 的命中（同 Bepu）。 */
 	sphereCast(radius: number, origin: Vec3, direction: Vec3, maxDistance: number, { mask = ALL_LAYERS, hit = new PhysicsHit(), ignoreInitialOverlap = false }: SweepOptions = {}): PhysicsHit | undefined {
 		this.#setQuery(origin, direction);
