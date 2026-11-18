@@ -37,6 +37,7 @@ enum
 	SN_SHAPE_CYLINDER = 3,			///< size[0]：半径，size[1]：长度，沿本地 Y
 	SN_SHAPE_MESH = 4,				///< mesh：sn_physics_create_mesh 的结果；按实体的世界缩放缩放（Stride 的 MeshCollider）
 	SN_SHAPE_CONVEX_HULL = 5,		///< mesh：sn_physics_create_hull 的结果；同网格按实体的世界缩放缩放（Stride 的 ConvexHullCollider）
+	SN_SHAPE_EMPTY = 6,				///< 没有形状、不碰撞（Stride 的 EmptyCollider）；只能单独用，动态时转动惯量同 Bepu 的半径 1 的球
 };
 
 /// 复合碰撞体里的一个形状（Stride 的 ColliderBase 加 CompoundCollider 的本地位姿）。

@@ -18,6 +18,7 @@
 #include <Jolt/Physics/Collision/RayCast.h>
 #include <Jolt/Physics/Collision/ShapeCast.h>
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
+#include <Jolt/Physics/Collision/Shape/EmptyShape.h>
 #include <Jolt/Physics/Constraints/FixedConstraint.h>
 #include <Jolt/Physics/Constraints/GearConstraint.h>
 #include <Jolt/Physics/Constraints/HingeConstraint.h>
@@ -359,6 +360,8 @@ namespace
 			if (!(s[0] > 0.0f && s[1] > 0.0f))
 				break;
 			return new CylinderShape(0.5f * s[1], s[0], ConvexRadius(std::min(s[0], 0.5f * s[1])));
+		case SN_SHAPE_EMPTY:
+			return new EmptyShape();
 		case SN_SHAPE_MESH:
 		case SN_SHAPE_CONVEX_HULL:
 		{
@@ -400,6 +403,11 @@ namespace
 		StaticCompoundShapeSettings compound;
 		for (uint32_t i = 0; i < inCount; ++i)
 		{
+			if (inShapes[i].type == SN_SHAPE_EMPTY)
+			{
+				outError = "an empty shape cannot be part of a compound";
+				return nullptr;
+			}
 			RefConst<Shape> shape = MakeShape(inWorld, inShapes[i], inMeshScale, outError);
 			if (shape == nullptr)
 				return nullptr;
@@ -778,7 +786,15 @@ SN_API int32_t sn_physics_add_bodies(int32_t world, const sn_body *bodies, uint3
 			for (uint32_t s = 0; s < body.shape_count; ++s)
 				has_mesh |= shapes[body.first_shape + s].type == SN_SHAPE_MESH;
 			settings.mAllowDynamicOrKinematic = motion != EMotionType::Static && !has_mesh;
-			if (settings.mAllowDynamicOrKinematic)
+			if (settings.mAllowDynamicOrKinematic && body.shape_count == 1 && shapes[body.first_shape].type == SN_SHAPE_EMPTY)
+			{
+				// Bepu 的 EmptyCollider：转动惯量是质量为 m、半径 1 的实心球
+				float mass = mass_of(body);
+				settings.mOverrideMassProperties = EOverrideMassProperties::MassAndInertiaProvided;
+				settings.mMassPropertiesOverride.mMass = mass;
+				settings.mMassPropertiesOverride.mInertia = Mat44::sScale(0.4f * mass);
+			}
+			else if (settings.mAllowDynamicOrKinematic)
 			{
 				settings.mOverrideMassProperties = EOverrideMassProperties::CalculateInertia;
 				settings.mMassPropertiesOverride.mMass = mass_of(body);

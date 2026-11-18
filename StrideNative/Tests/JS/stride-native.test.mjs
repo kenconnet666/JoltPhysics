@@ -313,6 +313,14 @@ describe('stride-native and stride-tools', () => {
 			world.setNeverSleep(crate, true);
 			assert.equal(world.isAwake(crate), true);
 			assert.throws(() => world.setKinematic(0, true), /not a dynamic or kinematic body/);
+
+			// 空碰撞体（Stride 的 EmptyCollider）：不碰撞，穿过地面往下掉；不能放进复合形状
+			const ghost = world.addBody({ motion: 'dynamic', shapes: [{ type: 'empty' }], position: [3, 1, 0], neverSleep: true });
+			for (let i = 0; i < 60; i++) world.step(1 / 60);
+			const ghostVelocity = [0, 0, 0];
+			world.velocity(ghost, ghostVelocity, [0, 0, 0]);
+			assert.ok(ghostVelocity[1] < -9, 'an empty shape does not collide');
+			assert.throws(() => world.addBody({ motion: 'dynamic', shapes: [{ type: 'empty' }, { type: 'sphere', radius: 1 }] }), /empty shape cannot be part of a compound/);
 		} finally {
 			world.destroy();
 		}
@@ -601,6 +609,17 @@ describe('stride-native and stride-tools', () => {
 		instances.forEach((instance) => instance.destroy());
 		animation.destroy();
 		skeleton.destroy();
+	});
+
+	it('imports OBJ through ufbx when asked (no .mtl, material names from usemtl)', async () => {
+		const obj = ['o Quad', 'v 0 0 0', 'v 1 0 0', 'v 1 1 0', 'v 0 1 0', 'vn 0 0 1', 'usemtl Red', 'f 1//1 2//1 3//1 4//1', ''].join('\n');
+		const scene = await tools.loadScene(new TextEncoder().encode(obj), 'obj');
+		assert.equal(scene.meshCount, 1);
+		assert.deepEqual(scene.materials, ['Red']);
+		const mesh = scene.mesh(0);
+		scene.destroy();
+		assert.equal(mesh.indices.length, 6);
+		assert.equal(mesh.positions.length, 12);
 	});
 
 	it('imports FBX and glTF, then runs the geometry tools on the result', async () => {

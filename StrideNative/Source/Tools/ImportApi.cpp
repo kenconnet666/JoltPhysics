@@ -353,19 +353,26 @@ namespace
 		}
 	}
 
-	bool ImportFbx(const void *inData, uint32_t inSize, ImportedScene &outScene, std::string &outError)
+	/// FBX 和 OBJ 都由 ufbx 读；OBJ 不带坐标轴和单位，按右手 Y 向上、米（不做转换）
+	bool ImportUfbx(const void *inData, uint32_t inSize, bool inObj, ImportedScene &outScene, std::string &outError)
 	{
 		ufbx_load_opts options {};
 		options.target_axes = ufbx_axes_right_handed_y_up;
 		options.target_unit_meters = 1.0f;
 		options.space_conversion = UFBX_SPACE_CONVERSION_MODIFY_GEOMETRY;
 		options.generate_missing_normals = true;
+		if (inObj)
+		{
+			options.file_format = UFBX_FILE_FORMAT_OBJ;
+			options.obj_axes = ufbx_axes_right_handed_y_up;
+			options.obj_unit_meters = 1.0f;
+		}
 
 		ufbx_error error;
 		ufbx_scene *scene = ufbx_load_memory(inData, inSize, &options, &error);
 		if (scene == nullptr)
 		{
-			outError = std::string("FBX load failed: ") + error.description.data;
+			outError = std::string(inObj ? "OBJ" : "FBX") + " load failed: " + error.description.data;
 			return false;
 		}
 		outScene.mFbx = std::shared_ptr<ufbx_scene>(scene, &ufbx_free_scene);
@@ -553,14 +560,14 @@ SN_API int32_t st_scene_load(const void *data, uint32_t size, int32_t format)
 		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "scene data is empty");
 	if (format == ST_FORMAT_AUTO)
 		format = LooksLikeFbx(data, size) ? ST_FORMAT_FBX : ST_FORMAT_GLTF;
-	if (format != ST_FORMAT_GLTF && format != ST_FORMAT_FBX)
+	if (format != ST_FORMAT_GLTF && format != ST_FORMAT_FBX && format != ST_FORMAT_OBJ)
 		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "unknown scene format " + std::to_string(format));
 
 	return RunTask("SceneLoad", [data, size, format](Task &ioTask)
 	{
 		auto scene = std::make_unique<ImportedScene>();
 		std::string error;
-		bool loaded = format == ST_FORMAT_FBX ? ImportFbx(data, size, *scene, error) : ImportGltf(data, size, *scene, error);
+		bool loaded = format == ST_FORMAT_GLTF ? ImportGltf(data, size, *scene, error) : ImportUfbx(data, size, format == ST_FORMAT_OBJ, *scene, error);
 		if (!loaded)
 		{
 			ioTask.Fail(error);

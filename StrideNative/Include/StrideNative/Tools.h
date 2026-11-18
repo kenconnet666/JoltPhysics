@@ -16,6 +16,7 @@ enum
 	ST_FORMAT_AUTO = 0,
 	ST_FORMAT_GLTF = 1,				///< .gltf with embedded (data URI) buffers, or .glb
 	ST_FORMAT_FBX = 2,
+	ST_FORMAT_OBJ = 3,				///< Wavefront OBJ（ufbx 读，不读 .mtl，材质只有 usemtl 的名字；不换坐标轴和单位，同 Stride 的 Assimp 导入）
 };
 
 enum

@@ -7,10 +7,11 @@ import { NAV_CONFIG_SIZE, NativeModule, NativeObject, HANDLE, enumCode, instanti
 export { NativeError, defaultWorkerThreads } from './native-module.ts';
 export type { ModuleOptions, NativeErrorCode, NavConfig } from './native-module.ts';
 
-export type SceneFormat = 'auto' | 'gltf' | 'fbx';
+/** auto 认得 glTF/GLB 和 FBX；OBJ 要显式给。 */
+export type SceneFormat = 'auto' | 'gltf' | 'fbx' | 'obj';
 export type BasisMode = 'uastc' | 'etc1s';
 
-const SCENE_FORMATS: Record<SceneFormat, number> = { auto: 0, gltf: 1, fbx: 2 };
+const SCENE_FORMATS: Record<SceneFormat, number> = { auto: 0, gltf: 1, fbx: 2, obj: 3 };
 /** ST_NO_MATERIAL */
 const NO_MATERIAL = 0xffffffff;
 const BASIS_MODES: Record<BasisMode, number> = { uastc: 0, etc1s: 1 };
@@ -149,7 +150,7 @@ export async function createStrideTools(options: Omit<ModuleOptions, 'debug' | '
 
 export class StrideTools extends NativeModule<ToolsExport> {
 	/**
-	 * 导入 glTF/GLB（内嵌缓冲）或 FBX（转换成右手、Y 向上、米）。和 Stride 的模型导入一样，每个节点实例上的网格
+	 * 导入 glTF/GLB（内嵌缓冲）、FBX（转换成右手、Y 向上、米）或 OBJ（不读 .mtl、不转换）。和 Stride 的模型导入一样，每个节点实例上的网格
 	 * 按材质拆开，节点的世界变换烘焙进顶点。
 	 */
 	loadScene(bytes: Uint8Array, format: SceneFormat = 'auto'): Promise<Scene> {

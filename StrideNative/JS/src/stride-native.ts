@@ -205,7 +205,7 @@ const HIT_WORDS = 8;
 // sn_physics_settings：gravity[3]、linear_damping、angular_damping、collision_masks[32]
 const SETTINGS_WORDS = 37;
 
-const SHAPE_TYPES = { box: 0, sphere: 1, capsule: 2, cylinder: 3, mesh: 4, convexHull: 5 } as const;
+const SHAPE_TYPES = { box: 0, sphere: 1, capsule: 2, cylinder: 3, mesh: 4, convexHull: 5, empty: 6 } as const;
 const MOTIONS = { static: 0, dynamic: 1, kinematic: 2, character: 3 } as const;
 const BODY_INTERPOLATED = 1;
 const BODY_NO_GRAVITY = 2;
@@ -241,6 +241,8 @@ export type ShapeDesc = (
 	| { type: 'mesh'; mesh: PhysicsMesh }
 	/** 按实体的世界缩放缩放（Stride 的 ConvexHullCollider）。 */
 	| { type: 'convexHull'; hull: PhysicsHull }
+	/** 没有形状、不碰撞（Stride 的 EmptyCollider）；只能单独用。 */
+	| { type: 'empty' }
 ) & {
 	/** 本地位置，默认原点。 */
 	position?: Vec3;
@@ -660,7 +662,7 @@ function writeShape(floats: Float32Array, words: Uint32Array, o: number, shape: 
 	floats.set([position[0]!, position[1]!, position[2]!, rotation[0]!, rotation[1]!, rotation[2]!, rotation[3]!], o + 1);
 	const size = shape.type === 'box' ? [shape.size[0]!, shape.size[1]!, shape.size[2]!]
 		: shape.type === 'sphere' ? [shape.radius, 0, 0]
-			: shape.type === 'mesh' || shape.type === 'convexHull' ? [0, 0, 0] : [shape.radius, shape.length, 0];
+			: shape.type === 'mesh' || shape.type === 'convexHull' || shape.type === 'empty' ? [0, 0, 0] : [shape.radius, shape.length, 0];
 	floats.set(size, o + 8);
 	words[o + 11] = shape.type === 'mesh' ? shape.mesh : shape.type === 'convexHull' ? shape.hull : 0;
 	floats[o + 12] = shape.mass ?? 1;
