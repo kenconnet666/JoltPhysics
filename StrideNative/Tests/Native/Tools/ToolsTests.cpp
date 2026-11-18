@@ -1,6 +1,7 @@
 #include <TestSupport.h>
 #include <StrideNative/Tools.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -193,6 +194,23 @@ TEST_CASE("场景导入：STRIDE_TEST_SCENE 指定的文件（排查用，没设
 	{
 		int32_t bake = st_scene_animation_bake(scene, 0, 30);
 		REQUIRE(WaitForTask(bake) == SN_TASK_DONE);
+		// 每条通道的键有序，并且都在播放范围里
+		const uint32_t *counts = static_cast<const uint32_t *>(sn_task_output_data(bake, 0));
+		const float *keys = static_cast<const float *>(sn_task_output_data(bake, 1));
+		const float duration = *static_cast<const float *>(sn_task_output_data(bake, 2));
+		uint32_t channels = sn_task_output_size(bake, 0) / sizeof(uint32_t);
+		for (uint32_t c = 0; c < channels; ++c)
+		{
+			const int width = c % 3 == 1 ? 5 : 4;
+			float last = -1.0f;
+			for (uint32_t k = 0; k < counts[c]; ++k, keys += width)
+			{
+				CHECK(keys[0] >= std::max(last, 0.0f));
+				CHECK(keys[0] <= duration);
+				last = keys[0];
+			}
+		}
+		MESSAGE("duration " << duration);
 		sn_task_release(bake);
 	}
 	st_scene_destroy(scene);

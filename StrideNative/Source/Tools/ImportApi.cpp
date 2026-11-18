@@ -500,18 +500,42 @@ namespace
 		return inSize >= 5 && std::memcmp(inData, "; FBX", 5) == 0;
 	}
 
-	/// 一个节点的一种通道（平移、旋转或缩放）写成 st_anim_build_animation 的键：时间和分量。
-	template <class Key>
-	uint32_t AppendKeys(const Key *inKeys, size_t inCount, double inStart, int inComponents, std::vector<float> &ioKeys)
+	template <class Value>
+	void AppendKey(float inTime, const Value &inValue, int inComponents, std::vector<float> &ioKeys)
 	{
-		for (size_t k = 0; k < inCount; ++k)
+		ioKeys.push_back(inTime);
+		const ufbx_real *value = &inValue.x;
+		for (int c = 0; c < inComponents; ++c)
+			ioKeys.push_back(float(value[c]));
+	}
+
+	/**
+	 * 一个节点的一种通道（平移、旋转或缩放）写成 st_anim_build_animation 的键：时间和分量。只取播放范围 [0, inDuration]：
+	 * 有的曲线在播放开始之前或结束之后还有键（同 Stride，范围外的不要），两端在边界上按烘焙的曲线求值补一个键。
+	 */
+	template <class List, class Evaluate>
+	uint32_t AppendKeys(const List &inKeys, double inDuration, int inComponents, Evaluate inEvaluate, std::vector<float> &ioKeys)
+	{
+		uint32_t count = 0;
+		if (inKeys.count > 0 && inKeys.data[0].time < 0.0)
 		{
-			ioKeys.push_back(float(inKeys[k].time - inStart));
-			const ufbx_real *value = &inKeys[k].value.x;
-			for (int c = 0; c < inComponents; ++c)
-				ioKeys.push_back(float(value[c]));
+			AppendKey(0.0f, inEvaluate(inKeys, 0.0), inComponents, ioKeys);
+			++count;
 		}
-		return uint32_t(inCount);
+		for (size_t k = 0; k < inKeys.count; ++k)
+		{
+			double time = inKeys.data[k].time;
+			if (time < 0.0 || time > inDuration)
+				continue;
+			AppendKey(float(time), inKeys.data[k].value, inComponents, ioKeys);
+			++count;
+		}
+		if (inKeys.count > 0 && inKeys.data[inKeys.count - 1].time > inDuration)
+		{
+			AppendKey(float(inDuration), inEvaluate(inKeys, inDuration), inComponents, ioKeys);
+			++count;
+		}
+		return count;
 	}
 }
 
@@ -702,6 +726,7 @@ SN_API int32_t st_scene_animation_bake(int32_t scene, uint32_t animation, float 
 		for (size_t i = 0; i < baked->nodes.count; ++i)
 			by_node[baked->nodes.data[i].typed_id] = &baked->nodes.data[i];
 
+		const double duration = baked->playback_duration;
 		std::vector<uint32_t> counts;
 		std::vector<float> keys;
 		for (const ufbx_node *node : nodes)
@@ -718,15 +743,15 @@ SN_API int32_t st_scene_animation_bake(int32_t scene, uint32_t animation, float 
 				continue;
 			}
 			const ufbx_baked_node &track = *found->second;
-			// trim_start_time 已经把时间移到从 0 开始
-			counts.push_back(AppendKeys(track.translation_keys.data, track.translation_keys.count, 0.0, 3, keys));
-			counts.push_back(AppendKeys(track.rotation_keys.data, track.rotation_keys.count, 0.0, 4, keys));
-			counts.push_back(AppendKeys(track.scale_keys.data, track.scale_keys.count, 0.0, 3, keys));
+			// trim_start_time 已经把播放开始移到 0
+			counts.push_back(AppendKeys(track.translation_keys, duration, 3, ufbx_evaluate_baked_vec3, keys));
+			counts.push_back(AppendKeys(track.rotation_keys, duration, 4, ufbx_evaluate_baked_quat, keys));
+			counts.push_back(AppendKeys(track.scale_keys, duration, 3, ufbx_evaluate_baked_vec3, keys));
 		}
 		std::memcpy(ioTask.AddOutput(counts.size() * sizeof(uint32_t)), counts.data(), counts.size() * sizeof(uint32_t));
 		std::memcpy(ioTask.AddOutput(keys.size() * sizeof(float)), keys.data(), keys.size() * sizeof(float));
-		float duration = float(baked->playback_duration);
-		std::memcpy(ioTask.AddOutput(sizeof(float)), &duration, sizeof(float));
+		float stored_duration = float(duration);
+		std::memcpy(ioTask.AddOutput(sizeof(float)), &stored_duration, sizeof(float));
 		return true;
 	});
 }
