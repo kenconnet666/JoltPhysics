@@ -740,6 +740,11 @@ SN_API int32_t sn_physics_create(uint32_t max_bodies, int32_t transforms, const 
 	world->mSystem.Init(max_bodies, 0, max_bodies * cContactsPerBody, max_bodies * cContactsPerBody,
 		world->mBroadPhaseLayers, world->mObjectVsBroadPhase, world->mObjectPairs);
 	world->mSystem.SetGravity(Load3(world->mSettings.gravity));
+	// Bepu 的接触是软约束，静止时几乎不陷进去（30 Hz 的弹簧在重力下只压下去零点几毫米）；Jolt 默认允许陷进 2 cm 才往外推
+	// （mPenetrationSlop），角色和放在地上的物体都会比 Stride 低 2 cm。留 1 mm，免得堆叠的物体来回抖。
+	PhysicsSettings physicsSettings = world->mSystem.GetPhysicsSettings();
+	physicsSettings.mPenetrationSlop = 0.001f;
+	world->mSystem.SetPhysicsSettings(physicsSettings);
 	world->mBodies.reserve(max_bodies);
 	world->mTransforms = transforms;
 	world->mPositions.resize(size_t(max_bodies) * 3);
