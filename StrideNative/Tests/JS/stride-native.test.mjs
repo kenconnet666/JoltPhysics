@@ -396,6 +396,17 @@ describe('stride-native and stride-tools', () => {
 		}
 	});
 
+	it('steps a large-capacity world (the temp allocator falls back to malloc instead of aborting)', () => {
+		const world = native.createPhysicsWorld(32768);
+		try {
+			world.addBodies([{ motion: 'dynamic', shapes: [{ type: 'sphere', radius: 0.5 }], position: [0, 5, 0] }]);
+			world.step(1 / 60);
+			assert.ok(world.positions()[1] < 5);
+		} finally {
+			world.destroy();
+		}
+	});
+
 	it('drives single bodies toward world targets (servos, angular motor) and limits distances with a spring', () => {
 		using transforms = native.createTransforms(4);
 		const [slot] = transforms.allocate(1);

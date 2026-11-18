@@ -19,10 +19,11 @@ namespace
 	// Physics uses one barrier per step; background tasks and ParallelFor use the rest.
 	constexpr JPH::uint cMaxJobs = 4096;
 	constexpr JPH::uint cMaxBarriers = 64;
+	// 固定块够一般的世界用；物体多（大容量的物理世界一步要上百 MB）时超出的部分退回 malloc，不再 abort
 	constexpr JPH::uint cTempAllocatorSize = 32 * 1024 * 1024;
 
 	std::unique_ptr<JPH::JobSystemThreadPool> sJobSystem;
-	std::unique_ptr<JPH::TempAllocatorImpl> sTempAllocator;
+	std::unique_ptr<JPH::TempAllocatorImplWithMallocFallback> sTempAllocator;
 	std::vector<std::function<void()>> sShutdownHooks;
 	thread_local std::string tLastError;
 
@@ -120,7 +121,7 @@ SN_API int32_t sn_init(int32_t worker_threads)
 	// Jolt 的类型（形状、约束……）由物理模块在第一次创建世界时注册，见 PhysicsApi.cpp：
 	// 物理是单独的侧模块（wasm 里），核心不能依赖它
 
-	sTempAllocator = std::make_unique<JPH::TempAllocatorImpl>(cTempAllocatorSize);
+	sTempAllocator = std::make_unique<JPH::TempAllocatorImplWithMallocFallback>(cTempAllocatorSize);
 	sJobSystem = std::make_unique<JPH::JobSystemThreadPool>(cMaxJobs, cMaxBarriers, worker_threads);
 	return SN_OK;
 }
