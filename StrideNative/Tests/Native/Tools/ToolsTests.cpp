@@ -128,6 +128,30 @@ TEST_CASE("场景导入：每个节点实例一个网格，节点变换烘焙进
 	st_scene_destroy(scene);
 }
 
+TEST_CASE("场景导入：没有法线的网格补平面法线，法线不同的三角形共用的顶点拆开")
+{
+	ModuleScope module;
+	// 沿 Y 轴折起来的两个三角形，共用 (0, 0, 0) 和 (0, 1, 0)：一个在 XY 平面（法线 +Z），一个在 YZ 平面（法线 +X，绕序 1 4 3）
+	const std::string obj = "v 0 0 0\nv 1 0 0\nv 0 1 0\nv 0 0 -1\ns 1\nf 1 2 3\nf 1 4 3\n";
+	int32_t task = st_scene_load(obj.data(), uint32_t(obj.size()), ST_FORMAT_OBJ);
+	REQUIRE(WaitForTask(task) == SN_TASK_DONE);
+	int32_t scene = sn_task_result(task, 0);
+	sn_task_release(task);
+	st_mesh_info info;
+	REQUIRE(st_scene_mesh_info(scene, 0, &info) == SN_OK);
+	CHECK(info.has_normals);
+	CHECK(info.vertex_count == 6);
+	std::vector<float> normals(info.vertex_count * 3);
+	std::vector<uint32_t> indices(info.index_count);
+	REQUIRE(st_scene_mesh_copy(scene, 0, nullptr, normals.data(), nullptr, indices.data()) == SN_OK);
+	for (int k = 0; k < 3; ++k)
+	{
+		CHECK(normals[indices[k] * 3 + 2] == doctest::Approx(1.0f));
+		CHECK(normals[indices[3 + k] * 3 + 0] == doctest::Approx(1.0f));
+	}
+	st_scene_destroy(scene);
+}
+
 TEST_CASE("场景导入：节点按深度优先排，蒙皮网格带关节、逆绑定矩阵和按权重排好的影响，不受自己节点的变换影响")
 {
 	ModuleScope module;

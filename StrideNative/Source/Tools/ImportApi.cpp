@@ -3,6 +3,7 @@
 // 节点的世界变换烘焙进顶点和法线（镜像变换时翻转绕序），所以网格都在模型空间里，右手、Y 向上、米。
 // 蒙皮网格按绑定时的姿势烘焙；每个关节的逆绑定矩阵把烘焙后的顶点变到关节空间，关节当前的节点到模型矩阵乘它就是蒙皮矩阵。
 // 节点按深度优先排（父节点在子节点前面，同 Stride 的 .sdskel 和 ozz 的骨架），FBX 的根节点叫 RootNode（同 Stride 的导入）。
+// 没有法线的网格补平面法线（见 AddFlatNormals）。
 #include <Core/Core.h>
 #include <Core/HandleTable.h>
 #include <Core/Tasks.h>
@@ -96,6 +97,67 @@ namespace
 			}
 		}
 		return mesh;
+	}
+
+	/// 没有法线的网格补上平面法线：Stride 导入时用 Assimp 的 aiProcess_GenNormals（逐面法线，不看 OBJ 的平滑组），glTF 规范对
+	/// 缺法线的网格也要求平面着色。每个三角形用自己的面法线；一个顶点被法线不同的三角形共用时复制一份，顶点的顺序和
+	/// 已有的索引不变
+	void AddFlatNormals(ImportedMesh &ioMesh)
+	{
+		size_t vertex_count = ioMesh.mPositions.size() / 3;
+		ioMesh.mNormals.assign(vertex_count * 3, 0.0f);
+		// 每个原来的顶点用过的副本（第一个是它自己）
+		std::vector<std::vector<uint32_t>> copies(vertex_count);
+		auto copy_vertex = [&ioMesh](uint32_t inVertex) -> uint32_t
+		{
+			auto append = [inVertex](auto &ioValues, size_t inStride)
+			{
+				for (size_t i = 0; i < inStride; ++i)
+					ioValues.push_back(ioValues[inVertex * inStride + i]);
+			};
+			uint32_t copy = uint32_t(ioMesh.mPositions.size() / 3);
+			append(ioMesh.mPositions, 3);
+			append(ioMesh.mNormals, 3);
+			if (!ioMesh.mUvs.empty())
+				append(ioMesh.mUvs, 2);
+			if (!ioMesh.mJoints.empty())
+			{
+				append(ioMesh.mJoints, cMaxInfluences);
+				append(ioMesh.mWeights, cMaxInfluences);
+			}
+			return copy;
+		};
+		for (size_t t = 0; t + 2 < ioMesh.mIndices.size(); t += 3)
+		{
+			const float *a = &ioMesh.mPositions[ioMesh.mIndices[t] * 3];
+			const float *b = &ioMesh.mPositions[ioMesh.mIndices[t + 1] * 3];
+			const float *c = &ioMesh.mPositions[ioMesh.mIndices[t + 2] * 3];
+			float e1[3] = { b[0] - a[0], b[1] - a[1], b[2] - a[2] }, e2[3] = { c[0] - a[0], c[1] - a[1], c[2] - a[2] };
+			float normal[3] = { e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0] };
+			float length = std::sqrt(normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]);
+			if (length > 0)
+				for (float &n : normal)
+					n /= length;
+			for (size_t k = 0; k < 3; ++k)
+			{
+				uint32_t &index = ioMesh.mIndices[t + k];
+				std::vector<uint32_t> &used = copies[index];
+				auto same = std::find_if(used.begin(), used.end(), [&](uint32_t inCopy)
+				{
+					const float *n = &ioMesh.mNormals[inCopy * 3];
+					return std::abs(n[0] - normal[0]) < 1.0e-5f && std::abs(n[1] - normal[1]) < 1.0e-5f && std::abs(n[2] - normal[2]) < 1.0e-5f;
+				});
+				if (same != used.end())
+				{
+					index = *same;
+					continue;
+				}
+				uint32_t vertex = used.empty() ? index : copy_vertex(index);
+				std::memcpy(&ioMesh.mNormals[vertex * 3], normal, sizeof(normal));
+				used.push_back(vertex);
+				index = vertex;
+			}
+		}
 	}
 
 	/// 一个顶点的影响：按权重从大到小留前 4 个，归一化。
@@ -319,6 +381,8 @@ namespace
 				if (inTransform.mMirrored)
 					for (size_t i = 0; i + 2 < mesh.mIndices.size(); i += 3)
 						std::swap(mesh.mIndices[i + 1], mesh.mIndices[i + 2]);
+				if (mesh.mNormals.empty())
+					AddFlatNormals(mesh);
 				outScene.mMeshes.push_back(std::move(mesh));
 			}
 		};
@@ -360,7 +424,6 @@ namespace
 		options.target_axes = ufbx_axes_right_handed_y_up;
 		options.target_unit_meters = 1.0f;
 		options.space_conversion = UFBX_SPACE_CONVERSION_MODIFY_GEOMETRY;
-		options.generate_missing_normals = true;
 		if (inObj)
 		{
 			options.file_format = UFBX_FILE_FORMAT_OBJ;
@@ -489,6 +552,8 @@ namespace
 				}
 				uint32_t material_index = material != nullptr ? material->typed_id : ST_NO_MATERIAL;
 				ImportedMesh imported = WeldCorners(corners, mesh.vertex_normal.exists, mesh.vertex_uv.exists, skin != nullptr, material_index);
+				if (!mesh.vertex_normal.exists)
+					AddFlatNormals(imported);
 				imported.mNode = index_of[node.typed_id];
 				imported.mJointNodes = joint_nodes;
 				imported.mInverseBinds = inverse_binds;
