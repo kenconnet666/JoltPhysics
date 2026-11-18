@@ -268,6 +268,18 @@ TEST_CASE("物理：角色站稳、按目标速度走、起跳后落回地面（
 	CHECK(sn_physics_character_grounded(world, character) == 1);
 	CHECK(positions[4] == doctest::Approx(0.0f).epsilon(0.05));
 
+	// 空中操控：原地起跳，到空中再推方向，最多加速到目标速度的 0.2（2 m/s），加速度是 200 · 0.2 / 1 = 40
+	const float before_x = positions[3];
+	REQUIRE(sn_physics_character_move(world, character, 0.0f, 0.0f, 1) == SN_OK);
+	Step(world, 3);
+	REQUIRE(sn_physics_character_grounded(world, character) == 0);
+	REQUIRE(sn_physics_character_move(world, character, 10.0f, 0.0f, 0) == SN_OK);
+	Step(world, 15);
+	CHECK(positions[3] - before_x > 0.3f);
+	CHECK(positions[3] - before_x < 0.6f);
+	REQUIRE(sn_physics_character_move(world, character, 0.0f, 0.0f, 0) == SN_OK);
+	Step(world, 60);
+
 	// 不是角色的物体、不存在的物体都不能当角色用
 	CHECK(sn_physics_character_move(world, 0, 1.0f, 0.0f, 0) == SN_ERROR_INVALID_ARGUMENT);
 	CHECK(sn_physics_character_grounded(world, 5) == SN_ERROR_INVALID_ARGUMENT);
@@ -302,12 +314,16 @@ TEST_CASE("物理：碰撞层的矩阵和查询的遮罩，射线和球体扫掠
 	CHECK(sn_physics_ray_cast(world, origin, along_x, 4, 1u << 0, &hit) == 0);
 
 	// 半径 0.5 的球：碰到 x = 4.5 的墙面时球心在 4
-	REQUIRE(sn_physics_sphere_cast(world, 0.5f, origin, along_x, 100, 0xffffffffu, &hit) == 1);
+	REQUIRE(sn_physics_sphere_cast(world, 0.5f, origin, along_x, 100, 0xffffffffu, 0, &hit) == 1);
 	CHECK(hit.distance == doctest::Approx(4.0f).epsilon(0.01));
 	CHECK(hit.body == 0);
 	const float inside[3] = { 5, 0, 0 };
-	REQUIRE(sn_physics_sphere_cast(world, 0.5f, inside, along_x, 100, 1u << 0, &hit) == 1);
+	REQUIRE(sn_physics_sphere_cast(world, 0.5f, inside, along_x, 100, 1u << 0, 0, &hit) == 1);
 	CHECK(hit.distance == doctest::Approx(0.0f));
+	// 忽略起点就重叠的墙：打到 x = 10 的那面（球心停在 9）
+	REQUIRE(sn_physics_sphere_cast(world, 0.5f, inside, along_x, 100, 0xffffffffu, SN_CAST_IGNORE_INITIAL_OVERLAP, &hit) == 1);
+	CHECK(hit.distance == doctest::Approx(4.0f).epsilon(0.01));
+	CHECK(hit.body == 1);
 	const float zero[3] = { 0, 0, 0 };
 	CHECK(sn_physics_ray_cast(world, origin, zero, 100, 1, &hit) == SN_ERROR_INVALID_ARGUMENT);
 

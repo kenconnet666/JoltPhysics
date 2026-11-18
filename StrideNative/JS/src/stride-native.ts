@@ -295,7 +295,7 @@ export interface BoxDesc {
 
 /** 仿真设置（Stride 的 BepuSimulation），默认值同 Stride。 */
 export interface PhysicsSettings {
-	/** 默认 (0, -9.81, 0)。 */
+	/** 默认 (0, -9.8, 0)；阻尼默认各 0.05（Stride 的 StridePoseIntegratorCallbacks）。 */
 	gravity?: Vec3;
 	linearDamping?: number;
 	angularDamping?: number;
@@ -307,6 +307,23 @@ export interface PhysicsWorldOptions extends PhysicsSettings {
 	/** 物体可以绑定的变换存储；它要比世界活得久。 */
 	transforms?: TransformStore;
 }
+
+export interface QueryOptions {
+	/** 第 n 位为 1 表示层 n 的物体参与（Stride 的 CollisionMask），默认全部。 */
+	mask?: number;
+	/** 结果写进这个对象（就地改写，不分配内存）。 */
+	hit?: PhysicsHit;
+}
+
+export interface SweepOptions extends QueryOptions {
+	/**
+	 * 忽略起点就和形状重叠的物体（默认它们算距离 0 的命中，同 Bepu）。第三人称相机用：贴着旁边的箱子时不该把相机拉到
+	 * 最近；要防止相机钻进正后方的墙，再配一条射线。
+	 */
+	ignoreInitialOverlap?: boolean;
+}
+
+const CAST_IGNORE_INITIAL_OVERLAP = 1;
 
 /** 射线和扫掠的结果；查询传入一个对象时就地改写它，不分配内存。 */
 export class PhysicsHit {
@@ -424,19 +441,20 @@ export class PhysicsWorld extends NativeObject<StrideNative> {
 		return this.native.check(this.native.module._sn_physics_character_grounded(this[HANDLE], body), 'sn_physics_character_grounded') === 1;
 	}
 
-	/** 射线（Stride 的 RayCast）：mask 的第 n 位为 1 表示层 n 的物体参与。没命中时返回 undefined。 */
-	rayCast(origin: Vec3, direction: Vec3, maxDistance: number, mask = ALL_LAYERS, hit = new PhysicsHit()): PhysicsHit | undefined {
+	/** 射线（Stride 的 RayCast）。没命中时返回 undefined。 */
+	rayCast(origin: Vec3, direction: Vec3, maxDistance: number, { mask = ALL_LAYERS, hit = new PhysicsHit() }: QueryOptions = {}): PhysicsHit | undefined {
 		this.#setQuery(origin, direction);
 		const q = this.#query;
 		const result = this.native.module._sn_physics_ray_cast(this[HANDLE], q, q + 12, maxDistance, mask >>> 0, q + 24);
 		return this.#hit(this.native.check(result, 'sn_physics_ray_cast'), hit);
 	}
 
-	/** 球体扫掠（Stride 的 SweepCast 加 Sphere），同 rayCast；从一开始就重叠的物体算距离 0 的命中。 */
-	sphereCast(radius: number, origin: Vec3, direction: Vec3, maxDistance: number, mask = ALL_LAYERS, hit = new PhysicsHit()): PhysicsHit | undefined {
+	/** 球体扫掠（Stride 的 SweepCast 加 Sphere），同 rayCast；默认从一开始就重叠的物体算距离 0 的命中（同 Bepu）。 */
+	sphereCast(radius: number, origin: Vec3, direction: Vec3, maxDistance: number, { mask = ALL_LAYERS, hit = new PhysicsHit(), ignoreInitialOverlap = false }: SweepOptions = {}): PhysicsHit | undefined {
 		this.#setQuery(origin, direction);
 		const q = this.#query;
-		const result = this.native.module._sn_physics_sphere_cast(this[HANDLE], radius, q, q + 12, maxDistance, mask >>> 0, q + 24);
+		const flags = ignoreInitialOverlap ? CAST_IGNORE_INITIAL_OVERLAP : 0;
+		const result = this.native.module._sn_physics_sphere_cast(this[HANDLE], radius, q, q + 12, maxDistance, mask >>> 0, flags, q + 24);
 		return this.#hit(this.native.check(result, 'sn_physics_sphere_cast'), hit);
 	}
 
@@ -468,7 +486,7 @@ function boxMotion(motion: string, index: number): 'dynamic' | 'static' {
 }
 
 /** createPhysicsWorld 的设置写成 sn_physics_settings。 */
-function writeSettings(floats: Float32Array, words: Uint32Array, { gravity = [0, -9.81, 0], linearDamping = 0, angularDamping = 0, collisionMasks }: PhysicsSettings): void {
+function writeSettings(floats: Float32Array, words: Uint32Array, { gravity = [0, -9.8, 0], linearDamping = 0.05, angularDamping = 0.05, collisionMasks }: PhysicsSettings): void {
 	floats.set([gravity[0]!, gravity[1]!, gravity[2]!, linearDamping, angularDamping]);
 	if (collisionMasks && collisionMasks.length !== 32) throw new RangeError(`collisionMasks needs 32 entries, got ${collisionMasks.length}`);
 	for (let layer = 0; layer < 32; layer++) words[5 + layer] = collisionMasks ? collisionMasks[layer]! >>> 0 : ALL_LAYERS;

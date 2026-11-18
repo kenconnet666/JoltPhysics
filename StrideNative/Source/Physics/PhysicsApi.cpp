@@ -188,7 +188,9 @@ namespace
 	sn_physics_settings DefaultSettings()
 	{
 		sn_physics_settings settings {};
-		settings.gravity[1] = -9.81f;
+		settings.gravity[1] = -9.8f;
+	settings.linear_damping = 0.05f;
+	settings.angular_damping = 0.05f;
 		for (uint32_t &mask : settings.collision_masks)
 			mask = 0xffffffffu;
 		return settings;
@@ -323,12 +325,14 @@ namespace
 		}
 		else if (target.LengthSq() > 0.0f)
 		{
-			// 照搬 Stride：方向向量不归一化，只往移动方向加速、不减速
-			float current = velocity.Dot(target);
+			// 只往移动方向加速、不减速，同 Stride。和 Stride 不同的是方向先归一化：Stride 拿没归一化的目标速度做点积，
+			// 单位对不上，离地以后几乎没有空中操控；速度上限按目标速度的大小，摇杆推一半，空中也只到一半
+			float target_speed = target.Length();
+			Vec3 direction = target / target_speed;
+			float current = velocity.Dot(direction);
 			float acceleration = ioRecord.mInverseMass * settings.maximum_horizontal_force * settings.air_control_force_scale * inDeltaTime;
-			float maximum = target.Length() * settings.air_control_scale;
-			float wanted = std::min(current + acceleration, maximum);
-			velocity += target * std::max(0.0f, wanted - current);
+			float wanted = std::min(current + acceleration, target_speed * settings.air_control_scale);
+			velocity += direction * std::max(0.0f, wanted - current);
 		}
 		// TryJump 不论成没成都在这一步用掉
 		ioRecord.mJump = false;
@@ -383,6 +387,30 @@ namespace
 	{
 		return int32_t(inWorld.mSystem.GetBodyInterfaceNoLock().GetUserData(inID));
 	}
+
+	/// 扫掠的最近命中；可以跳过起点就重叠的物体（它们的命中位置是 0）
+	class ClosestCastHit final : public CastShapeCollector
+	{
+	public:
+		explicit ClosestCastHit(bool inIgnoreInitialOverlap) : mIgnoreInitialOverlap(inIgnoreInitialOverlap) { }
+
+		void AddHit(const ShapeCastResult &inResult) override
+		{
+			if (mIgnoreInitialOverlap && inResult.mFraction <= 0.0f)
+				return;
+			if (inResult.mFraction >= GetEarlyOutFraction())
+				return;
+			mHit = inResult;
+			mHadHit = true;
+			UpdateEarlyOutFraction(inResult.mFraction);
+		}
+
+		ShapeCastResult mHit;
+		bool mHadHit = false;
+
+	private:
+		bool mIgnoreInitialOverlap;
+	};
 
 	/// 查询的方向：归一化，长度为 0 时报错
 	bool QueryDirection(const float *inDirection, float inMaxDistance, Vec3 &outDirection)
@@ -716,7 +744,7 @@ SN_API int32_t sn_physics_ray_cast(int32_t world, const float *origin, const flo
 	return 1;
 }
 
-SN_API int32_t sn_physics_sphere_cast(int32_t world, float radius, const float *origin, const float *direction, float max_distance, uint32_t mask, sn_hit *hit)
+SN_API int32_t sn_physics_sphere_cast(int32_t world, float radius, const float *origin, const float *direction, float max_distance, uint32_t mask, uint32_t flags, sn_hit *hit)
 {
 	World *w = GetWorld(world);
 	if (w == nullptr)
@@ -731,10 +759,10 @@ SN_API int32_t sn_physics_sphere_cast(int32_t world, float radius, const float *
 	RefConst<Shape> sphere = new SphereShape(radius);
 	RShapeCast cast(sphere, Vec3::sOne(), RMat44::sTranslation(RVec3(Load3(origin))), unit * max_distance);
 	ShapeCastSettings settings;
-	ClosestHitCollisionCollector<CastShapeCollector> collector;
+	ClosestCastHit collector((flags & SN_CAST_IGNORE_INITIAL_OVERLAP) != 0);
 	MaskFilter filter(mask);
 	w->mSystem.GetNarrowPhaseQuery().CastShape(cast, settings, RVec3::sZero(), collector, {}, filter);
-	if (!collector.HadHit())
+	if (!collector.mHadHit)
 		return 0;
 	const ShapeCastResult &result = collector.mHit;
 	hit->distance = result.mFraction * max_distance;

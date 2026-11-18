@@ -19,7 +19,7 @@ typedef struct sn_physics_settings
 } sn_physics_settings;
 
 /// 建一个在共享任务系统上步进的世界，返回句柄。transforms 是物体可以绑定的变换存储（0 表示不用），它要比世界
-/// 活得久，绑定的槽位在物体存在期间不能释放。settings 为空时用 Stride 的默认值（重力 -9.81、阻尼 0、全部层相互碰撞）。
+/// 活得久，绑定的槽位在物体存在期间不能释放。settings 为空时用 Stride 的默认值（重力 -9.8、阻尼 0.05、全部层相互碰撞）。
 SN_API int32_t sn_physics_create(uint32_t max_bodies, int32_t transforms, const sn_physics_settings *settings);
 SN_API void sn_physics_destroy(int32_t world);
 
@@ -130,5 +130,12 @@ typedef struct sn_hit
 /// 射线（Stride 的 RayCast）：direction 不用归一化，max_distance 是米。mask 的第 n 位为 1 表示层 n 的物体参与。
 /// 返回 1 命中（写 hit），0 没有，负数是错误。
 SN_API int32_t sn_physics_ray_cast(int32_t world, const float *origin, const float *direction, float max_distance, uint32_t mask, sn_hit *hit);
-/// 球体扫掠（Stride 的 SweepCast 加 Sphere），同 sn_physics_ray_cast。从一开始就重叠的物体算距离 0 的命中（同 Bepu）。
-SN_API int32_t sn_physics_sphere_cast(int32_t world, float radius, const float *origin, const float *direction, float max_distance, uint32_t mask, sn_hit *hit);
+enum
+{
+	/// 球体扫掠忽略起点就和球重叠的物体（默认它们算距离 0 的命中，同 Bepu）。比如第三人称相机：贴着旁边的箱子时
+	/// 不该把相机拉到最近；要防止相机钻进正后方的墙，配一条射线。
+	SN_CAST_IGNORE_INITIAL_OVERLAP = 1,
+};
+
+/// 球体扫掠（Stride 的 SweepCast 加 Sphere），同 sn_physics_ray_cast；flags 是 SN_CAST_*。
+SN_API int32_t sn_physics_sphere_cast(int32_t world, float radius, const float *origin, const float *direction, float max_distance, uint32_t mask, uint32_t flags, sn_hit *hit);

@@ -223,13 +223,16 @@ describe('stride-native and stride-tools', () => {
 			assert.ok(halfway > before && halfway < world.positions()[player * 3 + 1], 'interpolation writes a pose between the last two steps');
 
 			// 射线：层 0 的墙在 4.5，只看层 1 时打到柱子的 7.75，角色在层 2
-			const hit = world.rayCast([0, 2, -6], [1, 0, 0], 20, 1 << 0);
+			const hit = world.rayCast([0, 2, -6], [1, 0, 0], 20, { mask: 1 << 0 });
 			assert.ok(hit && Math.abs(hit.distance - 4.5) < 1e-3 && hit.body === wall && hit.normal[0] < -0.99);
-			assert.ok(Math.abs(world.rayCast([0, 2, 0], [1, 0, 0], 20, 1 << 1).distance - 7.75) < 1e-3);
-			assert.equal(world.rayCast([0, 2, 0], [1, 0, 0], 20, 1 << 3), undefined);
+			assert.ok(Math.abs(world.rayCast([0, 2, 0], [1, 0, 0], 20, { mask: 1 << 1 }).distance - 7.75) < 1e-3);
+			assert.equal(world.rayCast([0, 2, 0], [1, 0, 0], 20, { mask: 1 << 3 }), undefined);
 			const reused = world.sphereCast(0.5, [0, 2, -6], [1, 0, 0], 20);
 			assert.ok(Math.abs(reused.distance - 4) < 0.01);
-			assert.equal(world.sphereCast(0.5, [0, 2, -6], [1, 0, 0], 20, 1 << 0, reused), reused, 'the hit object is reused');
+			assert.equal(world.sphereCast(0.5, [0, 2, -6], [1, 0, 0], 20, { mask: 1 << 0, hit: reused }), reused, 'the hit object is reused');
+			// 起点在墙里：默认是距离 0 的命中，忽略起点重叠时打到后面的柱子
+			assert.equal(world.sphereCast(0.5, [5, 2, -6], [1, 0, 0], 20).distance, 0);
+			assert.equal(world.sphereCast(0.5, [5, 2, -6], [1, 0, 0], 20, { ignoreInitialOverlap: true }), undefined, 'nothing behind the wall on this line');
 			assert.throws(() => world.moveCharacter(wall, 1, 0), /not a character/);
 			assert.throws(() => world.addBody({ motion: 'dynamic', shapes: [{ type: 'mesh', mesh }] }), /mesh shapes/);
 			assert.throws(() => native.createPhysicsWorld(4, { collisionMasks: [1, 2] }), /32 entries/);
