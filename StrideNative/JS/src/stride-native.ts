@@ -417,6 +417,7 @@ export class PhysicsWorld extends NativeObject<StrideNative> {
 		this.#queryFloats = native.f32(this.#query, 6 + HIT_WORDS);
 	}
 
+	/** 用过的编号上限（最大的编号 + 1），也是 positions() 的长度 / 3；移除的物体的编号会被复用。 */
 	get bodyCount(): number {
 		return this.#bodyCount;
 	}
@@ -498,7 +499,8 @@ export class PhysicsWorld extends NativeObject<StrideNative> {
 		const n = this.native;
 		const shapeCount = bodies.reduce((sum, body) => sum + body.shapes.length, 0);
 		const characters = bodies.filter((body) => body.motion === 'character');
-		const bytes = (bodies.length * BODY_WORDS + shapeCount * SHAPE_WORDS + characters.length * CHARACTER_WORDS) * 4;
+		// 末尾留出 bodies.length 个字放原生分到的编号
+		const bytes = (bodies.length * BODY_WORDS + shapeCount * SHAPE_WORDS + characters.length * CHARACTER_WORDS + bodies.length) * 4;
 		return n.withScratch(bytes, (table) => {
 			const floats = n.f32(table, bytes / 4);
 			const words = n.u32(table, bytes / 4);
@@ -511,11 +513,13 @@ export class PhysicsWorld extends NativeObject<StrideNative> {
 				writeBody(floats, words, i * BODY_WORDS, body, i, shape, body.motion === 'character' ? character++ : 0);
 				shape += body.shapes.length;
 			});
-			const first = n.check(n.module._sn_physics_add_bodies(this[HANDLE], table, bodies.length, table + shapesWord * 4, shapeCount,
-				table + charactersWord * 4, characters.length), 'sn_physics_add_bodies');
-			this.#bodyCount = first + bodies.length;
+			const idsWord = charactersWord + characters.length * CHARACTER_WORDS;
+			n.check(n.module._sn_physics_add_bodies(this[HANDLE], table, bodies.length, table + shapesWord * 4, shapeCount,
+				table + charactersWord * 4, characters.length, table + idsWord * 4), 'sn_physics_add_bodies');
+			const ids = Array.from(n.i32(table + idsWord * 4, bodies.length)) as BodyId[];
+			this.#bodyCount = Math.max(this.#bodyCount, ...ids.map((id) => id + 1));
 			this.#positions = n.f32(this.#positionsAddress, this.#bodyCount * 3);
-			return Array.from({ length: bodies.length }, (_, i) => (first + i) as BodyId);
+			return ids;
 		});
 	}
 

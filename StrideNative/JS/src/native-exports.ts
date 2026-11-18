@@ -187,10 +187,11 @@ export interface NativeExports {
 	/** C: Plugin.h */
 	_sn_parallel_for(count: number, fn: number, user: number): void;
 	/**
-	 * 一次加入 count 个物体（Jolt 成批插进宽相），返回第一个物体的编号；编号按加入顺序递增。
+	 * 一次加入 count 个物体（Jolt 成批插进宽相），每个物体的编号写进 out_bodies（可以是 null），返回第一个物体的编号。
+	 * 先复用移除过的物体的编号，所以编号不一定连续；没有移除过的物体时按加入顺序递增。同时存在的物体不超过 max_bodies。
 	 * C: Physics.h
 	 */
-	_sn_physics_add_bodies(world: number, bodies: number, count: number, shapes: number, shapeCount: number, characters: number, characterCount: number): number;
+	_sn_physics_add_bodies(world: number, bodies: number, count: number, shapes: number, shapeCount: number, characters: number, characterCount: number, outBodies: number): number;
 	/**
 	 * 加一个约束（两个物体都会唤醒），返回约束句柄（> 0）。
 	 * C: Physics.h
@@ -302,7 +303,7 @@ export interface NativeExports {
 	 */
 	_sn_physics_ray_cast(world: number, origin: number, direction: number, maxDistance: number, mask: number, hit: number): number;
 	/**
-	 * 移除物体（实体销毁时）：从世界里拿走并释放，编号不再复用；和它有关的接触不再报告。移除过的忽略。
+	 * 移除物体（实体销毁时）：从世界里拿走并释放，编号留给以后加的物体复用；和它有关的接触不再报告。移除过的忽略。
 	 * C: Physics.h
 	 */
 	_sn_physics_remove_bodies(world: number, bodies: number, count: number): number;

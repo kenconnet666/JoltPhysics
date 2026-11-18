@@ -348,6 +348,17 @@ describe('stride-native and stride-tools', () => {
 			world.step(1 / 60);
 			assert.deepEqual(world.contactEvents(), []);
 			assert.throws(() => world.setSensor(box, false), /does not exist/);
+			// 移除的编号被复用：同时存在的物体不超过容量，来回加、删不会用完
+			const count = world.bodyCount;
+			const [reused, appended] = world.addBodies([
+				{ motion: 'dynamic', shapes: [{ type: 'sphere', radius: 0.5 }], position: [0, 5, 0] },
+				{ motion: 'dynamic', shapes: [{ type: 'sphere', radius: 0.5 }], position: [2, 5, 0] },
+			]);
+			assert.deepEqual([reused, appended], [box, count]);
+			assert.equal(world.positions()[appended * 3], 2);
+			for (let i = 0; i < 20; i++) world.removeBodies(world.addBodies([{ motion: 'dynamic', shapes: [{ type: 'sphere', radius: 0.5 }] }]));
+			// 第一次没有空闲编号，接在后面用掉一个；之后都复用它
+			assert.equal(world.bodyCount, count + 2);
 		} finally {
 			world.destroy();
 		}

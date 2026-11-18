@@ -133,7 +133,7 @@ namespace
 			bodies.push_back(Body(box.motion, box.position[0], box.position[1], box.position[2], i));
 			bodies.back().transform = box.transform;
 		}
-		return sn_physics_add_bodies(inWorld, bodies.data(), inCount, shapes.data(), inCount, nullptr, 0);
+		return sn_physics_add_bodies(inWorld, bodies.data(), inCount, shapes.data(), inCount, nullptr, 0, nullptr);
 	}
 }
 
@@ -220,7 +220,7 @@ namespace
 
 		int32_t Add(int32_t inWorld) const
 		{
-			return sn_physics_add_bodies(inWorld, &body, 1, &shape, 1, &settings, 1);
+			return sn_physics_add_bodies(inWorld, &body, 1, &shape, 1, &settings, 1, nullptr);
 		}
 	};
 
@@ -301,7 +301,7 @@ TEST_CASE("物理：碰撞层的矩阵和查询的遮罩，射线和球体扫掠
 	// 层 0 的墙在 x = 5，层 1 的墙在 x = 10，都是 1 米厚
 	const sn_shape walls[] = { BoxShape(1, 10, 10), BoxShape(1, 10, 10) };
 	const sn_body bodies[] = { Body(SN_MOTION_STATIC, 5, 0, 0, 0, 1, 0), Body(SN_MOTION_STATIC, 10, 0, 0, 1, 1, 1) };
-	REQUIRE(sn_physics_add_bodies(world, bodies, 2, walls, 2, nullptr, 0) == 0);
+	REQUIRE(sn_physics_add_bodies(world, bodies, 2, walls, 2, nullptr, 0, nullptr) == 0);
 
 	const float origin[3] = { 0, 0, 0 }, along_x[3] = { 2, 0, 0 };
 	sn_hit hit {};
@@ -332,7 +332,7 @@ TEST_CASE("物理：碰撞层的矩阵和查询的遮罩，射线和球体扫掠
 	// 层 2 的箱子穿过层 0 的地面掉下去，层 1 的停在地面上
 	const sn_shape pieces[] = { BoxShape(100, 2, 100), BoxShape(1, 1, 1), BoxShape(1, 1, 1) };
 	const sn_body falling[] = { Body(SN_MOTION_STATIC, 0, -1, 30, 0, 1, 0), Body(SN_MOTION_DYNAMIC, 0, 3, 30, 1, 1, 2), Body(SN_MOTION_DYNAMIC, 3, 3, 30, 2, 1, 1) };
-	REQUIRE(sn_physics_add_bodies(world, falling, 3, pieces, 3, nullptr, 0) == 2);
+	REQUIRE(sn_physics_add_bodies(world, falling, 3, pieces, 3, nullptr, 0, nullptr) == 2);
 	Step(world, 60);
 	const float *positions = sn_physics_positions(world);
 	CHECK(positions[3 * 3 + 1] < -2.0f);
@@ -361,7 +361,7 @@ TEST_CASE("物理：网格碰撞体和带本地位姿的复合碰撞体")
 	ground.rotation[3] = 1.0f;
 	ground.mesh = mesh;
 	sn_body ground_body = Body(SN_MOTION_STATIC, 0, 0, 0, 0);
-	REQUIRE(sn_physics_add_bodies(world, &ground_body, 1, &ground, 1, nullptr, 0) == 0);
+	REQUIRE(sn_physics_add_bodies(world, &ground_body, 1, &ground, 1, nullptr, 0, nullptr) == 0);
 	TestBox falling = DynamicBox(0, 3, 0);
 	REQUIRE(AddBoxes(world, &falling, 1) == 1);
 	Step(world, 120);
@@ -369,7 +369,7 @@ TEST_CASE("物理：网格碰撞体和带本地位姿的复合碰撞体")
 
 	// 网格只能用在静态和运动学物体上
 	sn_body dynamic_mesh = Body(SN_MOTION_DYNAMIC, 0, 5, 0, 0);
-	CHECK(sn_physics_add_bodies(world, &dynamic_mesh, 1, &ground, 1, nullptr, 0) == SN_ERROR_INVALID_ARGUMENT);
+	CHECK(sn_physics_add_bodies(world, &dynamic_mesh, 1, &ground, 1, nullptr, 0, nullptr) == SN_ERROR_INVALID_ARGUMENT);
 
 	// 复合：两个盒子在本地 x = ±3，物体绕 Y 转 90°，本地 +x 转到世界 -z
 	sn_shape parts[] = { BoxShape(1, 1, 1), BoxShape(1, 1, 1) };
@@ -378,7 +378,7 @@ TEST_CASE("物理：网格碰撞体和带本地位姿的复合碰撞体")
 	sn_body compound = Body(SN_MOTION_STATIC, 0, 20, 0, 0, 2);
 	compound.rotation[1] = std::sqrt(0.5f);
 	compound.rotation[3] = std::sqrt(0.5f);
-	REQUIRE(sn_physics_add_bodies(world, &compound, 1, parts, 2, nullptr, 0) == 2);
+	REQUIRE(sn_physics_add_bodies(world, &compound, 1, parts, 2, nullptr, 0, nullptr) == 2);
 	const float down[3] = { 0, -1, 0 }, above_minus_z[3] = { 0, 25, -3 }, above_plus_x[3] = { 3, 25, 0 };
 	sn_hit hit {};
 	REQUIRE(sn_physics_ray_cast(world, above_minus_z, down, 10, 0xffffffffu, &hit) == 1);
@@ -414,7 +414,7 @@ TEST_CASE("物理：凸包和 BodyComponent 的控制（运动学切换、瞬移
 	hull_shape.mass = 1.0f;
 	sn_body crate = Body(SN_MOTION_DYNAMIC, 0, 3, 0, 0);
 	crate.flags = SN_BODY_NEVER_SLEEP;
-	REQUIRE(sn_physics_add_bodies(world, &crate, 1, &hull_shape, 1, nullptr, 0) == 1);
+	REQUIRE(sn_physics_add_bodies(world, &crate, 1, &hull_shape, 1, nullptr, 0, nullptr) == 1);
 	Step(world, 120);
 	const float *positions = sn_physics_positions(world);
 	CHECK(positions[4] == doctest::Approx(0.5f).epsilon(0.05));
@@ -463,7 +463,7 @@ TEST_CASE("物理：传感器和接触事件（Stride 的 Trigger、IContactHand
 	sn_body bodies[] = { Body(SN_MOTION_STATIC, 0, -0.5f, 0, 0), Body(SN_MOTION_STATIC, 0, 3, 0, 1), Body(SN_MOTION_DYNAMIC, 0, 8, 0, 2) };
 	bodies[0].flags = SN_BODY_CONTACT_EVENTS;
 	bodies[1].flags = SN_BODY_SENSOR | SN_BODY_CONTACT_EVENTS;
-	REQUIRE(sn_physics_add_bodies(world, bodies, 3, shapes, 3, nullptr, 0) == 0);
+	REQUIRE(sn_physics_add_bodies(world, bodies, 3, shapes, 3, nullptr, 0, nullptr) == 0);
 
 	// 逐步收集事件：盒子穿过传感器（开始、结束），落到地面（开始；之后睡下也不报结束，同 Bepu）
 	std::vector<sn_contact_event> seen;
@@ -511,7 +511,7 @@ namespace
 		shapes[1].mass = 1.0f;
 		sn_body bodies[] = { Body(inCubeDynamic ? SN_MOTION_DYNAMIC : SN_MOTION_KINEMATIC, 2, 0, -9, 0), Body(SN_MOTION_DYNAMIC, -2, 0, -9, 1) };
 		bodies[0].flags = bodies[1].flags = SN_BODY_NEVER_SLEEP;
-		REQUIRE(sn_physics_add_bodies(world, bodies, 2, shapes, 2, nullptr, 0) == 0);
+		REQUIRE(sn_physics_add_bodies(world, bodies, 2, shapes, 2, nullptr, 0, nullptr) == 0);
 		return world;
 	}
 
@@ -697,7 +697,7 @@ TEST_CASE("物理：插值的物体在两步之间写回插值的位姿")
 	sn_body body = Body(SN_MOTION_DYNAMIC, 0, 0, 0, 0);
 	body.transform = slot;
 	body.flags = SN_BODY_INTERPOLATED;
-	REQUIRE(sn_physics_add_bodies(world, &body, 1, &box, 1, nullptr, 0) == 0);
+	REQUIRE(sn_physics_add_bodies(world, &body, 1, &box, 1, nullptr, 0, nullptr) == 0);
 	Step(world, 10);
 	float previous = sn_physics_positions(world)[1];
 	Step(world, 1);

@@ -99,11 +99,12 @@ typedef struct sn_body
 SN_API int32_t sn_physics_create_mesh(int32_t world, const float *positions, uint32_t vertex_count, const uint32_t *indices, uint32_t index_count);
 /// 凸包形状（Jolt 由点算出凸包），世界内的物体共用；和网格共用句柄空间。positions 是 xyz。返回句柄。
 SN_API int32_t sn_physics_create_hull(int32_t world, const float *positions, uint32_t point_count);
-/// 移除物体（实体销毁时）：从世界里拿走并释放，编号不再复用；和它有关的接触不再报告。移除过的忽略。
+/// 移除物体（实体销毁时）：从世界里拿走并释放，编号留给以后加的物体复用；和它有关的接触不再报告。移除过的忽略。
 SN_API int32_t sn_physics_remove_bodies(int32_t world, const int32_t *bodies, uint32_t count);
-/// 一次加入 count 个物体（Jolt 成批插进宽相），返回第一个物体的编号；编号按加入顺序递增。
+/// 一次加入 count 个物体（Jolt 成批插进宽相），每个物体的编号写进 out_bodies（可以是 null），返回第一个物体的编号。
+/// 先复用移除过的物体的编号，所以编号不一定连续；没有移除过的物体时按加入顺序递增。同时存在的物体不超过 max_bodies。
 SN_API int32_t sn_physics_add_bodies(int32_t world, const sn_body *bodies, uint32_t count, const sn_shape *shapes, uint32_t shape_count,
-	const sn_character *characters, uint32_t character_count);
+	const sn_character *characters, uint32_t character_count, int32_t *out_bodies);
 
 // ---------------------------------------------------------------------------------------------
 // 步进

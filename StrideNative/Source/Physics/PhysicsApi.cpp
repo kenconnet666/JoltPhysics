@@ -252,6 +252,8 @@ namespace
 			bool			mWorldAngularVelocity = false;
 			Vec3			mTarget = Vec3::sZero();
 		};
+		/// 移除过的物体的编号，加物体时先复用
+		std::vector<int32_t>			mFreeBodies;
 		std::vector<ConstraintRecord>	mConstraints;
 	};
 
@@ -675,17 +677,16 @@ SN_API int32_t sn_physics_create_hull(int32_t world, const float *positions, uin
 }
 
 SN_API int32_t sn_physics_add_bodies(int32_t world, const sn_body *bodies, uint32_t count, const sn_shape *shapes, uint32_t shape_count,
-	const sn_character *characters, uint32_t character_count)
+	const sn_character *characters, uint32_t character_count, int32_t *out_bodies)
 {
 	World *w = GetWorld(world);
 	if (w == nullptr)
 		return SN_ERROR_INVALID_HANDLE;
-	size_t first = w->mBodies.size();
 	if (count == 0)
-		return int32_t(first);
+		return int32_t(w->mBodies.size());
 	if (bodies == nullptr)
 		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "bodies are required");
-	if (first + count > Capacity(*w))
+	if (w->mBodies.size() + count > Capacity(*w) + w->mFreeBodies.size())
 		return SetLastError(SN_ERROR_FAILED, "body limit reached");
 
 	// 先全部检查、建好形状，出错时什么都不加
@@ -739,10 +740,26 @@ SN_API int32_t sn_physics_add_bodies(int32_t world, const sn_body *bodies, uint3
 			mass += shapes[inBody.first_shape + s].mass;
 		return mass > 0.0f ? mass : 1.0f;
 	};
+	// 编号：先复用移除过的，再接在后面
+	std::vector<int32_t> indices(count);
+	for (uint32_t i = 0; i < count; ++i)
+	{
+		if (!w->mFreeBodies.empty())
+		{
+			indices[i] = w->mFreeBodies.back();
+			w->mFreeBodies.pop_back();
+		}
+		else
+		{
+			// 先占位、标成已移除：后面建物体失败中途返回时，占位的记录不会被当成物体
+			indices[i] = int32_t(w->mBodies.size());
+			w->mBodies.emplace_back().mRemoved = true;
+		}
+	}
 	for (uint32_t i = 0; i < count; ++i)
 	{
 		const sn_body &body = bodies[i];
-		int32_t index = int32_t(first + i);
+		int32_t index = indices[i];
 		BodyRecord record;
 		record.mMotion = body.motion;
 		record.mFlags = body.flags;
@@ -811,7 +828,7 @@ SN_API int32_t sn_physics_add_bodies(int32_t world, const sn_body *bodies, uint3
 		}
 		w->mContacts.mIndexOfBodyID[record.mID.GetIndex()] = index;
 		w->mContacts.mWanted[index] = (body.flags & SN_BODY_CONTACT_EVENTS) != 0;
-		w->mBodies.push_back(record);
+		w->mBodies[index] = record;
 	}
 
 	// 普通物体成批插进宽相（AddBodiesPrepare 会重排传入的数组，所以用副本）；角色各自加入
@@ -820,11 +837,13 @@ SN_API int32_t sn_physics_add_bodies(int32_t world, const sn_body *bodies, uint3
 		BodyInterface::AddState state = body_interface.AddBodiesPrepare(added.data(), int(added.size()));
 		body_interface.AddBodiesFinalize(added.data(), int(added.size()), state, EActivation::Activate);
 	}
-	for (size_t i = first; i < w->mBodies.size(); ++i)
-		if (w->mBodies[i].mCharacter >= 0)
-			w->mCharacters[w->mBodies[i].mCharacter].mCharacter->AddToPhysicsSystem(EActivation::Activate);
-	WritePositions(*w, first);
-	return int32_t(first);
+	for (int32_t index : indices)
+		if (w->mBodies[index].mCharacter >= 0)
+			w->mCharacters[w->mBodies[index].mCharacter].mCharacter->AddToPhysicsSystem(EActivation::Activate);
+	WritePositions(*w, size_t(*std::min_element(indices.begin(), indices.end())));
+	if (out_bodies != nullptr)
+		std::copy(indices.begin(), indices.end(), out_bodies);
+	return indices[0];
 }
 
 SN_API int32_t sn_physics_step(int32_t world, float delta_time, int32_t collision_steps)
@@ -961,6 +980,7 @@ SN_API int32_t sn_physics_remove_bodies(int32_t world, const int32_t *bodies, ui
 		}
 		else
 			ids.push_back(record.mID);
+		w->mFreeBodies.push_back(index);
 	}
 	if (!ids.empty())
 	{
