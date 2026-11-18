@@ -375,6 +375,11 @@ export class TransformStore extends NativeObject<StrideNative> {
 		this.native.check(this.native.module._sn_transforms_set_parent(this[HANDLE], slot, parent ?? 0), 'sn_transforms_set_parent');
 	}
 
+	/** 发出去过的最大槽位号（释放了也不降）：用到的槽位都在 1..slotLimit 之内，上传世界矩阵时只传 world 的前 (slotLimit + 1) * 16 个 float。 */
+	get slotLimit(): number {
+		return this.native.check(this.native.module._sn_transforms_slot_limit(this[HANDLE]), 'sn_transforms_slot_limit');
+	}
+
 	/** 按父节点在前的顺序算所有世界矩阵。层级变了才重排顺序，平时是一遍顺序扫描。 */
 	update(): void {
 		this.native.check(this.native.module._sn_transforms_update(this[HANDLE]), 'sn_transforms_update');

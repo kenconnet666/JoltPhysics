@@ -32,6 +32,8 @@ SN_API int32_t sn_transforms_free(int32_t transforms, const int32_t *slots, uint
 SN_API int32_t sn_transforms_set_parent(int32_t transforms, int32_t slot, int32_t parent);
 /// 按父节点在前的顺序算出所有槽位的世界矩阵：world = parent.world * T * R * S。
 SN_API int32_t sn_transforms_update(int32_t transforms);
+/// 发出去过的最大槽位号（释放了也不降）：用到的槽位都在 1..它 之内，上传世界矩阵时只传这一段。
+SN_API int32_t sn_transforms_slot_limit(int32_t transforms);
 
 // ---------------------------------------------------------------------------------------------
 // Physics (smoke test only; the Stride-shaped physics API is a separate milestone)

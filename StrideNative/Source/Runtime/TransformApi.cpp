@@ -279,6 +279,12 @@ SN_API int32_t sn_transforms_set_parent(int32_t transforms, int32_t slot, int32_
 	return store->SetParent(slot, parent, error) ? SN_OK : SetLastError(SN_ERROR_INVALID_ARGUMENT, error);
 }
 
+SN_API int32_t sn_transforms_slot_limit(int32_t transforms)
+{
+	TransformStore *store = GetStore(transforms);
+	return store != nullptr ? int32_t(store->SlotLimit()) : SN_ERROR_INVALID_HANDLE;
+}
+
 SN_API int32_t sn_transforms_update(int32_t transforms)
 {
 	TransformStore *store = GetStore(transforms);

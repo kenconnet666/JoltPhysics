@@ -170,6 +170,7 @@ TEST_CASE("变换：世界矩阵按层级传播，挂接和释放都做检查")
 	REQUIRE(sn_transforms_set_parent(store, grandchild, child) == SN_OK);
 	REQUIRE(sn_transforms_set_parent(store, child, root) == SN_OK);
 	CHECK(c.parent[child] == root);
+	CHECK(sn_transforms_slot_limit(store) == 3);
 
 	// 根：平移 (10, 0, 0)，绕 Y 转 90°，缩放 2；子：(1, 0, 0)；孙：(0, 1, 0)
 	c.position[root * 3] = 10;

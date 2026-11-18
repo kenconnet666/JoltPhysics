@@ -84,6 +84,7 @@ describe('stride-native and stride-tools', () => {
 		using transforms = native.createTransforms(8);
 		const [root, parent, child] = transforms.allocate(3);
 		assert.deepEqual([root, parent, child], [1, 2, 3]);
+		assert.equal(transforms.slotLimit, 3);
 		const { position, rotation, world } = transforms;
 		// 父节点平移 (10, 0, 0)、绕 Y 转 90°；子节点本地 (0, 4, 2) 转成 (2, 4, 0)，世界位置 (12, 4, 0)
 		const s = Math.SQRT1_2;

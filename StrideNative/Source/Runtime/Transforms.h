@@ -17,6 +17,7 @@ namespace StrideNative
 		explicit TransformStore(uint32_t inCapacity);
 
 		uint32_t Capacity() const { return mCapacity; }
+		uint32_t SlotLimit() const { return mHighWater; }
 		bool IsAlive(int32_t inSlot) const { return inSlot > 0 && uint32_t(inSlot) <= mCapacity && mAlive[inSlot] != 0; }
 
 		/// 分配 inCount 个槽位；容量不够时什么都不做，返回 false。
