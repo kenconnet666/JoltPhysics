@@ -10,6 +10,8 @@ export type { ModuleOptions, NativeDebugSnapshot, NativeErrorCode, NativeFeature
 
 /** xyz；数组、元组和 Vector3 之类的 ArrayLike 都行。 */
 export type Vec3 = ArrayLike<number>;
+/** 写结果用的三个数（数组或 Vector3 之类）。 */
+export type Vec3Out = { [index: number]: number };
 
 /** 刚体在世界里的序号（按创建顺序），也是它在 positions() 里的下标。 */
 export type BodyId = Branded<number, 'BodyId'>;
@@ -203,10 +205,11 @@ const HIT_WORDS = 8;
 // sn_physics_settings：gravity[3]、linear_damping、angular_damping、collision_masks[32]
 const SETTINGS_WORDS = 37;
 
-const SHAPE_TYPES = { box: 0, sphere: 1, capsule: 2, cylinder: 3, mesh: 4 } as const;
+const SHAPE_TYPES = { box: 0, sphere: 1, capsule: 2, cylinder: 3, mesh: 4, convexHull: 5 } as const;
 const MOTIONS = { static: 0, dynamic: 1, kinematic: 2, character: 3 } as const;
 const BODY_INTERPOLATED = 1;
 const BODY_NO_GRAVITY = 2;
+const BODY_NEVER_SLEEP = 4;
 const ALL_LAYERS = 0xffffffff;
 
 const ORIGIN: Vec3 = [0, 0, 0];
@@ -214,6 +217,8 @@ const IDENTITY: ArrayLike<number> = [0, 0, 0, 1];
 
 /** 用 PhysicsWorld.createMesh 建的三角网格形状，同一个世界里的物体共用。 */
 export type PhysicsMesh = Branded<number, 'PhysicsMesh'>;
+/** 用 PhysicsWorld.createHull 建的凸包形状，同一个世界里的物体共用。 */
+export type PhysicsHull = Branded<number, 'PhysicsHull'>;
 
 /** 复合碰撞体里的一个形状（Stride 的 BoxCollider、SphereCollider……加 CompoundCollider 的本地位姿）。 */
 export type ShapeDesc = (
@@ -224,6 +229,8 @@ export type ShapeDesc = (
 	| { type: 'cylinder'; radius: number; length: number }
 	/** 按实体的世界缩放缩放（Stride 的 MeshCollider）；只能用在静态和运动学物体上。 */
 	| { type: 'mesh'; mesh: PhysicsMesh }
+	/** 按实体的世界缩放缩放（Stride 的 ConvexHullCollider）。 */
+	| { type: 'convexHull'; hull: PhysicsHull }
 ) & {
 	/** 本地位置，默认原点。 */
 	position?: Vec3;
@@ -265,6 +272,8 @@ export interface BodyDesc {
 	interpolated?: boolean;
 	/** 默认 true。 */
 	gravity?: boolean;
+	/** 一直醒着（Stride 的 SleepThreshold 为负）。 */
+	neverSleep?: boolean;
 	/** motion 为 'character' 时用。 */
 	character?: CharacterSettings;
 }
@@ -350,6 +359,12 @@ export class PhysicsWorld extends NativeObject<StrideNative> {
 			n.check(n.module._sn_physics_create_mesh(this[HANDLE], p, positions.length / 3, i, indices.length), 'sn_physics_create_mesh') as PhysicsMesh);
 	}
 
+	/** 凸包形状：Jolt 由这些点（xyz）算出凸包，至少 4 个点。 */
+	createHull(points: Float32Array): PhysicsHull {
+		const n = this.native;
+		return n.withArrays([points], (p) => n.check(n.module._sn_physics_create_hull(this[HANDLE], p, points.length / 3), 'sn_physics_create_hull') as PhysicsHull);
+	}
+
 	addBody(body: BodyDesc): BodyId {
 		return this.addBodies([body])[0]!;
 	}
@@ -411,6 +426,60 @@ export class PhysicsWorld extends NativeObject<StrideNative> {
 	 */
 	positions(): Float32Array {
 		return this.#positions;
+	}
+
+	/** 在动态和运动学之间切换（Stride 的 BodyComponent.Kinematic）；只对按 'dynamic' 或 'kinematic' 加入的物体有效。 */
+	setKinematic(body: BodyId, kinematic: boolean): void {
+		this.native.check(this.native.module._sn_physics_body_set_kinematic(this[HANDLE], body, kinematic ? 1 : 0), 'sn_physics_body_set_kinematic');
+	}
+
+	/** 唤醒或让它睡下（Stride 的 Awake）。 */
+	setAwake(body: BodyId, awake: boolean): void {
+		this.native.check(this.native.module._sn_physics_body_set_awake(this[HANDLE], body, awake ? 1 : 0), 'sn_physics_body_set_awake');
+	}
+
+	isAwake(body: BodyId): boolean {
+		return this.native.check(this.native.module._sn_physics_body_awake(this[HANDLE], body), 'sn_physics_body_awake') === 1;
+	}
+
+	/** 瞬移到世界位姿并唤醒（Stride 的 Teleport）；绑定了变换的立即写回。 */
+	teleport(body: BodyId, position: Vec3, rotation: ArrayLike<number>): void {
+		const f = this.#queryFloats;
+		f.set([position[0]!, position[1]!, position[2]!, rotation[0]!, rotation[1]!, rotation[2]!, rotation[3]!]);
+		const q = this.#query;
+		this.native.check(this.native.module._sn_physics_body_teleport(this[HANDLE], body, q, q + 12), 'sn_physics_body_teleport');
+	}
+
+	/** 线速度和角速度（世界空间），写进 linear、angular（各 3 个数）。 */
+	velocity(body: BodyId, linear: Vec3Out, angular: Vec3Out): void {
+		const q = this.#query;
+		this.native.check(this.native.module._sn_physics_body_velocity(this[HANDLE], body, q, q + 12), 'sn_physics_body_velocity');
+		const f = this.#queryFloats;
+		linear[0] = f[0]!; linear[1] = f[1]!; linear[2] = f[2]!;
+		angular[0] = f[3]!; angular[1] = f[4]!; angular[2] = f[5]!;
+	}
+
+	/** 设线速度、角速度；不给的不变。 */
+	setVelocity(body: BodyId, linear?: Vec3, angular?: Vec3): void {
+		this.#pair(linear, angular, (l, a) => this.native.module._sn_physics_body_set_velocity(this[HANDLE], body, l, a), 'sn_physics_body_set_velocity');
+	}
+
+	/** 在质心加冲量（Stride 的 ApplyLinearImpulse、ApplyAngularImpulse）；运动学物体忽略。 */
+	applyImpulse(body: BodyId, linear?: Vec3, angular?: Vec3): void {
+		this.#pair(linear, angular, (l, a) => this.native.module._sn_physics_body_apply_impulse(this[HANDLE], body, l, a), 'sn_physics_body_apply_impulse');
+	}
+
+	/** 受不受重力（Stride 的 Gravity）。 */
+	setGravity(body: BodyId, enabled: boolean): void {
+		this.native.check(this.native.module._sn_physics_body_set_gravity(this[HANDLE], body, enabled ? 1 : 0), 'sn_physics_body_set_gravity');
+	}
+
+	/** 两个可选的向量放进查询缓冲（没给的传空指针）调用 call。 */
+	#pair(first: Vec3 | undefined, second: Vec3 | undefined, call: (first: number, second: number) => number, what: string): void {
+		const f = this.#queryFloats, q = this.#query;
+		if (first) f.set([first[0]!, first[1]!, first[2]!], 0);
+		if (second) f.set([second[0]!, second[1]!, second[2]!], 3);
+		this.native.check(call(first ? q : 0, second ? q + 12 : 0), what);
 	}
 
 	/**
@@ -485,9 +554,9 @@ function writeShape(floats: Float32Array, words: Uint32Array, o: number, shape: 
 	floats.set([position[0]!, position[1]!, position[2]!, rotation[0]!, rotation[1]!, rotation[2]!, rotation[3]!], o + 1);
 	const size = shape.type === 'box' ? [shape.size[0]!, shape.size[1]!, shape.size[2]!]
 		: shape.type === 'sphere' ? [shape.radius, 0, 0]
-			: shape.type === 'mesh' ? [0, 0, 0] : [shape.radius, shape.length, 0];
+			: shape.type === 'mesh' || shape.type === 'convexHull' ? [0, 0, 0] : [shape.radius, shape.length, 0];
 	floats.set(size, o + 8);
-	words[o + 11] = shape.type === 'mesh' ? shape.mesh : 0;
+	words[o + 11] = shape.type === 'mesh' ? shape.mesh : shape.type === 'convexHull' ? shape.hull : 0;
 	floats[o + 12] = shape.mass ?? 1;
 }
 
@@ -505,7 +574,7 @@ function writeBody(floats: Float32Array, words: Uint32Array, o: number, body: Bo
 	const layer = body.layer ?? 0;
 	if (!Number.isInteger(layer) || layer < 0 || layer > 31) throw new RangeError(`body ${index}: layer must be an integer 0..31, got ${layer}`);
 	words[o] = motion;
-	words[o + 1] = (body.interpolated ? BODY_INTERPOLATED : 0) | (body.gravity === false ? BODY_NO_GRAVITY : 0);
+	words[o + 1] = (body.interpolated ? BODY_INTERPOLATED : 0) | (body.gravity === false ? BODY_NO_GRAVITY : 0) | (body.neverSleep ? BODY_NEVER_SLEEP : 0);
 	words[o + 2] = body.transform ?? 0;
 	const position = body.position ?? ORIGIN, rotation = body.rotation ?? IDENTITY;
 	floats.set([position[0]!, position[1]!, position[2]!, rotation[0]!, rotation[1]!, rotation[2]!, rotation[3]!], o + 3);

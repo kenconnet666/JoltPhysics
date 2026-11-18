@@ -192,6 +192,46 @@ export interface NativeExports {
 	 */
 	_sn_physics_add_bodies(world: number, bodies: number, count: number, shapes: number, shapeCount: number, characters: number, characterCount: number): number;
 	/**
+	 * 在质心加冲量（Stride 的 ApplyLinearImpulse、ApplyAngularImpulse）；传 null 的不加。运动学物体忽略。
+	 * C: Physics.h
+	 */
+	_sn_physics_body_apply_impulse(world: number, body: number, linear: number, angular: number): number;
+	/**
+	 * 1 醒着，0 睡着，负数是错误。
+	 * C: Physics.h
+	 */
+	_sn_physics_body_awake(world: number, body: number): number;
+	/**
+	 * 唤醒或让它睡下（Stride 的 Awake）。
+	 * C: Physics.h
+	 */
+	_sn_physics_body_set_awake(world: number, body: number, awake: number): number;
+	/**
+	 * 受不受重力（Stride 的 Gravity）。
+	 * C: Physics.h
+	 */
+	_sn_physics_body_set_gravity(world: number, body: number, enabled: number): number;
+	/**
+	 * 在动态和运动学之间切换（Stride 的 Kinematic）：只对按动态或运动学加入的物体有效。
+	 * C: Physics.h
+	 */
+	_sn_physics_body_set_kinematic(world: number, body: number, kinematic: number): number;
+	/**
+	 * 设线速度和角速度；传 null 的不变。
+	 * C: Physics.h
+	 */
+	_sn_physics_body_set_velocity(world: number, body: number, linear: number, angular: number): number;
+	/**
+	 * 瞬移到世界位姿（Stride 的 Teleport），并唤醒；绑定了变换的立即写回槽位，插值也从这里重新开始。
+	 * C: Physics.h
+	 */
+	_sn_physics_body_teleport(world: number, body: number, position: number, rotation: number): number;
+	/**
+	 * 读线速度和角速度（世界空间，各 xyz）；不要的传 null。
+	 * C: Physics.h
+	 */
+	_sn_physics_body_velocity(world: number, body: number, linear: number, angular: number): number;
+	/**
 	 * 角色是否站在可以站立的地面上（Stride 的 IsGrounded）：1 是，0 否，负数是错误。
 	 * C: Physics.h
 	 */
@@ -208,6 +248,11 @@ export interface NativeExports {
 	 * C: Physics.h
 	 */
 	_sn_physics_create(maxBodies: number, transforms: number, settings: number): number;
+	/**
+	 * 凸包形状（Jolt 由点算出凸包），世界内的物体共用；和网格共用句柄空间。positions 是 xyz。返回句柄。
+	 * C: Physics.h
+	 */
+	_sn_physics_create_hull(world: number, positions: number, pointCount: number): number;
 	/**
 	 * 三角网格形状，世界内的物体共用。positions 是 xyz，indices 每三个一个三角形（逆时针为正面）。返回网格句柄。
 	 * C: Physics.h
@@ -534,10 +579,19 @@ export type RuntimeExport =
 	| 'sn_physics_create'
 	| 'sn_physics_destroy'
 	| 'sn_physics_create_mesh'
+	| 'sn_physics_create_hull'
 	| 'sn_physics_add_bodies'
 	| 'sn_physics_step'
 	| 'sn_physics_interpolate'
 	| 'sn_physics_positions'
+	| 'sn_physics_body_set_kinematic'
+	| 'sn_physics_body_set_awake'
+	| 'sn_physics_body_awake'
+	| 'sn_physics_body_teleport'
+	| 'sn_physics_body_velocity'
+	| 'sn_physics_body_set_velocity'
+	| 'sn_physics_body_apply_impulse'
+	| 'sn_physics_body_set_gravity'
 	| 'sn_physics_character_move'
 	| 'sn_physics_character_grounded'
 	| 'sn_physics_ray_cast'

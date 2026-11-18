@@ -263,6 +263,49 @@ describe('stride-native and stride-tools', () => {
 		}
 	});
 
+	it('controls BodyComponent-style bodies: convex hulls, kinematic switching, teleport, velocity, impulse, gravity', () => {
+		using transforms = native.createTransforms(4);
+		const [slot] = transforms.allocate(1);
+		transforms.position.set([0, 3, 0], slot * 3);
+		transforms.update();
+		const world = native.createPhysicsWorld(8, { transforms });
+		try {
+			world.addBody({ shapes: [{ type: 'box', size: [20, 1, 20] }], position: [0, -0.5, 0] });
+			// 单位立方体的 8 个角
+			const hull = world.createHull(new Float32Array([0, 1, 2, 3, 4, 5, 6, 7].flatMap((i) => [i & 1 ? 0.5 : -0.5, i & 2 ? 0.5 : -0.5, i & 4 ? 0.5 : -0.5])));
+			const crate = world.addBody({ motion: 'dynamic', shapes: [{ type: 'convexHull', hull }], transform: slot, neverSleep: true });
+			for (let i = 0; i < 120; i++) world.step(1 / 60);
+			assert.ok(Math.abs(transforms.position[slot * 3 + 1] - 0.5) < 0.03, 'the hull rests on the floor');
+			assert.equal(world.isAwake(crate), true);
+
+			world.applyImpulse(crate, [0, 5, 0]);
+			const linear = [0, 0, 0], angular = [0, 0, 0];
+			world.velocity(crate, linear, angular);
+			assert.ok(Math.abs(linear[1] - 5) < 1e-4);
+
+			// 运动学：瞬移立即写回变换；按速度走，不受重力
+			world.setKinematic(crate, true);
+			world.teleport(crate, [0, 10, 0], [0, 0, 0, 1]);
+			assert.equal(transforms.position[slot * 3 + 1], 10);
+			world.setVelocity(crate, [1, 0, 0], [0, 0, 0]);
+			for (let i = 0; i < 60; i++) world.step(1 / 60);
+			assert.ok(Math.abs(transforms.position[slot * 3] - 1) < 0.01 && Math.abs(transforms.position[slot * 3 + 1] - 10) < 1e-4);
+
+			// 动态、不受重力：不动；打开重力就落
+			world.setKinematic(crate, false);
+			world.setVelocity(crate, [0, 0, 0], [0, 0, 0]);
+			world.setGravity(crate, false);
+			for (let i = 0; i < 30; i++) world.step(1 / 60);
+			assert.ok(Math.abs(transforms.position[slot * 3 + 1] - 10) < 1e-4);
+			world.setGravity(crate, true);
+			for (let i = 0; i < 30; i++) world.step(1 / 60);
+			assert.ok(transforms.position[slot * 3 + 1] < 9);
+			assert.throws(() => world.setKinematic(0, true), /not a dynamic or kinematic body/);
+		} finally {
+			world.destroy();
+		}
+	});
+
 	it('culls instances against view frustums in native memory, batch by batch', () => {
 		using transforms = native.createTransforms(8);
 		const slots = transforms.allocate(4);

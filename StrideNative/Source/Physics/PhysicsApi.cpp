@@ -17,6 +17,7 @@
 #include <Jolt/Physics/Collision/ShapeCast.h>
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
 #include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
+#include <Jolt/Physics/Collision/Shape/ConvexHullShape.h>
 #include <Jolt/Physics/Collision/Shape/CylinderShape.h>
 #include <Jolt/Physics/Collision/Shape/MeshShape.h>
 #include <Jolt/Physics/Collision/Shape/RotatedTranslatedShape.h>
@@ -130,7 +131,7 @@ namespace
 		sn_physics_settings				mSettings;
 		std::vector<BodyRecord>			mBodies;			///< 按编号（加入顺序）
 		std::vector<CharacterRecord>	mCharacters;
-		std::vector<RefConst<Shape>>	mMeshes;			///< 网格句柄是下标加 1
+		std::vector<RefConst<Shape>>	mMeshes;			///< 网格和凸包，句柄是下标加 1
 		int32_t							mTransforms = 0;	///< 绑定用的变换存储句柄，0 表示没有
 		std::vector<float>				mPositions;			///< 每个物体的 xyz；只分配一次，调用方可以一直拿着视图
 	};
@@ -149,6 +150,12 @@ namespace
 	bool Moves(uint32_t inMotion)
 	{
 		return inMotion == SN_MOTION_DYNAMIC || inMotion == SN_MOTION_CHARACTER;
+	}
+
+	/// 位姿由仿真推进、要写回变换的物体（运动学物体按速度走，也算）
+	bool Integrates(uint32_t inMotion)
+	{
+		return inMotion != SN_MOTION_STATIC;
 	}
 
 	size_t Capacity(const World &inWorld)
@@ -175,7 +182,7 @@ namespace
 		const BodyInterface &bodies = ioWorld.mSystem.GetBodyInterfaceNoLock();
 		for (BodyRecord &record : ioWorld.mBodies)
 		{
-			if (!Moves(record.mMotion))
+			if (!Integrates(record.mMotion))
 				continue;
 			record.mPreviousPosition = record.mPosition;
 			record.mPreviousRotation = record.mRotation;
@@ -237,10 +244,11 @@ namespace
 				break;
 			return new CylinderShape(0.5f * s[1], s[0], ConvexRadius(std::min(s[0], 0.5f * s[1])));
 		case SN_SHAPE_MESH:
+		case SN_SHAPE_CONVEX_HULL:
 		{
 			if (inShape.mesh <= 0 || size_t(inShape.mesh) > inWorld.mMeshes.size())
 			{
-				outError = "mesh handle " + std::to_string(inShape.mesh) + " does not exist";
+				outError = "mesh or hull handle " + std::to_string(inShape.mesh) + " does not exist";
 				return nullptr;
 			}
 			const RefConst<Shape> &mesh = inWorld.mMeshes[inShape.mesh - 1];
@@ -502,6 +510,24 @@ SN_API int32_t sn_physics_create_mesh(int32_t world, const float *positions, uin
 	return int32_t(w->mMeshes.size());
 }
 
+SN_API int32_t sn_physics_create_hull(int32_t world, const float *positions, uint32_t point_count)
+{
+	World *w = GetWorld(world);
+	if (w == nullptr)
+		return SN_ERROR_INVALID_HANDLE;
+	if (positions == nullptr || point_count < 4)
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "a convex hull needs at least 4 points");
+	Array<Vec3> points(point_count);
+	for (uint32_t i = 0; i < point_count; ++i)
+		points[i] = Load3(positions + i * 3);
+	ConvexHullShapeSettings settings(points);
+	ShapeSettings::ShapeResult result = settings.Create();
+	if (result.HasError())
+		return SetLastError(SN_ERROR_FAILED, std::string("convex hull shape: ") + result.GetError().c_str());
+	w->mMeshes.push_back(result.Get());
+	return int32_t(w->mMeshes.size());
+}
+
 SN_API int32_t sn_physics_add_bodies(int32_t world, const sn_body *bodies, uint32_t count, const sn_shape *shapes, uint32_t shape_count,
 	const sn_character *characters, uint32_t character_count)
 {
@@ -611,7 +637,13 @@ SN_API int32_t sn_physics_add_bodies(int32_t world, const sn_body *bodies, uint3
 			settings.mLinearDamping = w->mSettings.linear_damping;
 			settings.mAngularDamping = w->mSettings.angular_damping;
 			settings.mGravityFactor = (body.flags & SN_BODY_NO_GRAVITY) != 0 ? 0.0f : 1.0f;
-			if (motion == EMotionType::Dynamic)
+			settings.mAllowSleeping = (body.flags & SN_BODY_NEVER_SLEEP) == 0;
+			// BodyComponent 能在动态和运动学之间切换；质量照动态的算，切过去时用得上。带网格形状的（只能是运动学）没有质量，不能切
+			bool has_mesh = false;
+			for (uint32_t s = 0; s < body.shape_count; ++s)
+				has_mesh |= shapes[body.first_shape + s].type == SN_SHAPE_MESH;
+			settings.mAllowDynamicOrKinematic = motion != EMotionType::Static && !has_mesh;
+			if (settings.mAllowDynamicOrKinematic)
 			{
 				settings.mOverrideMassProperties = EOverrideMassProperties::CalculateInertia;
 				settings.mMassPropertiesOverride.mMass = mass_of(body);
@@ -685,7 +717,7 @@ SN_API int32_t sn_physics_interpolate(int32_t world, float alpha)
 	float t = std::clamp(alpha, 0.0f, 1.0f);
 	for (const BodyRecord &record : w->mBodies)
 	{
-		if ((record.mFlags & SN_BODY_INTERPOLATED) == 0 || record.mSlot == 0 || !Moves(record.mMotion))
+		if ((record.mFlags & SN_BODY_INTERPOLATED) == 0 || record.mSlot == 0 || !Integrates(record.mMotion))
 			continue;
 		RVec3 position = record.mPreviousPosition + (record.mPosition - record.mPreviousPosition) * t;
 		Quat rotation = record.mPreviousRotation.SLERP(record.mRotation, t);
@@ -698,6 +730,145 @@ SN_API const float *sn_physics_positions(int32_t world)
 {
 	World *w = GetWorld(world);
 	return w != nullptr ? w->mPositions.data() : nullptr;
+}
+
+namespace
+{
+	/// 按编号找动态或运动学物体（BodyComponent）；不是时记下错误、返回 nullptr。
+	BodyRecord *GetMovableBody(World *inWorld, int32_t inBody, const char *inWhat)
+	{
+		if (inWorld == nullptr)
+			return nullptr;
+		if (inBody < 0 || size_t(inBody) >= inWorld->mBodies.size())
+		{
+			SetLastError(SN_ERROR_INVALID_ARGUMENT, std::string(inWhat) + ": body " + std::to_string(inBody) + " does not exist");
+			return nullptr;
+		}
+		BodyRecord &record = inWorld->mBodies[inBody];
+		if (record.mMotion != SN_MOTION_DYNAMIC && record.mMotion != SN_MOTION_KINEMATIC)
+		{
+			SetLastError(SN_ERROR_INVALID_ARGUMENT, std::string(inWhat) + ": body " + std::to_string(inBody) + " is not a dynamic or kinematic body");
+			return nullptr;
+		}
+		return &record;
+	}
+}
+
+SN_API int32_t sn_physics_body_set_kinematic(int32_t world, int32_t body, int32_t kinematic)
+{
+	World *w = GetWorld(world);
+	BodyRecord *record = GetMovableBody(w, body, "sn_physics_body_set_kinematic");
+	if (record == nullptr)
+		return w == nullptr ? SN_ERROR_INVALID_HANDLE : SN_ERROR_INVALID_ARGUMENT;
+	record->mMotion = kinematic != 0 ? SN_MOTION_KINEMATIC : SN_MOTION_DYNAMIC;
+	w->mSystem.GetBodyInterface().SetMotionType(record->mID, kinematic != 0 ? EMotionType::Kinematic : EMotionType::Dynamic, EActivation::DontActivate);
+	return SN_OK;
+}
+
+SN_API int32_t sn_physics_body_set_awake(int32_t world, int32_t body, int32_t awake)
+{
+	World *w = GetWorld(world);
+	BodyRecord *record = GetMovableBody(w, body, "sn_physics_body_set_awake");
+	if (record == nullptr)
+		return w == nullptr ? SN_ERROR_INVALID_HANDLE : SN_ERROR_INVALID_ARGUMENT;
+	BodyInterface &bodies = w->mSystem.GetBodyInterface();
+	if (awake != 0)
+		bodies.ActivateBody(record->mID);
+	else
+		bodies.DeactivateBody(record->mID);
+	return SN_OK;
+}
+
+SN_API int32_t sn_physics_body_awake(int32_t world, int32_t body)
+{
+	World *w = GetWorld(world);
+	BodyRecord *record = GetMovableBody(w, body, "sn_physics_body_awake");
+	if (record == nullptr)
+		return w == nullptr ? SN_ERROR_INVALID_HANDLE : SN_ERROR_INVALID_ARGUMENT;
+	return w->mSystem.GetBodyInterface().IsActive(record->mID) ? 1 : 0;
+}
+
+SN_API int32_t sn_physics_body_teleport(int32_t world, int32_t body, const float *position, const float *rotation)
+{
+	World *w = GetWorld(world);
+	BodyRecord *record = GetMovableBody(w, body, "sn_physics_body_teleport");
+	if (record == nullptr)
+		return w == nullptr ? SN_ERROR_INVALID_HANDLE : SN_ERROR_INVALID_ARGUMENT;
+	if (position == nullptr || rotation == nullptr)
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "sn_physics_body_teleport: position and rotation are required");
+	record->mPosition = record->mPreviousPosition = RVec3(Load3(position));
+	record->mRotation = record->mPreviousRotation = LoadQuat(rotation);
+	w->mSystem.GetBodyInterface().SetPositionAndRotation(record->mID, record->mPosition, record->mRotation, EActivation::Activate);
+	float *out = &w->mPositions[size_t(body) * 3];
+	out[0] = position[0];
+	out[1] = position[1];
+	out[2] = position[2];
+	if (record->mSlot != 0)
+	{
+		TransformStore *store = BoundStore(*w);
+		if (store == nullptr)
+			return SN_ERROR_INVALID_HANDLE;
+		store->SetWorldPose(record->mSlot, Vec3(record->mPosition), record->mRotation);
+	}
+	return SN_OK;
+}
+
+SN_API int32_t sn_physics_body_velocity(int32_t world, int32_t body, float *linear, float *angular)
+{
+	World *w = GetWorld(world);
+	BodyRecord *record = GetMovableBody(w, body, "sn_physics_body_velocity");
+	if (record == nullptr)
+		return w == nullptr ? SN_ERROR_INVALID_HANDLE : SN_ERROR_INVALID_ARGUMENT;
+	const BodyInterface &bodies = w->mSystem.GetBodyInterface();
+	if (linear != nullptr)
+		bodies.GetLinearVelocity(record->mID).StoreFloat3(reinterpret_cast<Float3 *>(linear));
+	if (angular != nullptr)
+		bodies.GetAngularVelocity(record->mID).StoreFloat3(reinterpret_cast<Float3 *>(angular));
+	return SN_OK;
+}
+
+SN_API int32_t sn_physics_body_set_velocity(int32_t world, int32_t body, const float *linear, const float *angular)
+{
+	World *w = GetWorld(world);
+	BodyRecord *record = GetMovableBody(w, body, "sn_physics_body_set_velocity");
+	if (record == nullptr)
+		return w == nullptr ? SN_ERROR_INVALID_HANDLE : SN_ERROR_INVALID_ARGUMENT;
+	BodyInterface &bodies = w->mSystem.GetBodyInterface();
+	if (linear != nullptr)
+		bodies.SetLinearVelocity(record->mID, Load3(linear));
+	if (angular != nullptr)
+		bodies.SetAngularVelocity(record->mID, Load3(angular));
+	return SN_OK;
+}
+
+SN_API int32_t sn_physics_body_apply_impulse(int32_t world, int32_t body, const float *linear, const float *angular)
+{
+	World *w = GetWorld(world);
+	BodyRecord *record = GetMovableBody(w, body, "sn_physics_body_apply_impulse");
+	if (record == nullptr)
+		return w == nullptr ? SN_ERROR_INVALID_HANDLE : SN_ERROR_INVALID_ARGUMENT;
+	if (record->mMotion != SN_MOTION_DYNAMIC)
+		return SN_OK;
+	BodyInterface &bodies = w->mSystem.GetBodyInterface();
+	if (linear != nullptr)
+		bodies.AddImpulse(record->mID, Load3(linear));
+	if (angular != nullptr)
+		bodies.AddAngularImpulse(record->mID, Load3(angular));
+	return SN_OK;
+}
+
+SN_API int32_t sn_physics_body_set_gravity(int32_t world, int32_t body, int32_t enabled)
+{
+	World *w = GetWorld(world);
+	BodyRecord *record = GetMovableBody(w, body, "sn_physics_body_set_gravity");
+	if (record == nullptr)
+		return w == nullptr ? SN_ERROR_INVALID_HANDLE : SN_ERROR_INVALID_ARGUMENT;
+	w->mSystem.GetBodyInterface().SetGravityFactor(record->mID, enabled != 0 ? 1.0f : 0.0f);
+	if (enabled != 0)
+		record->mFlags &= ~uint32_t(SN_BODY_NO_GRAVITY);
+	else
+		record->mFlags |= SN_BODY_NO_GRAVITY;
+	return SN_OK;
 }
 
 SN_API int32_t sn_physics_character_move(int32_t world, int32_t body, float target_x, float target_z, int32_t jump)

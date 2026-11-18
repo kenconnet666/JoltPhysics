@@ -34,6 +34,7 @@ enum
 	SN_SHAPE_CAPSULE = 2,			///< size[0]：半径，size[1]：两端球心的距离（CapsuleCollider.Length），沿本地 Y
 	SN_SHAPE_CYLINDER = 3,			///< size[0]：半径，size[1]：长度，沿本地 Y
 	SN_SHAPE_MESH = 4,				///< mesh：sn_physics_create_mesh 的结果；按实体的世界缩放缩放（Stride 的 MeshCollider）
+	SN_SHAPE_CONVEX_HULL = 5,		///< mesh：sn_physics_create_hull 的结果；同网格按实体的世界缩放缩放（Stride 的 ConvexHullCollider）
 };
 
 /// 复合碰撞体里的一个形状（Stride 的 ColliderBase 加 CompoundCollider 的本地位姿）。
@@ -43,7 +44,7 @@ typedef struct sn_shape
 	float position[3];				///< 本地位置
 	float rotation[4];				///< 本地旋转，xyzw
 	float size[3];
-	int32_t mesh;					///< SN_SHAPE_MESH 用
+	int32_t mesh;					///< SN_SHAPE_MESH、SN_SHAPE_CONVEX_HULL 用
 	float mass;						///< 动态物体和角色的质量是各形状的和
 } sn_shape;
 
@@ -59,6 +60,7 @@ enum
 {
 	SN_BODY_INTERPOLATED = 1,		///< InterpolationMode.Interpolated：sn_physics_interpolate 写回两步之间的位姿
 	SN_BODY_NO_GRAVITY = 2,			///< Gravity = false
+	SN_BODY_NEVER_SLEEP = 4,		///< SleepThreshold 为负：一直醒着（Jolt 的睡眠阈值是全局的，按物体只能开关）
 };
 
 /// 角色参数（Stride 的 CharacterComponent），SN_MOTION_CHARACTER 的物体用。
@@ -90,6 +92,8 @@ typedef struct sn_body
 
 /// 三角网格形状，世界内的物体共用。positions 是 xyz，indices 每三个一个三角形（逆时针为正面）。返回网格句柄。
 SN_API int32_t sn_physics_create_mesh(int32_t world, const float *positions, uint32_t vertex_count, const uint32_t *indices, uint32_t index_count);
+/// 凸包形状（Jolt 由点算出凸包），世界内的物体共用；和网格共用句柄空间。positions 是 xyz。返回句柄。
+SN_API int32_t sn_physics_create_hull(int32_t world, const float *positions, uint32_t point_count);
 /// 一次加入 count 个物体（Jolt 成批插进宽相），返回第一个物体的编号；编号按加入顺序递增。
 SN_API int32_t sn_physics_add_bodies(int32_t world, const sn_body *bodies, uint32_t count, const sn_shape *shapes, uint32_t shape_count,
 	const sn_character *characters, uint32_t character_count);
@@ -104,6 +108,27 @@ SN_API int32_t sn_physics_step(int32_t world, float delta_time, int32_t collisio
 SN_API int32_t sn_physics_interpolate(int32_t world, float alpha);
 /// 每个物体的位置 xyz，按编号排，能放 max_bodies 个；地址在世界销毁前不变，add_bodies 和 step 原地改写。
 SN_API const float *sn_physics_positions(int32_t world);
+
+// ---------------------------------------------------------------------------------------------
+// 动态和运动学物体（Stride 的 BodyComponent）。body 是物体编号；成功返回 SN_OK。
+// ---------------------------------------------------------------------------------------------
+
+/// 在动态和运动学之间切换（Stride 的 Kinematic）：只对按动态或运动学加入的物体有效。
+SN_API int32_t sn_physics_body_set_kinematic(int32_t world, int32_t body, int32_t kinematic);
+/// 唤醒或让它睡下（Stride 的 Awake）。
+SN_API int32_t sn_physics_body_set_awake(int32_t world, int32_t body, int32_t awake);
+/// 1 醒着，0 睡着，负数是错误。
+SN_API int32_t sn_physics_body_awake(int32_t world, int32_t body);
+/// 瞬移到世界位姿（Stride 的 Teleport），并唤醒；绑定了变换的立即写回槽位，插值也从这里重新开始。
+SN_API int32_t sn_physics_body_teleport(int32_t world, int32_t body, const float *position, const float *rotation);
+/// 读线速度和角速度（世界空间，各 xyz）；不要的传 null。
+SN_API int32_t sn_physics_body_velocity(int32_t world, int32_t body, float *linear, float *angular);
+/// 设线速度和角速度；传 null 的不变。
+SN_API int32_t sn_physics_body_set_velocity(int32_t world, int32_t body, const float *linear, const float *angular);
+/// 在质心加冲量（Stride 的 ApplyLinearImpulse、ApplyAngularImpulse）；传 null 的不加。运动学物体忽略。
+SN_API int32_t sn_physics_body_apply_impulse(int32_t world, int32_t body, const float *linear, const float *angular);
+/// 受不受重力（Stride 的 Gravity）。
+SN_API int32_t sn_physics_body_set_gravity(int32_t world, int32_t body, int32_t enabled);
 
 // ---------------------------------------------------------------------------------------------
 // 角色

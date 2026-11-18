@@ -388,6 +388,71 @@ TEST_CASE("物理：网格碰撞体和带本地位姿的复合碰撞体")
 	sn_physics_destroy(world);
 }
 
+TEST_CASE("物理：凸包和 BodyComponent 的控制（运动学切换、瞬移、速度、冲量、重力、唤醒）")
+{
+	ModuleScope module;
+	int32_t world = sn_physics_create(8, 0, nullptr);
+	REQUIRE(world > 0);
+	const TestBox floor = cFloor;
+	REQUIRE(AddBoxes(world, &floor, 1) == 0);
+
+	// 单位立方体的 8 个角做成凸包，落到地面上，中心停在 0.5
+	float corners[24];
+	for (int i = 0; i < 8; ++i)
+	{
+		corners[i * 3] = (i & 1) ? 0.5f : -0.5f;
+		corners[i * 3 + 1] = (i & 2) ? 0.5f : -0.5f;
+		corners[i * 3 + 2] = (i & 4) ? 0.5f : -0.5f;
+	}
+	int32_t hull = sn_physics_create_hull(world, corners, 8);
+	REQUIRE(hull > 0);
+	CHECK(sn_physics_create_hull(world, corners, 3) == SN_ERROR_INVALID_ARGUMENT);
+	sn_shape hull_shape {};
+	hull_shape.type = SN_SHAPE_CONVEX_HULL;
+	hull_shape.rotation[3] = 1.0f;
+	hull_shape.mesh = hull;
+	hull_shape.mass = 1.0f;
+	sn_body crate = Body(SN_MOTION_DYNAMIC, 0, 3, 0, 0);
+	crate.flags = SN_BODY_NEVER_SLEEP;
+	REQUIRE(sn_physics_add_bodies(world, &crate, 1, &hull_shape, 1, nullptr, 0) == 1);
+	Step(world, 120);
+	const float *positions = sn_physics_positions(world);
+	CHECK(positions[4] == doctest::Approx(0.5f).epsilon(0.05));
+	CHECK(sn_physics_body_awake(world, 1) == 1);		// 一直醒着
+
+	// 冲量：质量 1，向上 5 → 速度 5
+	const float up[3] = { 0, 5, 0 };
+	REQUIRE(sn_physics_body_apply_impulse(world, 1, up, nullptr) == SN_OK);
+	float linear[3], angular[3];
+	REQUIRE(sn_physics_body_velocity(world, 1, linear, angular) == SN_OK);
+	CHECK(linear[1] == doctest::Approx(5.0f));
+
+	// 运动学：不受重力和冲量，按速度走；瞬移立即生效
+	REQUIRE(sn_physics_body_set_kinematic(world, 1, 1) == SN_OK);
+	const float place[3] = { 0, 10, 0 }, identity[4] = { 0, 0, 0, 1 }, zero[3] = { 0, 0, 0 }, sideways[3] = { 1, 0, 0 };
+	REQUIRE(sn_physics_body_teleport(world, 1, place, identity) == SN_OK);
+	CHECK(positions[4] == 10.0f);
+	REQUIRE(sn_physics_body_set_velocity(world, 1, sideways, zero) == SN_OK);
+	REQUIRE(sn_physics_body_apply_impulse(world, 1, up, nullptr) == SN_OK);
+	Step(world, 60);
+	CHECK(positions[3] == doctest::Approx(1.0f).epsilon(0.01));
+	CHECK(positions[4] == doctest::Approx(10.0f));
+
+	// 回到动态、关掉重力：停在原地
+	REQUIRE(sn_physics_body_set_kinematic(world, 1, 0) == SN_OK);
+	REQUIRE(sn_physics_body_set_velocity(world, 1, zero, zero) == SN_OK);
+	REQUIRE(sn_physics_body_set_gravity(world, 1, 0) == SN_OK);
+	Step(world, 30);
+	CHECK(positions[4] == doctest::Approx(10.0f));
+	REQUIRE(sn_physics_body_set_gravity(world, 1, 1) == SN_OK);
+	Step(world, 30);
+	CHECK(positions[4] < 9.0f);
+
+	// 静态物体不能这样控制
+	CHECK(sn_physics_body_set_kinematic(world, 0, 1) == SN_ERROR_INVALID_ARGUMENT);
+	sn_physics_destroy(world);
+}
+
 TEST_CASE("物理：插值的物体在两步之间写回插值的位姿")
 {
 	ModuleScope module;
