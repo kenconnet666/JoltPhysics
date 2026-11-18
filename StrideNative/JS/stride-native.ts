@@ -15,6 +15,8 @@ export type Vec3 = ArrayLike<number>;
 export type BodyId = Branded<number, 'BodyId'>;
 /** 代理在人群里的槽位，也是它在 Crowd.positions() 里的下标。 */
 export type AgentId = Branded<number, 'AgentId'>;
+/** 变换存储里的槽位，从 1 开始（0 是空槽位）；也是各列的下标：position[slot * 3]、world[slot * 16]。 */
+export type TransformSlot = Branded<number, 'TransformSlot'>;
 
 /** glTF EXT_meshopt_compression 的 mode。 */
 export type MeshoptMode = 'attributes' | 'triangles' | 'indices';
@@ -58,10 +60,21 @@ export interface TranscodedTexture {
 }
 
 export interface BoxDesc {
-	position: Vec3;
+	/** 初始位置，默认原点；绑定了 transform 时不用它。 */
+	position?: Vec3;
 	halfExtent: Vec3;
 	/** 默认 'dynamic'。 */
 	motion?: 'dynamic' | 'static';
+	/**
+	 * 绑定的变换槽位（世界要用 createPhysicsWorld(n, { transforms }) 创建）。初始位姿取槽位当前的世界位姿（缩放不作用到形状上），
+	 * 动态物体每步结束把位姿写回槽位的本地位置和旋转，有父节点时换算到父节点空间。物体存在期间槽位不能释放。
+	 */
+	transform?: TransformSlot;
+}
+
+export interface PhysicsWorldOptions {
+	/** 物体可以绑定的变换存储；它要比世界活得久。 */
+	transforms?: TransformStore;
 }
 
 export interface AgentOptions {
@@ -84,8 +97,14 @@ export async function createStrideNative(options: ModuleOptions = {}): Promise<S
 }
 
 export class StrideNative extends NativeModule<RuntimeExport> {
-	createPhysicsWorld(maxBodies = 1024): PhysicsWorld {
-		return new PhysicsWorld(this, this.check(this.module._sn_physics_create(maxBodies), 'sn_physics_create'), maxBodies);
+	/** 能放 capacity 个槽位的变换存储。各列一次分配好，视图一直有效。 */
+	createTransforms(capacity: number): TransformStore {
+		return new TransformStore(this, this.check(this.module._sn_transforms_create(capacity), 'sn_transforms_create'));
+	}
+
+	createPhysicsWorld(maxBodies = 1024, { transforms }: PhysicsWorldOptions = {}): PhysicsWorld {
+		const handle = this.module._sn_physics_create(maxBodies, transforms ? transforms[HANDLE] : 0);
+		return new PhysicsWorld(this, this.check(handle, 'sn_physics_create'), maxBodies);
 	}
 
 	/** 解码一个 glTF meshopt buffer view，返回 count * stride 个字节。 */
@@ -188,8 +207,8 @@ export class StrideNative extends NativeModule<RuntimeExport> {
 	}
 }
 
-/** sn_box：position（3 个 float）、half extent（3 个 float）、flags（uint32）。 */
-const BOX_FLOATS = 7;
+/** sn_box：position（3 个 float）、half extent（3 个 float）、flags（uint32）、transform（int32）。 */
+const BOX_WORDS = 8;
 const BODY_DYNAMIC = 1;
 
 /** 用 StrideNative.createPhysicsWorld 创建。 */
@@ -201,7 +220,7 @@ export class PhysicsWorld extends NativeObject<StrideNative> {
 	// addBox 复用的一个 sn_box，加一个刚体不分配内存
 	readonly #scratch: number;
 	readonly #scratchFloats: Float32Array;
-	readonly #scratchFlags: Uint32Array;
+	readonly #scratchWords: Uint32Array;
 
 	/** @internal */
 	constructor(native: StrideNative, handle: number, maxBodies: number) {
@@ -209,9 +228,9 @@ export class PhysicsWorld extends NativeObject<StrideNative> {
 		this.maxBodies = maxBodies;
 		this.#positionsAddress = native.module._sn_physics_positions(handle);
 		this.#positions = native.f32(this.#positionsAddress, 0);
-		this.#scratch = native.alloc(BOX_FLOATS * 4);
-		this.#scratchFloats = native.f32(this.#scratch, BOX_FLOATS);
-		this.#scratchFlags = native.u32(this.#scratch, BOX_FLOATS);
+		this.#scratch = native.alloc(BOX_WORDS * 4);
+		this.#scratchFloats = native.f32(this.#scratch, BOX_WORDS);
+		this.#scratchWords = native.u32(this.#scratch, BOX_WORDS);
 	}
 
 	get bodyCount(): number {
@@ -220,7 +239,7 @@ export class PhysicsWorld extends NativeObject<StrideNative> {
 
 	/** 加一个盒子。描述经由复用的原生缓冲传过去，不分配内存。 */
 	addBox(box: BoxDesc): BodyId {
-		writeBox(this.#scratchFloats, this.#scratchFlags, 0, box);
+		writeBox(this.#scratchFloats, this.#scratchWords, 0, box);
 		return this.#add(this.#scratch, 1)[0]!;
 	}
 
@@ -228,10 +247,10 @@ export class PhysicsWorld extends NativeObject<StrideNative> {
 	addBoxes(boxes: readonly BoxDesc[]): BodyId[] {
 		if (boxes.length === 0) return [];
 		const n = this.native;
-		return n.withScratch(boxes.length * BOX_FLOATS * 4, (table) => {
-			const floats = n.f32(table, boxes.length * BOX_FLOATS);
-			const flags = n.u32(table, boxes.length * BOX_FLOATS);
-			boxes.forEach((box, i) => writeBox(floats, flags, i, box));
+		return n.withScratch(boxes.length * BOX_WORDS * 4, (table) => {
+			const floats = n.f32(table, boxes.length * BOX_WORDS);
+			const words = n.u32(table, boxes.length * BOX_WORDS);
+			boxes.forEach((box, i) => writeBox(floats, words, i, box));
 			return this.#add(table, boxes.length);
 		});
 	}
@@ -263,19 +282,108 @@ export class PhysicsWorld extends NativeObject<StrideNative> {
 	}
 }
 
-/** 写 sn_box 表的第 i 个盒子；同一块内存分别按 float 和 uint32（flags）看。 */
-function writeBox(floats: Float32Array, flags: Uint32Array, i: number, { position, halfExtent, motion = 'dynamic' }: BoxDesc): void {
+/** 写 sn_box 表的第 i 个盒子；同一块内存分别按 float 和 uint32（flags、transform）看。 */
+function writeBox(floats: Float32Array, words: Uint32Array, i: number, { position = ORIGIN, halfExtent, motion = 'dynamic', transform = 0 as TransformSlot }: BoxDesc): void {
 	if (motion !== 'dynamic' && motion !== 'static') {
 		throw new TypeError(`box ${i}: motion must be 'dynamic' or 'static', not '${String(motion)}'`);
 	}
-	const o = i * BOX_FLOATS;
+	const o = i * BOX_WORDS;
 	floats[o] = position[0]!;
 	floats[o + 1] = position[1]!;
 	floats[o + 2] = position[2]!;
 	floats[o + 3] = halfExtent[0]!;
 	floats[o + 4] = halfExtent[1]!;
 	floats[o + 5] = halfExtent[2]!;
-	flags[o + 6] = motion === 'dynamic' ? BODY_DYNAMIC : 0;
+	words[o + 6] = motion === 'dynamic' ? BODY_DYNAMIC : 0;
+	words[o + 7] = transform;
+}
+
+const ORIGIN: Vec3 = [0, 0, 0];
+
+/** sn_transform_columns：5 个指针加 capacity。 */
+const COLUMNS_SIZE = 24;
+
+/**
+ * 实体的本地位姿和世界矩阵，按结构数组放在模块内存里，用 StrideNative.createTransforms 创建。
+ * 列是原生内存上的常驻视图：直接读写本地位置、旋转、缩放，update() 之后读世界矩阵，世界矩阵也能整段交给
+ * GPUQueue.writeBuffer。物理世界绑定了槽位时，步进会把位姿写回这里。
+ */
+export class TransformStore extends NativeObject<StrideNative> {
+	/** 最大槽位号；槽位是 1..capacity。 */
+	readonly capacity: number;
+	/** 本地位置，position[slot * 3 + 0..2]。 */
+	readonly position: Float32Array;
+	/** 本地旋转，单位四元数 xyzw，rotation[slot * 4 + 0..3]。 */
+	readonly rotation: Float32Array;
+	/** 本地缩放，scale[slot * 3 + 0..2]。 */
+	readonly scale: Float32Array;
+	/** 父槽位，0 表示根。只能读：要改用 setParent，原生那边要维护子节点数和计算顺序。 */
+	readonly parent: Int32Array;
+	/** 世界矩阵，列主序 4x4，world[slot * 16 + 0..15]，平移在 12..14；update() 写入。 */
+	readonly world: Float32Array;
+	readonly #scratch: number;
+
+	/** @internal */
+	constructor(native: StrideNative, handle: number) {
+		super(native, handle);
+		const [position, rotation, scale, parent, world, capacity] = native.withScratch(COLUMNS_SIZE, (out) => {
+			native.check(native.module._sn_transforms_columns(handle, out), 'sn_transforms_columns');
+			return Array.from(native.u32(out, 6));
+		}) as [number, number, number, number, number, number];
+		const slots = capacity + 1;
+		this.capacity = capacity;
+		this.position = native.f32(position, slots * 3);
+		this.rotation = native.f32(rotation, slots * 4);
+		this.scale = native.f32(scale, slots * 3);
+		this.parent = native.i32(parent, slots);
+		this.world = native.f32(world, slots * 16);
+		this.#scratch = native.alloc(4);
+	}
+
+	/** 分配一个槽位：位置 0、旋转单位、缩放 1、没有父节点。容量不够时抛 NativeError。 */
+	allocate(): TransformSlot;
+	/** 一次分配 count 个槽位；容量不够时一个都不分配。 */
+	allocate(count: number): TransformSlot[];
+	allocate(count?: number): TransformSlot | TransformSlot[] {
+		const n = this.native;
+		if (count === undefined) {
+			n.check(n.module._sn_transforms_alloc(this[HANDLE], this.#scratch, 1), 'sn_transforms_alloc');
+			return n.i32(this.#scratch, 1)[0] as TransformSlot;
+		}
+		if (count === 0) return [];
+		return n.withScratch(count * 4, (out) => {
+			n.check(n.module._sn_transforms_alloc(this[HANDLE], out, count), 'sn_transforms_alloc');
+			return Array.from(n.i32(out, count)) as TransformSlot[];
+		});
+	}
+
+	/** 释放槽位。还有子节点留着的槽位不能释放（一起释放的子节点不算），这时一个都不释放。 */
+	free(slots: TransformSlot | readonly TransformSlot[]): void {
+		const n = this.native;
+		if (typeof slots === 'number') {
+			n.i32(this.#scratch, 1)[0] = slots;
+			n.check(n.module._sn_transforms_free(this[HANDLE], this.#scratch, 1), 'sn_transforms_free');
+			return;
+		}
+		if (slots.length === 0) return;
+		n.withArrays([Int32Array.from(slots)], (pointer) =>
+			n.check(n.module._sn_transforms_free(this[HANDLE], pointer, slots.length), 'sn_transforms_free'));
+	}
+
+	/** 把 slot 挂到 parent 下；null 表示变成根。不能形成环。 */
+	setParent(slot: TransformSlot, parent: TransformSlot | null): void {
+		this.native.check(this.native.module._sn_transforms_set_parent(this[HANDLE], slot, parent ?? 0), 'sn_transforms_set_parent');
+	}
+
+	/** 按父节点在前的顺序算所有世界矩阵。层级变了才重排顺序，平时是一遍顺序扫描。 */
+	update(): void {
+		this.native.check(this.native.module._sn_transforms_update(this[HANDLE]), 'sn_transforms_update');
+	}
+
+	protected override release(): void {
+		this.native.module._sn_transforms_destroy(this[HANDLE]);
+		this.native.free(this.#scratch);
+	}
 }
 
 export class NavMesh extends NativeObject<StrideNative> {

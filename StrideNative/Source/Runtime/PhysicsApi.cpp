@@ -1,6 +1,7 @@
 // Minimal physics: enough to prove Jolt steps on the module's shared job system.
 #include <Core/Core.h>
 #include <Core/HandleTable.h>
+#include <Runtime/Transforms.h>
 #include <StrideNative/Runtime.h>
 
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
@@ -55,12 +56,36 @@ namespace
 		ObjectPairFilter				mObjectPairs;
 		PhysicsSystem					mSystem;
 		std::vector<BodyID>				mBodies;			///< Creation order
+		std::vector<int32_t>			mSlots;				///< 每个物体绑定的变换槽位，0 表示没有；和 mBodies 一一对应
+		int32_t							mTransforms = 0;	///< 绑定用的变换存储句柄，0 表示没有
 		std::vector<float>				mPositions;			///< xyz per body; sized once so callers can keep a view
 	};
 
 	World *GetWorld(int32_t inHandle)
 	{
 		return StrideNative::Lookup<World>(inHandle, "physics world");
+	}
+
+	/// 世界绑定的变换存储；存储先被销毁时记下错误、返回 nullptr。
+	StrideNative::TransformStore *BoundStore(const World &inWorld)
+	{
+		return StrideNative::Lookup<StrideNative::TransformStore>(inWorld.mTransforms, "transform store (destroyed before the physics world?)");
+	}
+
+	/// 动态物体的位姿写回绑定的槽位。静态物体不动，不用写。
+	void WriteTransforms(const World &inWorld, StrideNative::TransformStore &ioStore)
+	{
+		const BodyInterface &bodies = inWorld.mSystem.GetBodyInterfaceNoLock();
+		for (size_t i = 0; i < inWorld.mBodies.size(); ++i)
+		{
+			int32_t slot = inWorld.mSlots[i];
+			if (slot == 0 || bodies.GetMotionType(inWorld.mBodies[i]) != EMotionType::Dynamic)
+				continue;
+			RVec3 position;
+			Quat rotation;
+			bodies.GetPositionAndRotation(inWorld.mBodies[i], position, rotation);
+			ioStore.SetWorldPose(slot, Vec3(position), rotation);
+		}
 	}
 
 	size_t Capacity(const World &inWorld)
@@ -84,11 +109,13 @@ namespace
 
 using namespace StrideNative;
 
-SN_API int32_t sn_physics_create(uint32_t max_bodies)
+SN_API int32_t sn_physics_create(uint32_t max_bodies, int32_t transforms)
 {
 	SN_REQUIRE_INIT(SN_ERROR_NOT_INITIALIZED);
 	if (max_bodies == 0)
 		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "max_bodies must be positive");
+	if (transforms != 0 && Lookup<TransformStore>(transforms, "transform store") == nullptr)
+		return SN_ERROR_INVALID_HANDLE;
 
 	// Resting bodies touch several others (a box in a stack has up to four neighbours and the
 	// ground), so pairs and contacts need headroom over the body count.
@@ -97,6 +124,8 @@ SN_API int32_t sn_physics_create(uint32_t max_bodies)
 	world->mSystem.Init(max_bodies, 0, max_bodies * cContactsPerBody, max_bodies * cContactsPerBody,
 		world->mBroadPhaseLayers, world->mObjectVsBroadPhase, world->mObjectPairs);
 	world->mBodies.reserve(max_bodies);
+	world->mSlots.reserve(max_bodies);
+	world->mTransforms = transforms;
 	world->mPositions.resize(size_t(max_bodies) * 3);
 	return GetTable<World>().Add(std::move(world));
 }
@@ -124,6 +153,18 @@ SN_API int32_t sn_physics_add_boxes(int32_t world, const sn_box *boxes, uint32_t
 		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "boxes are required");
 	if (first + count > Capacity(*w))
 		return SetLastError(SN_ERROR_FAILED, "body limit reached");
+	TransformStore *store = nullptr;
+	for (uint32_t i = 0; i < count; ++i)
+	{
+		if (boxes[i].transform == 0)
+			continue;
+		if (w->mTransforms == 0)
+			return SetLastError(SN_ERROR_INVALID_ARGUMENT, "box " + std::to_string(i) + " has a transform but the world was created without a transform store");
+		if (store == nullptr && (store = BoundStore(*w)) == nullptr)
+			return SN_ERROR_INVALID_HANDLE;
+		if (!store->IsAlive(boxes[i].transform))
+			return SetLastError(SN_ERROR_INVALID_ARGUMENT, "box " + std::to_string(i) + ": transform slot " + std::to_string(boxes[i].transform) + " is not allocated");
+	}
 
 	BodyInterface &bodies = w->mSystem.GetBodyInterface();
 	std::vector<BodyID> added;
@@ -140,8 +181,18 @@ SN_API int32_t sn_physics_add_boxes(int32_t world, const sn_box *boxes, uint32_t
 			shape = new BoxShape(half_extent);
 			shape_half_extent = half_extent;
 		}
+		// 绑定了变换的物体从槽位现在的世界位姿出发（缩放不作用到形状上）
+		RVec3 position(box.position[0], box.position[1], box.position[2]);
+		Quat rotation = Quat::sIdentity();
+		if (box.transform != 0)
+		{
+			Mat44 world = store->ComputeWorldMatrix(box.transform);
+			Vec3 scale;
+			position = RVec3(world.GetTranslation());
+			rotation = world.Decompose(scale).GetQuaternion().Normalized();
+		}
 		bool dynamic = (box.flags & SN_BODY_DYNAMIC) != 0;
-		BodyCreationSettings settings(shape, RVec3(box.position[0], box.position[1], box.position[2]), Quat::sIdentity(),
+		BodyCreationSettings settings(shape, position, rotation,
 			dynamic ? EMotionType::Dynamic : EMotionType::Static, dynamic ? Layers::cMoving : Layers::cStatic);
 		Body *body = bodies.CreateBody(settings);
 		if (body == nullptr)
@@ -154,6 +205,8 @@ SN_API int32_t sn_physics_add_boxes(int32_t world, const sn_box *boxes, uint32_t
 
 	// mBodies keeps creation order; AddBodiesPrepare reorders the array it is given
 	w->mBodies.insert(w->mBodies.end(), added.begin(), added.end());
+	for (uint32_t i = 0; i < count; ++i)
+		w->mSlots.push_back(boxes[i].transform);
 	BodyInterface::AddState state = bodies.AddBodiesPrepare(added.data(), int(count));
 	bodies.AddBodiesFinalize(added.data(), int(count), state, EActivation::Activate);
 	WritePositions(*w, first);
@@ -165,8 +218,13 @@ SN_API int32_t sn_physics_step(int32_t world, float delta_time, int32_t collisio
 	World *w = GetWorld(world);
 	if (w == nullptr)
 		return SN_ERROR_INVALID_HANDLE;
+	TransformStore *store = nullptr;
+	if (w->mTransforms != 0 && (store = BoundStore(*w)) == nullptr)
+		return SN_ERROR_INVALID_HANDLE;
 	EPhysicsUpdateError errors = w->mSystem.Update(delta_time, collision_steps > 0 ? collision_steps : 1, &GetTempAllocator(), &GetJobSystem());
 	WritePositions(*w, 0);
+	if (store != nullptr)
+		WriteTransforms(*w, *store);
 	if (errors == EPhysicsUpdateError::None)
 		return SN_OK;
 	if ((errors & EPhysicsUpdateError::BodyPairCacheFull) != EPhysicsUpdateError::None)

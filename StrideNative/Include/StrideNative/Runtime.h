@@ -5,6 +5,35 @@
 #include <StrideNative/Core.h>
 
 // ---------------------------------------------------------------------------------------------
+// 变换：实体的本地位姿和世界矩阵，按结构数组放在模块内存里
+// ---------------------------------------------------------------------------------------------
+
+/// 一个变换存储的各列。每个实体占一个槽位，槽位从 1 开始：0 是空槽位，所以 parent 为 0 表示根，
+/// 结构体清零就是"没有变换"。指针在存储销毁前不变，JS 保留视图直接读写。
+typedef struct sn_transform_columns
+{
+	float *position;				///< 本地位置，每个槽位 xyz
+	float *rotation;				///< 本地旋转，每个槽位一个单位四元数 xyzw
+	float *scale;					///< 本地缩放，每个槽位 xyz
+	const int32_t *parent;			///< 父槽位，0 表示根；只能用 sn_transforms_set_parent 改
+	const float *world;				///< 世界矩阵，每个槽位 16 个 float，列主序（平移在 12..14），由 sn_transforms_update 写
+	uint32_t capacity;				///< 最大槽位号；各列都有 capacity + 1 项（含槽位 0）
+} sn_transform_columns;
+
+/// 创建能放 capacity 个槽位的变换存储，返回句柄。
+SN_API int32_t sn_transforms_create(uint32_t capacity);
+SN_API void sn_transforms_destroy(int32_t transforms);
+SN_API int32_t sn_transforms_columns(int32_t transforms, sn_transform_columns *out_columns);
+/// 分配 count 个槽位写进 out_slots：位置 0、旋转单位、缩放 1、没有父节点。返回 count；容量不够时什么都不分配。
+SN_API int32_t sn_transforms_alloc(int32_t transforms, int32_t *out_slots, uint32_t count);
+/// 释放这些槽位。还有子节点留着的槽位不能释放（一起释放的子节点不算），这时什么都不释放。
+SN_API int32_t sn_transforms_free(int32_t transforms, const int32_t *slots, uint32_t count);
+/// 把 slot 挂到 parent 下（parent 为 0 表示变成根）。不能形成环。
+SN_API int32_t sn_transforms_set_parent(int32_t transforms, int32_t slot, int32_t parent);
+/// 按父节点在前的顺序算出所有槽位的世界矩阵：world = parent.world * T * R * S。
+SN_API int32_t sn_transforms_update(int32_t transforms);
+
+// ---------------------------------------------------------------------------------------------
 // Physics (smoke test only; the Stride-shaped physics API is a separate milestone)
 // ---------------------------------------------------------------------------------------------
 
@@ -15,13 +44,17 @@ enum
 
 typedef struct sn_box
 {
-	float position[3];
+	float position[3];				///< 没有绑定变换时的初始位置
 	float half_extent[3];
 	uint32_t flags;					///< SN_BODY_*
+	/// 绑定的变换槽位，0 表示不绑定。绑定后初始位姿取这个槽位当前的世界位姿（缩放不影响形状），
+	/// 动态物体每步结束把位姿写回槽位的本地位置和旋转（有父节点时换算到父节点空间）。
+	int32_t transform;
 } sn_box;
 
-/// Creates a world that steps on the shared job system. Returns a world handle.
-SN_API int32_t sn_physics_create(uint32_t max_bodies);
+/// Creates a world that steps on the shared job system. Returns a world handle. transforms 是物体可以绑定的
+/// 变换存储（0 表示不用）；它要比世界活得久，绑定的槽位在物体存在期间不能释放。
+SN_API int32_t sn_physics_create(uint32_t max_bodies, int32_t transforms);
 SN_API void sn_physics_destroy(int32_t world);
 /// Adds count boxes as one batch (Jolt builds their broadphase nodes together). Returns the index of
 /// the first new body; bodies are indexed in creation order.

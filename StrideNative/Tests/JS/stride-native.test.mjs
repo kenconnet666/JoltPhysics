@@ -80,6 +80,40 @@ describe('stride-native and stride-tools', () => {
 		assert.throws(() => world.step(1 / 60), (error) => error instanceof NativeError && error.code === 'invalid-handle' && /PhysicsWorld was destroyed/.test(error.message));
 	});
 
+	it('propagates transforms parent-first and writes physics poses back into slots', () => {
+		using transforms = native.createTransforms(8);
+		const [root, parent, child] = transforms.allocate(3);
+		assert.deepEqual([root, parent, child], [1, 2, 3]);
+		const { position, rotation, world } = transforms;
+		// 父节点平移 (10, 0, 0)、绕 Y 转 90°；子节点本地 (0, 4, 2) 转成 (2, 4, 0)，世界位置 (12, 4, 0)
+		const s = Math.SQRT1_2;
+		position[root * 3 + 1] = 5;
+		position[parent * 3] = 10;
+		rotation.set([0, s, 0, s], parent * 4);
+		transforms.setParent(child, parent);
+		position.set([0, 4, 2], child * 3);
+		transforms.update();
+		const near = (actual, expected, epsilon = 1e-4) => assert.ok(Math.abs(actual - expected) < epsilon, `${actual} is not near ${expected}`);
+		[12, 4, 0].forEach((v, i) => near(world[child * 16 + 12 + i], v));
+
+		using physics = native.createPhysicsWorld(8, { transforms });
+		physics.addBox({ position: [0, -1, 0], halfExtent: [50, 1, 50], motion: 'static' });
+		physics.addBoxes([root, child].map((transform) => ({ halfExtent: [0.5, 0.5, 0.5], transform })));
+		for (let i = 0; i < 180; ++i) {
+			physics.step(1 / 60);
+			transforms.update();
+		}
+		near(position[root * 3 + 1], 0.5, 0.05);
+		// 写回的是父节点空间里的位姿：世界里落在 (12, 0.5, 0)
+		[12, 0.5, 0].forEach((v, i) => near(world[child * 16 + 12 + i], v, 0.05));
+
+		assert.throws(() => transforms.setParent(parent, child), (error) => error instanceof NativeError && error.code === 'invalid-argument' && /descendant of itself/.test(error.message));
+		assert.throws(() => transforms.free(parent), /still has 1 child/);
+		assert.throws(() => native.createPhysicsWorld(2).addBox({ halfExtent: [1, 1, 1], transform: root }), /without a transform store/);
+		assert.throws(() => transforms.allocate(6), /capacity 8 reached/);
+		assert.equal(transforms.allocate(5).length, 5);
+	});
+
 	it('releases native objects with using and reports failures as NativeError codes', () => {
 		let escaped;
 		{

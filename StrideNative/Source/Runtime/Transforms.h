@@ -1,0 +1,59 @@
+// 变换存储：TransformApi.cpp 实现 C API，物理也直接读写它（绑定了槽位的物体）。
+#pragma once
+
+#include <Core/Core.h>
+
+#include <Jolt/Math/Mat44.h>
+
+#include <vector>
+
+namespace StrideNative
+{
+	/// 结构数组布局的变换。槽位从 1 开始，0 是空槽位（parent 为 0 表示根），各列都有 capacity + 1 项。
+	/// 列在创建时一次分配好，指针不变，JS 可以一直保留视图。
+	class TransformStore
+	{
+	public:
+		explicit TransformStore(uint32_t inCapacity);
+
+		uint32_t Capacity() const { return mCapacity; }
+		bool IsAlive(int32_t inSlot) const { return inSlot > 0 && uint32_t(inSlot) <= mCapacity && mAlive[inSlot] != 0; }
+
+		/// 分配 inCount 个槽位；容量不够时什么都不做，返回 false。
+		bool Allocate(int32_t *outSlots, uint32_t inCount);
+		/// 释放槽位；有留下的子节点时什么都不做，在 outError 里说明原因。
+		bool Free(const int32_t *inSlots, uint32_t inCount, std::string &outError);
+		bool SetParent(int32_t inSlot, int32_t inParent, std::string &outError);
+
+		/// 按父节点在前的顺序算所有世界矩阵。
+		void Update();
+
+		/// 本地矩阵 T * R * S。
+		JPH::Mat44 LocalMatrix(int32_t inSlot) const;
+		/// 沿父链现算世界矩阵，不依赖上一次 Update（加物体时用：槽位可能刚设好位姿）。
+		JPH::Mat44 ComputeWorldMatrix(int32_t inSlot) const;
+		/// 把世界空间的位姿写成本地位置和旋转；有父节点时用父节点上一次 Update 的世界矩阵换算。
+		void SetWorldPose(int32_t inSlot, JPH::Vec3Arg inPosition, JPH::QuatArg inRotation);
+
+		std::vector<float>		mPosition;			///< xyz
+		std::vector<float>		mRotation;			///< xyzw
+		std::vector<float>		mScale;				///< xyz
+		std::vector<int32_t>	mParent;			///< 0 表示根
+		std::vector<float>		mWorld;				///< 列主序 4x4
+
+	private:
+		JPH::Mat44				LoadWorld(int32_t inSlot) const;
+		void					RebuildOrder();
+
+		uint32_t				mCapacity;
+		std::vector<uint8_t>	mAlive;
+		std::vector<uint32_t>	mChildCount;
+		std::vector<int32_t>	mFreeSlots;			///< 释放过的槽位，后进先出地重用
+		uint32_t				mHighWater = 0;		///< 发出去过的最大槽位号
+		std::vector<int32_t>	mOrder;				///< 活着的槽位，父节点在前
+		std::vector<int32_t>	mDepth;				///< 以下三个是 RebuildOrder 的临时数据，留着重用
+		std::vector<int32_t>	mChain;
+		std::vector<uint32_t>	mBuckets;
+		bool					mOrderDirty = false;
+	};
+}
