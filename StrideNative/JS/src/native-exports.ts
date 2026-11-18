@@ -213,7 +213,8 @@ export interface NativeExports {
 	 */
 	_sn_physics_body_set_awake(world: number, body: number, awake: number): number;
 	/**
-	 * 打开或关掉某个物体的接触事件（SN_BODY_CONTACT_EVENTS）。
+	 * 打开或关掉某个物体的接触事件：0 关掉，1 报开始和结束（SN_BODY_CONTACT_EVENTS），2 另外每步报正在接触的深度
+	 * （SN_BODY_TOUCHING_EVENTS）。
 	 * C: Physics.h
 	 */
 	_sn_physics_body_set_contact_events(world: number, body: number, enabled: number): number;
@@ -265,7 +266,8 @@ export interface NativeExports {
 	 */
 	_sn_physics_character_move(world: number, body: number, targetX: number, targetZ: number, jump: number): number;
 	/**
-	 * 上一次 sn_physics_step 里产生的事件，按发生的顺序；地址在下一次步进前有效。复合形状的多对子形状按一对物体算。
+	 * 上一次 sn_physics_step 里产生的事件：开始和结束按发生的顺序，正在接触的在最后（每对物体一个）；地址在下一次步进前有效。
+	 * 复合形状的多对子形状按一对物体算。
 	 * C: Physics.h
 	 */
 	_sn_physics_contact_events(world: number, count: number): number;

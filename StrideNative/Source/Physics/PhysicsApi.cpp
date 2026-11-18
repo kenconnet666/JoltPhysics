@@ -151,7 +151,7 @@ namespace
 	public:
 		/// 按 Jolt 的 BodyID 下标找我们的物体编号（OnContactRemoved 只给 BodyID）
 		std::vector<int32_t>			mIndexOfBodyID;
-		/// 每个物体（按编号）报不报接触事件
+		/// 每个物体（按编号）报哪些接触事件：0 不报，1 开始和结束，2 另外每步报正在接触的深度
 		std::vector<uint8_t>			mWanted;
 		std::vector<sn_contact_event>	mEvents;
 		const PhysicsSystem *			mSystem = nullptr;
@@ -159,6 +159,22 @@ namespace
 		void OnContactAdded(const Body &inBody1, const Body &inBody2, const ContactManifold &inManifold, ContactSettings &) override
 		{
 			Update(int32_t(inBody1.GetUserData()), int32_t(inBody2.GetUserData()), SubShapes(inManifold.mSubShapeID1, inManifold.mSubShapeID2), true);
+			RecordDepth(int32_t(inBody1.GetUserData()), int32_t(inBody2.GetUserData()), inManifold.mPenetrationDepth);
+		}
+
+		void OnContactPersisted(const Body &inBody1, const Body &inBody2, const ContactManifold &inManifold, ContactSettings &) override
+		{
+			RecordDepth(int32_t(inBody1.GetUserData()), int32_t(inBody2.GetUserData()), inManifold.mPenetrationDepth);
+		}
+
+		/// 步进结束后：这一步记下深度、仍在接触的每对物体报一个"正在接触"
+		void EmitTouching()
+		{
+			std::lock_guard lock(mMutex);
+			for (const auto &[key, depth] : mDepths)
+				if (mPairs.count(key) != 0)
+					mEvents.push_back({ SN_CONTACT_TOUCHING, int32_t(key >> 32), int32_t(key & 0xffffffffu), depth });
+			mDepths.clear();
 		}
 
 		void OnContactRemoved(const SubShapeIDPair &inPair) override
@@ -185,6 +201,32 @@ namespace
 		std::mutex mMutex;
 		/// 一对物体（报告的一方在高 32 位）→ 正在接触的子形状对
 		std::unordered_map<uint64_t, std::unordered_set<uint64_t>> mPairs;
+		/// 这一步要报深度的物体对 → 最深的穿透深度
+		std::unordered_map<uint64_t, float> mDepths;
+
+		/// 报告的一方在前（打开事件的那个，都打开时编号小的），拼成物体对的键
+		uint64_t PairKey(int32_t &ioA, int32_t &ioB) const
+		{
+			if (!Wanted(ioA) || (Wanted(ioB) && ioB < ioA))
+				std::swap(ioA, ioB);
+			return uint64_t(uint32_t(ioA)) << 32 | uint32_t(ioB);
+		}
+
+		void RecordDepth(int32_t inA, int32_t inB, float inDepth)
+		{
+			if (!WantsTouching(inA) && !WantsTouching(inB))
+				return;
+			uint64_t key = PairKey(inA, inB);
+			std::lock_guard lock(mMutex);
+			auto [it, added] = mDepths.try_emplace(key, inDepth);
+			if (!added)
+				it->second = std::max(it->second, inDepth);
+		}
+
+		bool WantsTouching(int32_t inBody) const
+		{
+			return inBody >= 0 && size_t(inBody) < mWanted.size() && mWanted[inBody] == 2;
+		}
 
 		bool Sleeping(BodyID inID) const
 		{
@@ -213,12 +255,10 @@ namespace
 			if (!Wanted(inA) && !Wanted(inB))
 				return;
 			// 报告的一方在前：打开事件的那个，都打开时编号小的；子形状对跟着换
-			if (!Wanted(inA) || (Wanted(inB) && inB < inA))
-			{
-				std::swap(inA, inB);
+			int32_t a = inA;
+			uint64_t key = PairKey(inA, inB);
+			if (inA != a)
 				inSubShapes = inSubShapes << 32 | inSubShapes >> 32;
-			}
-			uint64_t key = uint64_t(uint32_t(inA)) << 32 | uint32_t(inB);
 			std::lock_guard lock(mMutex);
 			std::unordered_set<uint64_t> &touching = mPairs[key];
 			bool before = !touching.empty();
@@ -227,9 +267,9 @@ namespace
 			else
 				touching.erase(inSubShapes);
 			if (!before && !touching.empty())
-				mEvents.push_back({ SN_CONTACT_STARTED, inA, inB });
+				mEvents.push_back({ SN_CONTACT_STARTED, inA, inB, 0.0f });
 			else if (before && touching.empty())
-				mEvents.push_back({ SN_CONTACT_STOPPED, inA, inB });
+				mEvents.push_back({ SN_CONTACT_STOPPED, inA, inB, 0.0f });
 			if (touching.empty())
 				mPairs.erase(key);
 		}
@@ -956,7 +996,7 @@ SN_API int32_t sn_physics_add_bodies(int32_t world, const sn_body *bodies, uint3
 			added.push_back(record.mID);
 		}
 		w->mContacts.mIndexOfBodyID[record.mID.GetIndex()] = index;
-		w->mContacts.mWanted[index] = (body.flags & SN_BODY_CONTACT_EVENTS) != 0;
+		w->mContacts.mWanted[index] = (body.flags & SN_BODY_TOUCHING_EVENTS) != 0 ? 2 : (body.flags & SN_BODY_CONTACT_EVENTS) != 0 ? 1 : 0;
 		w->mBodies[index] = record;
 	}
 
@@ -996,6 +1036,7 @@ SN_API int32_t sn_physics_step(int32_t world, float delta_time, int32_t collisio
 			static_cast<SixDOFConstraint &>(*record.mConstraint).SetTargetAngularVelocityCS(rotation.Conjugated() * record.mTarget);
 		}
 	EPhysicsUpdateError errors = w->mSystem.Update(delta_time, collision_steps > 0 ? collision_steps : 1, &GetTempAllocator(), &GetJobSystem());
+	w->mContacts.EmitTouching();
 	if (DebugEnabled())
 	{
 		sn_debug_set_counter("physics.bodies", w->mSystem.GetNumBodies());
@@ -1399,7 +1440,9 @@ SN_API int32_t sn_physics_body_set_contact_events(int32_t world, int32_t body, i
 	BodyRecord *record = GetBody(*w, body);
 	if (record == nullptr)
 		return SN_ERROR_INVALID_ARGUMENT;
-	w->mContacts.mWanted[body] = enabled != 0;
+	if (enabled < 0 || enabled > 2)
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "sn_physics_body_set_contact_events: enabled must be 0, 1 or 2");
+	w->mContacts.mWanted[body] = uint8_t(enabled);
 	return SN_OK;
 }
 

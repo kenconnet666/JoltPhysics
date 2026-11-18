@@ -212,9 +212,10 @@ const BODY_NO_GRAVITY = 2;
 const BODY_NEVER_SLEEP = 4;
 const BODY_SENSOR = 8;
 const BODY_CONTACT_EVENTS = 16;
-// sn_contact_event：type、body_a、body_b
-const CONTACT_EVENT_WORDS = 3;
-const CONTACT_TYPES = { 1: 'started', 2: 'stopped' } as const;
+const BODY_TOUCHING_EVENTS = 32;
+// sn_contact_event：type、body_a、body_b、depth（float）
+const CONTACT_EVENT_WORDS = 4;
+const CONTACT_TYPES = { 1: 'started', 2: 'stopped', 3: 'touching' } as const;
 // sn_constraint：type、body_a、body_b、offset_a[3]、offset_b[3]、axis_a[3]、axis_b[3]、basis_a[4]、basis_b[4]、minimum、maximum、
 // scale、target[4]、spring[2]、max_force
 const CONSTRAINT_WORDS = 33;
@@ -290,8 +291,8 @@ export interface BodyDesc {
 	neverSleep?: boolean;
 	/** 只检测、不产生碰撞响应（Stride 的 Trigger）。 */
 	sensor?: boolean;
-	/** 报告开始和结束接触（contactEvents()）。 */
-	contactEvents?: boolean;
+	/** 报告开始和结束接触（contactEvents()）；'touching' 时另外每步报正在接触的深度。 */
+	contactEvents?: boolean | 'touching';
 	/** motion 为 'character' 时用。 */
 	character?: CharacterSettings;
 }
@@ -383,9 +384,12 @@ export type ConstraintDesc = ({ bodyA: BodyId; bodyB: BodyId } & (
 
 /** 一次接触事件；self 是打开了接触事件的那个物体（两个都打开时是编号小的）。 */
 export interface ContactEvent {
-	readonly type: 'started' | 'stopped';
+	/** touching：这一步正在接触（只给打开了 touching 的物体，每步每对一个）。 */
+	readonly type: 'started' | 'stopped' | 'touching';
 	readonly self: BodyId;
 	readonly other: BodyId;
+	/** touching 时这一步最深的穿透深度（米）；别的是 0。 */
+	readonly depth: number;
 }
 
 /** 射线和扫掠的结果；查询传入一个对象时就地改写它，不分配内存。 */
@@ -457,9 +461,13 @@ export class PhysicsWorld extends NativeObject<StrideNative> {
 		n.withArrays([Int32Array.from(bodies)], (b) => n.check(n.module._sn_physics_remove_bodies(this[HANDLE], b, bodies.length), 'sn_physics_remove_bodies'));
 	}
 
-	/** 打开或关掉接触事件（建物体时用 BodyDesc.contactEvents）。 */
-	setContactEvents(body: BodyId, enabled: boolean): void {
-		this.native.check(this.native.module._sn_physics_body_set_contact_events(this[HANDLE], body, enabled ? 1 : 0), 'sn_physics_body_set_contact_events');
+	/**
+	 * 打开或关掉接触事件（建物体时用 BodyDesc.contactEvents）：'touching' 时另外每步报正在接触的深度（Stride 的
+	 * IContactHandler.OnTouching）。
+	 */
+	setContactEvents(body: BodyId, enabled: boolean | 'touching'): void {
+		const mode = enabled === 'touching' ? 2 : enabled ? 1 : 0;
+		this.native.check(this.native.module._sn_physics_body_set_contact_events(this[HANDLE], body, mode), 'sn_physics_body_set_contact_events');
 	}
 
 	/** 设成或取消传感器（建物体时用 BodyDesc.sensor）。 */
@@ -475,10 +483,12 @@ export class PhysicsWorld extends NativeObject<StrideNative> {
 			const count = n.u32(countAddress, 1)[0]!;
 			if (count === 0) return [];
 			const words = n.i32(address, count * CONTACT_EVENT_WORDS);
+			const floats = n.f32(address, count * CONTACT_EVENT_WORDS);
 			return Array.from({ length: count }, (_, i) => ({
-				type: CONTACT_TYPES[words[i * CONTACT_EVENT_WORDS] as 1 | 2],
+				type: CONTACT_TYPES[words[i * CONTACT_EVENT_WORDS] as 1 | 2 | 3],
 				self: words[i * CONTACT_EVENT_WORDS + 1]! as BodyId,
 				other: words[i * CONTACT_EVENT_WORDS + 2]! as BodyId,
+				depth: floats[i * CONTACT_EVENT_WORDS + 3]!,
 			}));
 		});
 	}
@@ -813,7 +823,7 @@ function writeBody(floats: Float32Array, words: Uint32Array, o: number, body: Bo
 	if (!Number.isInteger(layer) || layer < 0 || layer > 31) throw new RangeError(`body ${index}: layer must be an integer 0..31, got ${layer}`);
 	words[o] = motion;
 	words[o + 1] = (body.interpolated ? BODY_INTERPOLATED : 0) | (body.gravity === false ? BODY_NO_GRAVITY : 0) | (body.neverSleep ? BODY_NEVER_SLEEP : 0)
-		| (body.sensor ? BODY_SENSOR : 0) | (body.contactEvents ? BODY_CONTACT_EVENTS : 0);
+		| (body.sensor ? BODY_SENSOR : 0) | (body.contactEvents === 'touching' ? BODY_TOUCHING_EVENTS : body.contactEvents ? BODY_CONTACT_EVENTS : 0);
 	words[o + 2] = body.transform ?? 0;
 	const position = body.position ?? ORIGIN, rotation = body.rotation ?? IDENTITY;
 	floats.set([position[0]!, position[1]!, position[2]!, rotation[0]!, rotation[1]!, rotation[2]!, rotation[3]!], o + 3);

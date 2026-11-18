@@ -349,9 +349,9 @@ describe('stride-native and stride-tools', () => {
 				seen.push(...world.contactEvents());
 			}
 			assert.deepEqual(seen, [
-				{ type: 'started', self: trigger, other: box },
-				{ type: 'stopped', self: trigger, other: box },
-				{ type: 'started', self: ground, other: box },
+				{ type: 'started', self: trigger, other: box, depth: 0 },
+				{ type: 'stopped', self: trigger, other: box, depth: 0 },
+				{ type: 'started', self: ground, other: box, depth: 0 },
 			]);
 			world.removeBodies([box, box]);
 			world.step(1 / 60);
@@ -368,6 +368,34 @@ describe('stride-native and stride-tools', () => {
 			for (let i = 0; i < 20; i++) world.removeBodies(world.addBodies([{ motion: 'dynamic', shapes: [{ type: 'sphere', radius: 0.5 }] }]));
 			// 第一次没有空闲编号，接在后面用掉一个；之后都复用它
 			assert.equal(world.bodyCount, count + 2);
+		} finally {
+			world.destroy();
+		}
+	});
+
+	it('reports the contact depth every step while touching when asked (Stride IContactHandler.OnTouching)', () => {
+		const world = native.createPhysicsWorld(8);
+		try {
+			// 盒子落进一个 4 x 2 x 4 的传感器：穿过时每步报一个深度，先变深再变浅
+			const trigger = world.addBody({ shapes: [{ type: 'box', size: [4, 2, 4] }], position: [0, 3, 0], sensor: true, contactEvents: 'touching' });
+			const box = world.addBody({ motion: 'dynamic', shapes: [{ type: 'box', size: [1, 1, 1] }], position: [0, 6, 0] });
+			const depths = [];
+			const order = [];
+			for (let i = 0; i < 90; i++) {
+				world.step(1 / 60);
+				for (const event of world.contactEvents()) {
+					order.push(event.type);
+					if (event.type === 'touching') {
+						assert.deepEqual([event.self, event.other], [trigger, box]);
+						depths.push(event.depth);
+					}
+				}
+			}
+			assert.equal(order[0], 'started');
+			assert.equal(order.at(-1), 'stopped');
+			assert.ok(depths.length >= 5, `${depths.length} touching events`);
+			assert.ok(Math.max(...depths) > 0.5 && depths[0] < Math.max(...depths), `depths ${depths.map((d) => d.toFixed(2)).join(' ')}`);
+			world.setContactEvents(trigger, false);
 		} finally {
 			world.destroy();
 		}

@@ -66,6 +66,7 @@ enum
 	SN_BODY_NEVER_SLEEP = 4,		///< SleepThreshold 为负：一直醒着（Jolt 的睡眠阈值是全局的，按物体只能开关）
 	SN_BODY_SENSOR = 8,				///< 只检测、不产生碰撞响应（Stride 的 Trigger，或 ContactEventHandler.NoContactResponse）
 	SN_BODY_CONTACT_EVENTS = 16,	///< 报告开始和结束接触（Stride 的 ContactEventHandler）
+	SN_BODY_TOUCHING_EVENTS = 32,	///< 另外每步报正在接触的深度（Stride 的 IContactHandler.OnTouching），含 SN_BODY_CONTACT_EVENTS
 };
 
 /// 角色参数（Stride 的 CharacterComponent），SN_MOTION_CHARACTER 的物体用。
@@ -196,6 +197,7 @@ enum
 {
 	SN_CONTACT_STARTED = 1,			///< 两个物体开始接触（OnStartedTouching、Trigger 的 OnEnter）
 	SN_CONTACT_STOPPED = 2,			///< 不再接触（OnStoppedTouching、OnLeave）
+	SN_CONTACT_TOUCHING = 3,		///< 这一步正在接触（OnTouching），depth 是这一步这对物体最深的穿透深度
 };
 
 /// 一个事件；body_a 是打开了 SN_BODY_CONTACT_EVENTS 的那个（两个都打开时按编号小的在前，只报一次）。
@@ -204,13 +206,16 @@ typedef struct sn_contact_event
 	int32_t type;					///< SN_CONTACT_*
 	int32_t body_a;
 	int32_t body_b;
+	float depth;					///< SN_CONTACT_TOUCHING 的穿透深度（米，正数是陷进去）；别的事件是 0
 } sn_contact_event;
 
-/// 打开或关掉某个物体的接触事件（SN_BODY_CONTACT_EVENTS）。
+/// 打开或关掉某个物体的接触事件：0 关掉，1 报开始和结束（SN_BODY_CONTACT_EVENTS），2 另外每步报正在接触的深度
+/// （SN_BODY_TOUCHING_EVENTS）。
 SN_API int32_t sn_physics_body_set_contact_events(int32_t world, int32_t body, int32_t enabled);
 /// 设成或取消传感器（SN_BODY_SENSOR）。
 SN_API int32_t sn_physics_body_set_sensor(int32_t world, int32_t body, int32_t sensor);
-/// 上一次 sn_physics_step 里产生的事件，按发生的顺序；地址在下一次步进前有效。复合形状的多对子形状按一对物体算。
+/// 上一次 sn_physics_step 里产生的事件：开始和结束按发生的顺序，正在接触的在最后（每对物体一个）；地址在下一次步进前有效。
+/// 复合形状的多对子形状按一对物体算。
 SN_API const sn_contact_event *sn_physics_contact_events(int32_t world, uint32_t *count);
 
 // ---------------------------------------------------------------------------------------------
