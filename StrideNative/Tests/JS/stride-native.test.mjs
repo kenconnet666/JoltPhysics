@@ -184,6 +184,60 @@ describe('stride-native and stride-tools', () => {
 		assert.throws(() => world.step(1 / 60), (error) => error instanceof NativeError && error.code === 'invalid-handle' && /PhysicsWorld was destroyed/.test(error.message));
 	});
 
+	it('runs a Stride-style character on compound and mesh colliders, with layered queries', () => {
+		// Third Person Platformer 的设置：重力 -40、阻尼 0.05；层 1（柱子）和层 2（角色）照常碰撞
+		using transforms = native.createTransforms(4);
+		const [playerSlot] = transforms.allocate(1);
+		transforms.position.set([0, 0.05, 0], playerSlot * 3);
+		transforms.update();
+		const world = native.createPhysicsWorld(16, { transforms, gravity: [0, -40, 0], linearDamping: 0.05, angularDamping: 0.05 });
+		try {
+			// 地面是网格碰撞体（20 x 20，朝上），x = 5 有一面层 0 的墙，x = 8 有一根层 1 的柱子
+			const mesh = world.createMesh(new Float32Array([-10, 0, -10, 10, 0, -10, 10, 0, 10, -10, 0, 10]), new Uint32Array([0, 2, 1, 0, 3, 2]));
+			const [ground, wall, pole] = world.addBodies([
+				{ shapes: [{ type: 'mesh', mesh }] },
+				{ shapes: [{ type: 'box', size: [1, 4, 4], position: [0, 2, 0] }, { type: 'box', size: [1, 1, 1], position: [0, 5, 0] }], position: [5, 0, -6] },
+				{ shapes: [{ type: 'cylinder', radius: 0.25, length: 4 }], position: [8, 2, 0], layer: 1 },
+			]);
+			assert.deepEqual([ground, wall, pole], [0, 1, 2]);
+			const player = world.addBody({
+				motion: 'character', transform: playerSlot, layer: 2, interpolated: true,
+				shapes: [{ type: 'capsule', radius: 0.4, length: 1.2, position: [0, 0.95, 0] }],
+				character: { jumpVelocity: 13 },
+			});
+			for (let i = 0; i < 30; i++) world.step(1 / 60);
+			assert.equal(world.isGrounded(player), true);
+
+			world.moveCharacter(player, 0, 4);
+			for (let i = 0; i < 30; i++) world.step(1 / 60);
+			const z = transforms.position[playerSlot * 3 + 2];
+			assert.ok(z > 1.6 && z < 2.1, `walked to z = ${z}`);
+			world.moveCharacter(player, 0, 0, true);
+			world.step(1 / 60);
+			world.step(1 / 60);
+			assert.equal(world.isGrounded(player), false);
+			const before = transforms.position[playerSlot * 3 + 1];
+			world.step(1 / 60);
+			world.interpolate(0.5);
+			const halfway = transforms.position[playerSlot * 3 + 1];
+			assert.ok(halfway > before && halfway < world.positions()[player * 3 + 1], 'interpolation writes a pose between the last two steps');
+
+			// 射线：层 0 的墙在 4.5，只看层 1 时打到柱子的 7.75，角色在层 2
+			const hit = world.rayCast([0, 2, -6], [1, 0, 0], 20, 1 << 0);
+			assert.ok(hit && Math.abs(hit.distance - 4.5) < 1e-3 && hit.body === wall && hit.normal[0] < -0.99);
+			assert.ok(Math.abs(world.rayCast([0, 2, 0], [1, 0, 0], 20, 1 << 1).distance - 7.75) < 1e-3);
+			assert.equal(world.rayCast([0, 2, 0], [1, 0, 0], 20, 1 << 3), undefined);
+			const reused = world.sphereCast(0.5, [0, 2, -6], [1, 0, 0], 20);
+			assert.ok(Math.abs(reused.distance - 4) < 0.01);
+			assert.equal(world.sphereCast(0.5, [0, 2, -6], [1, 0, 0], 20, 1 << 0, reused), reused, 'the hit object is reused');
+			assert.throws(() => world.moveCharacter(wall, 1, 0), /not a character/);
+			assert.throws(() => world.addBody({ motion: 'dynamic', shapes: [{ type: 'mesh', mesh }] }), /mesh shapes/);
+			assert.throws(() => native.createPhysicsWorld(4, { collisionMasks: [1, 2] }), /32 entries/);
+		} finally {
+			world.destroy();
+		}
+	});
+
 	it('culls instances against view frustums in native memory, batch by batch', () => {
 		using transforms = native.createTransforms(8);
 		const slots = transforms.allocate(4);

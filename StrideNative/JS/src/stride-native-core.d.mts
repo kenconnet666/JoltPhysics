@@ -5,7 +5,9 @@ import type { CoreFactory } from './native-module.js';
 export type RuntimeExport =
 	| 'sn_transforms_create' | 'sn_transforms_destroy' | 'sn_transforms_columns' | 'sn_transforms_alloc'
 	| 'sn_transforms_free' | 'sn_transforms_set_parent' | 'sn_transforms_update' | 'sn_transforms_slot_limit' | 'sn_transforms_cull'
-	| 'sn_physics_create' | 'sn_physics_destroy' | 'sn_physics_add_boxes' | 'sn_physics_step' | 'sn_physics_positions'
+	| 'sn_physics_create' | 'sn_physics_destroy' | 'sn_physics_create_mesh' | 'sn_physics_add_bodies' | 'sn_physics_step'
+	| 'sn_physics_interpolate' | 'sn_physics_positions' | 'sn_physics_character_move' | 'sn_physics_character_grounded'
+	| 'sn_physics_ray_cast' | 'sn_physics_sphere_cast'
 	| 'sn_meshopt_decode' | 'sn_meshopt_decode_batch' | 'sn_ktx2_get_info' | 'sn_ktx2_transcode'
 	| 'sn_nav_default_config' | 'sn_nav_build' | 'sn_nav_load' | 'sn_nav_serialize' | 'sn_nav_find_path' | 'sn_nav_destroy'
 	| 'sn_crowd_create' | 'sn_crowd_destroy' | 'sn_crowd_add_agent' | 'sn_crowd_remove_agent' | 'sn_crowd_request_move'

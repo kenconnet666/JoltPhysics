@@ -77,24 +77,74 @@ TEST_CASE("Init reports the worker count")
 
 namespace
 {
-	const sn_box cFloor = { { 0, -1, 0 }, { 50, 1, 50 }, 0 };
-
-	sn_box DynamicBox(float inX, float inY, float inZ)
+	/// 一个盒子一个物体（测试用的简写），AddBoxes 把它们换成 sn_body 加 sn_shape
+	struct TestBox
 	{
-		return { { inX, inY, inZ }, { 0.5f, 0.5f, 0.5f }, SN_BODY_DYNAMIC };
+		float position[3];
+		float half_extent[3];
+		uint32_t motion;
+		int32_t transform = 0;
+	};
+
+	const TestBox cFloor = { { 0, -1, 0 }, { 50, 1, 50 }, SN_MOTION_STATIC };
+
+	TestBox DynamicBox(float inX, float inY, float inZ)
+	{
+		return { { inX, inY, inZ }, { 0.5f, 0.5f, 0.5f }, SN_MOTION_DYNAMIC };
+	}
+
+	sn_shape BoxShape(float inX, float inY, float inZ, float inMass = 1.0f)
+	{
+		sn_shape shape {};
+		shape.type = SN_SHAPE_BOX;
+		shape.rotation[3] = 1.0f;
+		shape.size[0] = inX;
+		shape.size[1] = inY;
+		shape.size[2] = inZ;
+		shape.mass = inMass;
+		return shape;
+	}
+
+	sn_body Body(uint32_t inMotion, float inX, float inY, float inZ, uint32_t inFirstShape, uint32_t inShapeCount = 1, uint32_t inLayer = 0)
+	{
+		sn_body body {};
+		body.motion = inMotion;
+		body.position[0] = inX;
+		body.position[1] = inY;
+		body.position[2] = inZ;
+		body.rotation[3] = 1.0f;
+		body.first_shape = inFirstShape;
+		body.shape_count = inShapeCount;
+		body.layer = inLayer;
+		body.friction = 0.5f;
+		return body;
+	}
+
+	int32_t AddBoxes(int32_t inWorld, const TestBox *inBoxes, uint32_t inCount)
+	{
+		std::vector<sn_body> bodies;
+		std::vector<sn_shape> shapes;
+		for (uint32_t i = 0; i < inCount; ++i)
+		{
+			const TestBox &box = inBoxes[i];
+			shapes.push_back(BoxShape(box.half_extent[0] * 2, box.half_extent[1] * 2, box.half_extent[2] * 2));
+			bodies.push_back(Body(box.motion, box.position[0], box.position[1], box.position[2], i));
+			bodies.back().transform = box.transform;
+		}
+		return sn_physics_add_bodies(inWorld, bodies.data(), inCount, shapes.data(), inCount, nullptr, 0);
 	}
 }
 
 TEST_CASE("Physics box falls onto the floor")
 {
 	ModuleScope module;
-	int32_t world = sn_physics_create(16, 0);
+	int32_t world = sn_physics_create(16, 0, nullptr);
 	REQUIRE(world > 0);
 	const float *positions = sn_physics_positions(world);
 	REQUIRE(positions != nullptr);
 
-	const sn_box boxes[] = { cFloor, DynamicBox(0, 5, 0) };
-	REQUIRE(sn_physics_add_boxes(world, boxes, 2) == 0);
+	const TestBox boxes[] = { cFloor, DynamicBox(0, 5, 0) };
+	REQUIRE(AddBoxes(world, boxes, 2) == 0);
 	CHECK(positions[4] == doctest::Approx(5.0f));		// written when added, before any step
 
 	for (int i = 0; i < 180; ++i)
@@ -109,14 +159,14 @@ TEST_CASE("Physics world sized to its body count holds a settled stack")
 {
 	ModuleScope module;
 	constexpr int cColumns = 10, cRows = 10, cBodies = cColumns * cRows + 1;
-	int32_t world = sn_physics_create(cBodies, 0);
+	int32_t world = sn_physics_create(cBodies, 0, nullptr);
 	REQUIRE(world > 0);
-	REQUIRE(sn_physics_add_boxes(world, &cFloor, 1) == 0);
+	REQUIRE(AddBoxes(world, &cFloor, 1) == 0);
 	// Columns 1 m apart with 1 m boxes: every box rests on the one below and touches its neighbours.
-	std::vector<sn_box> boxes;
+	std::vector<TestBox> boxes;
 	for (int i = 0; i < cColumns * cRows; ++i)
 		boxes.push_back(DynamicBox(float(i % cColumns), 0.5f + float(i / cColumns), 0));
-	REQUIRE(sn_physics_add_boxes(world, boxes.data(), uint32_t(boxes.size())) == 1);
+	REQUIRE(AddBoxes(world, boxes.data(), uint32_t(boxes.size())) == 1);
 
 	for (int i = 0; i < 120; ++i)
 		REQUIRE(sn_physics_step(world, 1.0f / 60.0f, 1) == SN_OK);
@@ -126,13 +176,228 @@ TEST_CASE("Physics world sized to its body count holds a settled stack")
 TEST_CASE("Physics batch over capacity adds nothing")
 {
 	ModuleScope module;
-	int32_t world = sn_physics_create(4, 0);
+	int32_t world = sn_physics_create(4, 0, nullptr);
 	REQUIRE(world > 0);
-	std::vector<sn_box> boxes(5, DynamicBox(0, 1, 0));
-	CHECK(sn_physics_add_boxes(world, boxes.data(), 5) == SN_ERROR_FAILED);
-	CHECK(sn_physics_add_boxes(world, boxes.data(), 4) == 0);
-	CHECK(sn_physics_add_boxes(world, boxes.data(), 1) == SN_ERROR_FAILED);
+	std::vector<TestBox> boxes(5, DynamicBox(0, 1, 0));
+	CHECK(AddBoxes(world, boxes.data(), 5) == SN_ERROR_FAILED);
+	CHECK(AddBoxes(world, boxes.data(), 4) == 0);
+	CHECK(AddBoxes(world, boxes.data(), 1) == SN_ERROR_FAILED);
 	sn_physics_destroy(world);
+}
+
+namespace
+{
+	/// Third Person Platformer 的设置：重力 -40、阻尼 0.05、全部层相互碰撞
+	sn_physics_settings PlatformerSettings()
+	{
+		sn_physics_settings settings {};
+		settings.gravity[1] = -40.0f;
+		settings.linear_damping = 0.05f;
+		settings.angular_damping = 0.05f;
+		std::fill(std::begin(settings.collision_masks), std::end(settings.collision_masks), 0xffffffffu);
+		return settings;
+	}
+
+	/// TPP 的角色：胶囊半径 0.4、长 1.2，中心在脚底上方 0.95
+	struct TestCharacter
+	{
+		sn_shape shape {};
+		sn_character settings { 200.0f, 1000.0f, 13.0f, 50.0f, 0.2f, 0.2f };
+		sn_body body {};
+
+		TestCharacter(float inX, float inY, float inZ)
+		{
+			shape.type = SN_SHAPE_CAPSULE;
+			shape.position[1] = 0.95f;
+			shape.rotation[3] = 1.0f;
+			shape.size[0] = 0.4f;
+			shape.size[1] = 1.2f;
+			shape.mass = 1.0f;
+			body = Body(SN_MOTION_CHARACTER, inX, inY, inZ, 0, 1, 2);
+		}
+
+		int32_t Add(int32_t inWorld) const
+		{
+			return sn_physics_add_bodies(inWorld, &body, 1, &shape, 1, &settings, 1);
+		}
+	};
+
+	void Step(int32_t inWorld, int inSteps)
+	{
+		for (int i = 0; i < inSteps; ++i)
+			REQUIRE(sn_physics_step(inWorld, 1.0f / 60.0f, 1) == SN_OK);
+	}
+}
+
+TEST_CASE("物理：角色站稳、按目标速度走、起跳后落回地面（Stride 的 CharacterComponent）")
+{
+	ModuleScope module;
+	sn_physics_settings settings = PlatformerSettings();
+	int32_t world = sn_physics_create(8, 0, &settings);
+	REQUIRE(world > 0);
+	REQUIRE(AddBoxes(world, &cFloor, 1) == 0);
+	TestCharacter player(0, 0.05f, 0);
+	int32_t character = player.Add(world);
+	REQUIRE(character == 1);
+	const float *positions = sn_physics_positions(world);
+
+	Step(world, 30);
+	CHECK(sn_physics_character_grounded(world, character) == 1);
+	CHECK(positions[4] == doctest::Approx(0.0f).epsilon(0.05));
+
+	// 目标速度 10 m/s：最大水平力 200、质量 1，0.05 秒就能到，一秒走将近 10 米
+	REQUIRE(sn_physics_character_move(world, character, 10.0f, 0.0f, 0) == SN_OK);
+	Step(world, 60);
+	CHECK(positions[3] > 9.0f);
+	CHECK(positions[3] < 10.5f);
+	CHECK(std::abs(positions[5]) < 0.01f);
+	CHECK(sn_physics_character_grounded(world, character) == 1);
+
+	// 起跳：竖直速度补到 13，重力 -40 下大约升高 13² / 80 ≈ 2.1 米
+	REQUIRE(sn_physics_character_move(world, character, 0.0f, 0.0f, 1) == SN_OK);
+	Step(world, 2);
+	CHECK(sn_physics_character_grounded(world, character) == 0);
+	float highest = 0.0f;
+	for (int i = 0; i < 30; ++i)
+	{
+		Step(world, 1);
+		highest = std::max(highest, positions[4]);
+	}
+	CHECK(highest == doctest::Approx(2.1f).epsilon(0.15));
+	Step(world, 60);
+	CHECK(sn_physics_character_grounded(world, character) == 1);
+	CHECK(positions[4] == doctest::Approx(0.0f).epsilon(0.05));
+
+	// 不是角色的物体、不存在的物体都不能当角色用
+	CHECK(sn_physics_character_move(world, 0, 1.0f, 0.0f, 0) == SN_ERROR_INVALID_ARGUMENT);
+	CHECK(sn_physics_character_grounded(world, 5) == SN_ERROR_INVALID_ARGUMENT);
+	sn_physics_destroy(world);
+}
+
+TEST_CASE("物理：碰撞层的矩阵和查询的遮罩，射线和球体扫掠")
+{
+	ModuleScope module;
+	sn_physics_settings settings = PlatformerSettings();
+	// 层 0 和层 2 不相互碰撞
+	settings.collision_masks[0] &= ~(1u << 2);
+	settings.collision_masks[2] &= ~(1u << 0);
+	int32_t world = sn_physics_create(8, 0, &settings);
+	REQUIRE(world > 0);
+
+	// 层 0 的墙在 x = 5，层 1 的墙在 x = 10，都是 1 米厚
+	const sn_shape walls[] = { BoxShape(1, 10, 10), BoxShape(1, 10, 10) };
+	const sn_body bodies[] = { Body(SN_MOTION_STATIC, 5, 0, 0, 0, 1, 0), Body(SN_MOTION_STATIC, 10, 0, 0, 1, 1, 1) };
+	REQUIRE(sn_physics_add_bodies(world, bodies, 2, walls, 2, nullptr, 0) == 0);
+
+	const float origin[3] = { 0, 0, 0 }, along_x[3] = { 2, 0, 0 };
+	sn_hit hit {};
+	REQUIRE(sn_physics_ray_cast(world, origin, along_x, 100, 1u << 0, &hit) == 1);
+	CHECK(hit.distance == doctest::Approx(4.5f));
+	CHECK(hit.body == 0);
+	CHECK(hit.normal[0] == doctest::Approx(-1.0f));
+	REQUIRE(sn_physics_ray_cast(world, origin, along_x, 100, 1u << 1, &hit) == 1);
+	CHECK(hit.distance == doctest::Approx(9.5f));
+	CHECK(hit.body == 1);
+	CHECK(sn_physics_ray_cast(world, origin, along_x, 100, 0, &hit) == 0);
+	CHECK(sn_physics_ray_cast(world, origin, along_x, 4, 1u << 0, &hit) == 0);
+
+	// 半径 0.5 的球：碰到 x = 4.5 的墙面时球心在 4
+	REQUIRE(sn_physics_sphere_cast(world, 0.5f, origin, along_x, 100, 0xffffffffu, &hit) == 1);
+	CHECK(hit.distance == doctest::Approx(4.0f).epsilon(0.01));
+	CHECK(hit.body == 0);
+	const float inside[3] = { 5, 0, 0 };
+	REQUIRE(sn_physics_sphere_cast(world, 0.5f, inside, along_x, 100, 1u << 0, &hit) == 1);
+	CHECK(hit.distance == doctest::Approx(0.0f));
+	const float zero[3] = { 0, 0, 0 };
+	CHECK(sn_physics_ray_cast(world, origin, zero, 100, 1, &hit) == SN_ERROR_INVALID_ARGUMENT);
+
+	// 层 2 的箱子穿过层 0 的地面掉下去，层 1 的停在地面上
+	const sn_shape pieces[] = { BoxShape(100, 2, 100), BoxShape(1, 1, 1), BoxShape(1, 1, 1) };
+	const sn_body falling[] = { Body(SN_MOTION_STATIC, 0, -1, 30, 0, 1, 0), Body(SN_MOTION_DYNAMIC, 0, 3, 30, 1, 1, 2), Body(SN_MOTION_DYNAMIC, 3, 3, 30, 2, 1, 1) };
+	REQUIRE(sn_physics_add_bodies(world, falling, 3, pieces, 3, nullptr, 0) == 2);
+	Step(world, 60);
+	const float *positions = sn_physics_positions(world);
+	CHECK(positions[3 * 3 + 1] < -2.0f);
+	CHECK(positions[4 * 3 + 1] == doctest::Approx(0.5f).epsilon(0.05));
+	sn_physics_destroy(world);
+
+	// 碰撞矩阵要对称
+	settings.collision_masks[3] = 0;
+	CHECK(sn_physics_create(8, 0, &settings) == SN_ERROR_INVALID_ARGUMENT);
+}
+
+TEST_CASE("物理：网格碰撞体和带本地位姿的复合碰撞体")
+{
+	ModuleScope module;
+	int32_t world = sn_physics_create(8, 0, nullptr);
+	REQUIRE(world > 0);
+
+	// 20 x 20 的地面网格（两个三角形，朝上）
+	const float vertices[] = { -10, 0, -10, 10, 0, -10, 10, 0, 10, -10, 0, 10 };
+	const uint32_t indices[] = { 0, 2, 1, 0, 3, 2 };
+	int32_t mesh = sn_physics_create_mesh(world, vertices, 4, indices, 6);
+	REQUIRE(mesh > 0);
+	CHECK(sn_physics_create_mesh(world, vertices, 4, indices, 5) == SN_ERROR_INVALID_ARGUMENT);
+	sn_shape ground {};
+	ground.type = SN_SHAPE_MESH;
+	ground.rotation[3] = 1.0f;
+	ground.mesh = mesh;
+	sn_body ground_body = Body(SN_MOTION_STATIC, 0, 0, 0, 0);
+	REQUIRE(sn_physics_add_bodies(world, &ground_body, 1, &ground, 1, nullptr, 0) == 0);
+	TestBox falling = DynamicBox(0, 3, 0);
+	REQUIRE(AddBoxes(world, &falling, 1) == 1);
+	Step(world, 120);
+	CHECK(sn_physics_positions(world)[4] == doctest::Approx(0.5f).epsilon(0.05));
+
+	// 网格只能用在静态和运动学物体上
+	sn_body dynamic_mesh = Body(SN_MOTION_DYNAMIC, 0, 5, 0, 0);
+	CHECK(sn_physics_add_bodies(world, &dynamic_mesh, 1, &ground, 1, nullptr, 0) == SN_ERROR_INVALID_ARGUMENT);
+
+	// 复合：两个盒子在本地 x = ±3，物体绕 Y 转 90°，本地 +x 转到世界 -z
+	sn_shape parts[] = { BoxShape(1, 1, 1), BoxShape(1, 1, 1) };
+	parts[0].position[0] = -3;
+	parts[1].position[0] = 3;
+	sn_body compound = Body(SN_MOTION_STATIC, 0, 20, 0, 0, 2);
+	compound.rotation[1] = std::sqrt(0.5f);
+	compound.rotation[3] = std::sqrt(0.5f);
+	REQUIRE(sn_physics_add_bodies(world, &compound, 1, parts, 2, nullptr, 0) == 2);
+	const float down[3] = { 0, -1, 0 }, above_minus_z[3] = { 0, 25, -3 }, above_plus_x[3] = { 3, 25, 0 };
+	sn_hit hit {};
+	REQUIRE(sn_physics_ray_cast(world, above_minus_z, down, 10, 0xffffffffu, &hit) == 1);
+	CHECK(hit.distance == doctest::Approx(4.5f));
+	CHECK(hit.body == 2);
+	CHECK(sn_physics_ray_cast(world, above_plus_x, down, 10, 0xffffffffu, &hit) == 0);
+	sn_physics_destroy(world);
+}
+
+TEST_CASE("物理：插值的物体在两步之间写回插值的位姿")
+{
+	ModuleScope module;
+	int32_t store = sn_transforms_create(4);
+	REQUIRE(store > 0);
+	sn_transform_columns c {};
+	REQUIRE(sn_transforms_columns(store, &c) == SN_OK);
+	int32_t slot = 0;
+	REQUIRE(sn_transforms_alloc(store, &slot, 1) == 1);
+	c.position[slot * 3 + 1] = 10;
+
+	int32_t world = sn_physics_create(4, store, nullptr);
+	REQUIRE(world > 0);
+	sn_shape box = BoxShape(1, 1, 1);
+	sn_body body = Body(SN_MOTION_DYNAMIC, 0, 0, 0, 0);
+	body.transform = slot;
+	body.flags = SN_BODY_INTERPOLATED;
+	REQUIRE(sn_physics_add_bodies(world, &body, 1, &box, 1, nullptr, 0) == 0);
+	Step(world, 10);
+	float previous = sn_physics_positions(world)[1];
+	Step(world, 1);
+	float current = sn_physics_positions(world)[1];
+	REQUIRE(current < previous);
+	CHECK(c.position[slot * 3 + 1] == doctest::Approx(current));
+	REQUIRE(sn_physics_interpolate(world, 0.25f) == SN_OK);
+	CHECK(c.position[slot * 3 + 1] == doctest::Approx(previous + (current - previous) * 0.25f));
+	sn_physics_destroy(world);
+	sn_transforms_destroy(store);
 }
 
 namespace
@@ -332,13 +597,13 @@ TEST_CASE("物理：绑定变换的物体从槽位出发，步进后把位姿写
 	c.position[child * 3 + 1] = 4;
 	c.position[child * 3 + 2] = 2;
 
-	int32_t world = sn_physics_create(8, store);
+	int32_t world = sn_physics_create(8, store, nullptr);
 	REQUIRE(world > 0);
-	sn_box root_box = DynamicBox(0, 0, 0), child_box = DynamicBox(0, 0, 0);
+	TestBox root_box = DynamicBox(0, 0, 0), child_box = DynamicBox(0, 0, 0);
 	root_box.transform = root;
 	child_box.transform = child;
-	const sn_box boxes[] = { cFloor, root_box, child_box };
-	REQUIRE(sn_physics_add_boxes(world, boxes, 3) == 0);
+	const TestBox boxes[] = { cFloor, root_box, child_box };
+	REQUIRE(AddBoxes(world, boxes, 3) == 0);
 	const float *positions = sn_physics_positions(world);
 	CHECK(positions[1 * 3 + 1] == doctest::Approx(5.0f));
 	CHECK(positions[2 * 3 + 0] == doctest::Approx(12.0f));
@@ -360,12 +625,12 @@ TEST_CASE("物理：绑定变换的物体从槽位出发，步进后把位姿写
 	CHECK(c.world[child * 16 + 2] == doctest::Approx(-1.0f).epsilon(1e-3));		// x 轴转到 -z
 	CHECK(c.world[child * 16 + 8] == doctest::Approx(1.0f).epsilon(1e-3));		// z 轴转到 x
 
-	sn_box unallocated = DynamicBox(0, 1, 0);
+	TestBox unallocated = DynamicBox(0, 1, 0);
 	unallocated.transform = 7;
-	CHECK(sn_physics_add_boxes(world, &unallocated, 1) == SN_ERROR_INVALID_ARGUMENT);
-	int32_t plain = sn_physics_create(2, 0);
-	CHECK(sn_physics_add_boxes(plain, &root_box, 1) == SN_ERROR_INVALID_ARGUMENT);	// 世界没有变换存储
-	CHECK(sn_physics_create(2, 99) == SN_ERROR_INVALID_HANDLE);
+	CHECK(AddBoxes(world, &unallocated, 1) == SN_ERROR_INVALID_ARGUMENT);
+	int32_t plain = sn_physics_create(2, 0, nullptr);
+	CHECK(AddBoxes(plain, &root_box, 1) == SN_ERROR_INVALID_ARGUMENT);	// 世界没有变换存储
+	CHECK(sn_physics_create(2, 99, nullptr) == SN_ERROR_INVALID_HANDLE);
 	sn_physics_destroy(plain);
 
 	sn_transforms_destroy(store);

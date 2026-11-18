@@ -1,7 +1,8 @@
 # @stride-ts/native
 
-StrideNative compiled to multithreaded SIMD WebAssembly, with TypeScript bindings: Jolt physics with a
-shared transform store, Recast/Detour navigation, ozz animation sampling, meshopt and KTX2 decoding
+StrideNative compiled to multithreaded SIMD WebAssembly, with TypeScript bindings: Jolt physics shaped like
+Stride.BepuPhysics (compound and mesh colliders, Stride's character controller, 32 collision layers, ray and
+sphere casts, interpolation) with a shared transform store, Recast/Detour navigation, ozz animation sampling, meshopt and KTX2 decoding
 (`@stride-ts/native`, browser and Node), and the asset tools used by the pipeline (`@stride-ts/native/tools`,
 Node: scene import, tangents, mesh optimization, UV unwrap, convex decomposition, Basis encoding, MSDF
 fonts, navmesh baking).

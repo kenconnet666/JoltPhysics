@@ -59,24 +59,6 @@ export interface TranscodedTexture {
 	levels: Uint8Array[];
 }
 
-export interface BoxDesc {
-	/** 初始位置，默认原点；绑定了 transform 时不用它。 */
-	position?: Vec3;
-	halfExtent: Vec3;
-	/** 默认 'dynamic'。 */
-	motion?: 'dynamic' | 'static';
-	/**
-	 * 绑定的变换槽位（世界要用 createPhysicsWorld(n, { transforms }) 创建）。初始位姿取槽位当前的世界位姿（缩放不作用到形状上），
-	 * 动态物体每步结束把位姿写回槽位的本地位置和旋转，有父节点时换算到父节点空间。物体存在期间槽位不能释放。
-	 */
-	transform?: TransformSlot;
-}
-
-export interface PhysicsWorldOptions {
-	/** 物体可以绑定的变换存储；它要比世界活得久。 */
-	transforms?: TransformStore;
-}
-
 export interface AgentOptions {
 	radius?: number;
 	height?: number;
@@ -111,9 +93,12 @@ export class StrideNative extends NativeModule<RuntimeExport> {
 	}
 
 	/** 需要 physics 功能。 */
-	createPhysicsWorld(maxBodies = 1024, { transforms }: PhysicsWorldOptions = {}): PhysicsWorld {
+	createPhysicsWorld(maxBodies = 1024, { transforms, ...settings }: PhysicsWorldOptions = {}): PhysicsWorld {
 		this.requireFeature('physics', 'createPhysicsWorld');
-		const handle = this.module._sn_physics_create(maxBodies, transforms ? transforms[HANDLE] : 0);
+		const handle = this.withScratch(SETTINGS_WORDS * 4, (table) => {
+			writeSettings(this.f32(table, SETTINGS_WORDS), this.u32(table, SETTINGS_WORDS), settings);
+			return this.module._sn_physics_create(maxBodies, transforms ? transforms[HANDLE] : 0, table);
+		});
 		return new PhysicsWorld(this, this.check(handle, 'sn_physics_create'), maxBodies);
 	}
 
@@ -222,9 +207,115 @@ export class StrideNative extends NativeModule<RuntimeExport> {
 	}
 }
 
-/** sn_box：position（3 个 float）、half extent（3 个 float）、flags（uint32）、transform（int32）。 */
-const BOX_WORDS = 8;
-const BODY_DYNAMIC = 1;
+// sn_shape：type、position[3]、rotation[4]、size[3]、mesh、mass，13 个字
+const SHAPE_WORDS = 13;
+// sn_body：motion、flags、transform、position[3]、rotation[4]、first_shape、shape_count、layer、friction、character，15 个字
+const BODY_WORDS = 15;
+// sn_character：6 个 float
+const CHARACTER_WORDS = 6;
+// sn_hit：distance、point[3]、normal[3]、body
+const HIT_WORDS = 8;
+// sn_physics_settings：gravity[3]、linear_damping、angular_damping、collision_masks[32]
+const SETTINGS_WORDS = 37;
+
+const SHAPE_TYPES = { box: 0, sphere: 1, capsule: 2, cylinder: 3, mesh: 4 } as const;
+const MOTIONS = { static: 0, dynamic: 1, kinematic: 2, character: 3 } as const;
+const BODY_INTERPOLATED = 1;
+const BODY_NO_GRAVITY = 2;
+const ALL_LAYERS = 0xffffffff;
+
+const ORIGIN: Vec3 = [0, 0, 0];
+const IDENTITY: ArrayLike<number> = [0, 0, 0, 1];
+
+/** 用 PhysicsWorld.createMesh 建的三角网格形状，同一个世界里的物体共用。 */
+export type PhysicsMesh = Branded<number, 'PhysicsMesh'>;
+
+/** 复合碰撞体里的一个形状（Stride 的 BoxCollider、SphereCollider……加 CompoundCollider 的本地位姿）。 */
+export type ShapeDesc = (
+	| { type: 'box'; /** 边长（Stride 的 BoxCollider.Size）。 */ size: Vec3 }
+	| { type: 'sphere'; radius: number }
+	/** 沿本地 Y；length 是两端球心的距离（Stride 的 CapsuleCollider.Length）。 */
+	| { type: 'capsule'; radius: number; length: number }
+	| { type: 'cylinder'; radius: number; length: number }
+	/** 按实体的世界缩放缩放（Stride 的 MeshCollider）；只能用在静态和运动学物体上。 */
+	| { type: 'mesh'; mesh: PhysicsMesh }
+) & {
+	/** 本地位置，默认原点。 */
+	position?: Vec3;
+	/** 本地旋转（xyzw），默认单位。 */
+	rotation?: ArrayLike<number>;
+	/** 动态物体和角色的质量是各形状的和，默认 1。 */
+	mass?: number;
+};
+
+/** 角色参数（Stride 的 CharacterComponent），默认值同 Stride。 */
+export interface CharacterSettings {
+	maximumHorizontalForce?: number;
+	maximumVerticalForce?: number;
+	/** Stride 的 JumpForce：起跳时相对支撑物的竖直速度。 */
+	jumpVelocity?: number;
+	/** 能站立的最大坡度（度）。 */
+	slopeAngle?: number;
+	airControlForceScale?: number;
+	airControlScale?: number;
+}
+
+export interface BodyDesc {
+	/** 默认 'static'；'character' 是 Stride 的 CharacterComponent：不转动，用 moveCharacter 控制。 */
+	motion?: keyof typeof MOTIONS;
+	shapes: readonly ShapeDesc[];
+	/**
+	 * 绑定的变换槽位（世界要用 createPhysicsWorld(n, { transforms }) 创建）。初始位姿取槽位当前的世界位姿（缩放只作用到网格形状），
+	 * 动态物体和角色每步结束把位姿写回槽位的本地位置和旋转，有父节点时换算到父节点空间。物体存在期间槽位不能释放。
+	 */
+	transform?: TransformSlot;
+	/** 没有绑定变换时的位姿。 */
+	position?: Vec3;
+	rotation?: ArrayLike<number>;
+	/** Stride 的 CollisionLayer，0..31，默认 0。 */
+	layer?: number;
+	/** Stride 的 FrictionCoefficient，默认 1。 */
+	friction?: number;
+	/** InterpolationMode.Interpolated：interpolate(alpha) 写回两步之间的位姿。 */
+	interpolated?: boolean;
+	/** 默认 true。 */
+	gravity?: boolean;
+	/** motion 为 'character' 时用。 */
+	character?: CharacterSettings;
+}
+
+export interface BoxDesc {
+	/** 初始位置，默认原点；绑定了 transform 时不用它。 */
+	position?: Vec3;
+	halfExtent: Vec3;
+	/** 默认 'dynamic'。 */
+	motion?: 'dynamic' | 'static';
+	transform?: TransformSlot;
+}
+
+/** 仿真设置（Stride 的 BepuSimulation），默认值同 Stride。 */
+export interface PhysicsSettings {
+	/** 默认 (0, -9.81, 0)。 */
+	gravity?: Vec3;
+	linearDamping?: number;
+	angularDamping?: number;
+	/** 碰撞矩阵：collisionMasks[a] 的第 b 位为 1 表示层 a 和层 b 相互碰撞，要对称；默认全部碰撞。 */
+	collisionMasks?: ArrayLike<number>;
+}
+
+export interface PhysicsWorldOptions extends PhysicsSettings {
+	/** 物体可以绑定的变换存储；它要比世界活得久。 */
+	transforms?: TransformStore;
+}
+
+/** 射线和扫掠的结果；查询传入一个对象时就地改写它，不分配内存。 */
+export class PhysicsHit {
+	/** 沿方向的距离；球体扫掠从一开始就重叠时是 0。 */
+	distance = 0;
+	readonly point: [number, number, number] = [0, 0, 0];
+	readonly normal: [number, number, number] = [0, 0, 0];
+	body = 0 as BodyId;
+}
 
 /** 用 StrideNative.createPhysicsWorld 创建。 */
 export class PhysicsWorld extends NativeObject<StrideNative> {
@@ -232,10 +323,9 @@ export class PhysicsWorld extends NativeObject<StrideNative> {
 	#bodyCount = 0;
 	readonly #positionsAddress: number;
 	#positions: Float32Array;
-	// addBox 复用的一个 sn_box，加一个刚体不分配内存
-	readonly #scratch: number;
-	readonly #scratchFloats: Float32Array;
-	readonly #scratchWords: Uint32Array;
+	// 查询复用的 origin、direction 和 sn_hit，查询不分配内存
+	readonly #query: number;
+	readonly #queryFloats: Float32Array;
 
 	/** @internal */
 	constructor(native: StrideNative, handle: number, maxBodies: number) {
@@ -243,77 +333,186 @@ export class PhysicsWorld extends NativeObject<StrideNative> {
 		this.maxBodies = maxBodies;
 		this.#positionsAddress = native.module._sn_physics_positions(handle);
 		this.#positions = native.f32(this.#positionsAddress, 0);
-		this.#scratch = native.alloc(BOX_WORDS * 4);
-		this.#scratchFloats = native.f32(this.#scratch, BOX_WORDS);
-		this.#scratchWords = native.u32(this.#scratch, BOX_WORDS);
+		this.#query = native.alloc((6 + HIT_WORDS) * 4);
+		this.#queryFloats = native.f32(this.#query, 6 + HIT_WORDS);
 	}
 
 	get bodyCount(): number {
 		return this.#bodyCount;
 	}
 
-	/** 加一个盒子。描述经由复用的原生缓冲传过去，不分配内存。 */
-	addBox(box: BoxDesc): BodyId {
-		writeBox(this.#scratchFloats, this.#scratchWords, 0, box);
-		return this.#add(this.#scratch, 1)[0]!;
+	/** 三角网格形状：positions 是 xyz，indices 每三个一个三角形（逆时针为正面）。 */
+	createMesh(positions: Float32Array, indices: Uint32Array): PhysicsMesh {
+		const n = this.native;
+		return n.withArrays([positions, indices], (p, i) =>
+			n.check(n.module._sn_physics_create_mesh(this[HANDLE], p, positions.length / 3, i, indices.length), 'sn_physics_create_mesh') as PhysicsMesh);
 	}
 
-	/** 一次原生调用加入所有盒子，Jolt 成批插进宽相。返回值和 boxes 一一对应。 */
-	addBoxes(boxes: readonly BoxDesc[]): BodyId[] {
-		if (boxes.length === 0) return [];
+	addBody(body: BodyDesc): BodyId {
+		return this.addBodies([body])[0]!;
+	}
+
+	/** 一次原生调用加入所有物体，Jolt 成批插进宽相。返回值和 bodies 一一对应。 */
+	addBodies(bodies: readonly BodyDesc[]): BodyId[] {
+		if (bodies.length === 0) return [];
 		const n = this.native;
-		return n.withScratch(boxes.length * BOX_WORDS * 4, (table) => {
-			const floats = n.f32(table, boxes.length * BOX_WORDS);
-			const words = n.u32(table, boxes.length * BOX_WORDS);
-			boxes.forEach((box, i) => writeBox(floats, words, i, box));
-			return this.#add(table, boxes.length);
+		const shapeCount = bodies.reduce((sum, body) => sum + body.shapes.length, 0);
+		const characters = bodies.filter((body) => body.motion === 'character');
+		const bytes = (bodies.length * BODY_WORDS + shapeCount * SHAPE_WORDS + characters.length * CHARACTER_WORDS) * 4;
+		return n.withScratch(bytes, (table) => {
+			const floats = n.f32(table, bytes / 4);
+			const words = n.u32(table, bytes / 4);
+			const shapesWord = bodies.length * BODY_WORDS;
+			const charactersWord = shapesWord + shapeCount * SHAPE_WORDS;
+			let shape = 0, character = 0;
+			bodies.forEach((body, i) => {
+				body.shapes.forEach((desc, s) => writeShape(floats, words, shapesWord + (shape + s) * SHAPE_WORDS, desc, i, s));
+				if (body.motion === 'character') writeCharacter(floats, charactersWord + character * CHARACTER_WORDS, body.character ?? {});
+				writeBody(floats, words, i * BODY_WORDS, body, i, shape, body.motion === 'character' ? character++ : 0);
+				shape += body.shapes.length;
+			});
+			const first = n.check(n.module._sn_physics_add_bodies(this[HANDLE], table, bodies.length, table + shapesWord * 4, shapeCount,
+				table + charactersWord * 4, characters.length), 'sn_physics_add_bodies');
+			this.#bodyCount = first + bodies.length;
+			this.#positions = n.f32(this.#positionsAddress, this.#bodyCount * 3);
+			return Array.from({ length: bodies.length }, (_, i) => (first + i) as BodyId);
 		});
 	}
 
-	#add(table: number, count: number): BodyId[] {
-		const n = this.native;
-		const first = n.check(n.module._sn_physics_add_boxes(this[HANDLE], table, count), 'sn_physics_add_boxes');
-		this.#bodyCount = first + count;
-		this.#positions = n.f32(this.#positionsAddress, this.#bodyCount * 3);
-		return Array.from({ length: count }, (_, i) => (first + i) as BodyId);
+	/** 一个盒子一个物体的简写（默认动态）。 */
+	addBox(box: BoxDesc): BodyId {
+		return this.addBoxes([box])[0]!;
 	}
 
-	/** 在共享任务系统上步进（当前线程等待时也跑任务），然后刷新 positions()。 */
+	addBoxes(boxes: readonly BoxDesc[]): BodyId[] {
+		return this.addBodies(boxes.map(({ position, halfExtent, motion = 'dynamic', transform }, i) => ({
+			motion: boxMotion(motion, i),
+			shapes: [{ type: 'box', size: [halfExtent[0]! * 2, halfExtent[1]! * 2, halfExtent[2]! * 2] }],
+			...(position ? { position } : {}),
+			...(transform ? { transform } : {}),
+		})));
+	}
+
+	/** 步进一个固定步长（在共享任务系统上，当前线程等待时也跑任务）：角色逻辑、Jolt 步进、写回位姿，然后刷新 positions()。 */
 	step(deltaTime: number, collisionSteps = 1): void {
 		this.native.check(this.native.module._sn_physics_step(this[HANDLE], deltaTime, collisionSteps), 'sn_physics_step');
 	}
 
+	/** 插值的物体写回 alpha（0 是上一步，1 是这一步）处的位姿。 */
+	interpolate(alpha: number): void {
+		this.native.check(this.native.module._sn_physics_interpolate(this[HANDLE], alpha), 'sn_physics_interpolate');
+	}
+
 	/**
-	 * 每个刚体的 xyz，按 BodyId 排：原生内存上的视图，step() 原地改写，所以不拷贝，加刚体之前一直是同一个对象。
+	 * 每个物体的位置 xyz，按 BodyId 排：原生内存上的视图，step() 原地改写，所以不拷贝，加物体之前一直是同一个对象。
 	 * 世界销毁后失效。
 	 */
 	positions(): Float32Array {
 		return this.#positions;
 	}
 
+	/**
+	 * 设角色下一步的移动（Stride 的 MoveVector · Speed 和 TryJump）：target 是世界 X、Z 方向的目标速度；
+	 * jump 为真时试着起跳，只在站稳时生效，下一步用掉。
+	 */
+	moveCharacter(body: BodyId, targetX: number, targetZ: number, jump = false): void {
+		this.native.check(this.native.module._sn_physics_character_move(this[HANDLE], body, targetX, targetZ, jump ? 1 : 0), 'sn_physics_character_move');
+	}
+
+	/** 角色是否站在能站立的地面上（Stride 的 IsGrounded），按上一步结束时的接触算。 */
+	isGrounded(body: BodyId): boolean {
+		return this.native.check(this.native.module._sn_physics_character_grounded(this[HANDLE], body), 'sn_physics_character_grounded') === 1;
+	}
+
+	/** 射线（Stride 的 RayCast）：mask 的第 n 位为 1 表示层 n 的物体参与。没命中时返回 undefined。 */
+	rayCast(origin: Vec3, direction: Vec3, maxDistance: number, mask = ALL_LAYERS, hit = new PhysicsHit()): PhysicsHit | undefined {
+		this.#setQuery(origin, direction);
+		const q = this.#query;
+		const result = this.native.module._sn_physics_ray_cast(this[HANDLE], q, q + 12, maxDistance, mask >>> 0, q + 24);
+		return this.#hit(this.native.check(result, 'sn_physics_ray_cast'), hit);
+	}
+
+	/** 球体扫掠（Stride 的 SweepCast 加 Sphere），同 rayCast；从一开始就重叠的物体算距离 0 的命中。 */
+	sphereCast(radius: number, origin: Vec3, direction: Vec3, maxDistance: number, mask = ALL_LAYERS, hit = new PhysicsHit()): PhysicsHit | undefined {
+		this.#setQuery(origin, direction);
+		const q = this.#query;
+		const result = this.native.module._sn_physics_sphere_cast(this[HANDLE], radius, q, q + 12, maxDistance, mask >>> 0, q + 24);
+		return this.#hit(this.native.check(result, 'sn_physics_sphere_cast'), hit);
+	}
+
+	#setQuery(origin: Vec3, direction: Vec3): void {
+		const f = this.#queryFloats;
+		f[0] = origin[0]!; f[1] = origin[1]!; f[2] = origin[2]!;
+		f[3] = direction[0]!; f[4] = direction[1]!; f[5] = direction[2]!;
+	}
+
+	#hit(found: number, hit: PhysicsHit): PhysicsHit | undefined {
+		if (found === 0) return undefined;
+		const f = this.#queryFloats;
+		hit.distance = f[6]!;
+		hit.point[0] = f[7]!; hit.point[1] = f[8]!; hit.point[2] = f[9]!;
+		hit.normal[0] = f[10]!; hit.normal[1] = f[11]!; hit.normal[2] = f[12]!;
+		hit.body = this.native.i32(this.#query + 13 * 4, 1)[0]! as BodyId;
+		return hit;
+	}
+
 	protected override release(): void {
 		this.native.module._sn_physics_destroy(this[HANDLE]);
-		this.native.free(this.#scratch);
+		this.native.free(this.#query);
 	}
 }
 
-/** 写 sn_box 表的第 i 个盒子；同一块内存分别按 float 和 uint32（flags、transform）看。 */
-function writeBox(floats: Float32Array, words: Uint32Array, i: number, { position = ORIGIN, halfExtent, motion = 'dynamic', transform = 0 as TransformSlot }: BoxDesc): void {
-	if (motion !== 'dynamic' && motion !== 'static') {
-		throw new TypeError(`box ${i}: motion must be 'dynamic' or 'static', not '${String(motion)}'`);
-	}
-	const o = i * BOX_WORDS;
-	floats[o] = position[0]!;
-	floats[o + 1] = position[1]!;
-	floats[o + 2] = position[2]!;
-	floats[o + 3] = halfExtent[0]!;
-	floats[o + 4] = halfExtent[1]!;
-	floats[o + 5] = halfExtent[2]!;
-	words[o + 6] = motion === 'dynamic' ? BODY_DYNAMIC : 0;
-	words[o + 7] = transform;
+function boxMotion(motion: string, index: number): 'dynamic' | 'static' {
+	if (motion !== 'dynamic' && motion !== 'static') throw new TypeError(`box ${index}: motion must be 'dynamic' or 'static', not '${motion}'`);
+	return motion;
 }
 
-const ORIGIN: Vec3 = [0, 0, 0];
+/** createPhysicsWorld 的设置写成 sn_physics_settings。 */
+function writeSettings(floats: Float32Array, words: Uint32Array, { gravity = [0, -9.81, 0], linearDamping = 0, angularDamping = 0, collisionMasks }: PhysicsSettings): void {
+	floats.set([gravity[0]!, gravity[1]!, gravity[2]!, linearDamping, angularDamping]);
+	if (collisionMasks && collisionMasks.length !== 32) throw new RangeError(`collisionMasks needs 32 entries, got ${collisionMasks.length}`);
+	for (let layer = 0; layer < 32; layer++) words[5 + layer] = collisionMasks ? collisionMasks[layer]! >>> 0 : ALL_LAYERS;
+}
+
+function writeShape(floats: Float32Array, words: Uint32Array, o: number, shape: ShapeDesc, body: number, index: number): void {
+	const type = SHAPE_TYPES[shape.type];
+	if (type === undefined) throw new TypeError(`body ${body} shape ${index}: unknown type '${String(shape.type)}'`);
+	words[o] = type;
+	const position = shape.position ?? ORIGIN, rotation = shape.rotation ?? IDENTITY;
+	floats.set([position[0]!, position[1]!, position[2]!, rotation[0]!, rotation[1]!, rotation[2]!, rotation[3]!], o + 1);
+	const size = shape.type === 'box' ? [shape.size[0]!, shape.size[1]!, shape.size[2]!]
+		: shape.type === 'sphere' ? [shape.radius, 0, 0]
+			: shape.type === 'mesh' ? [0, 0, 0] : [shape.radius, shape.length, 0];
+	floats.set(size, o + 8);
+	words[o + 11] = shape.type === 'mesh' ? shape.mesh : 0;
+	floats[o + 12] = shape.mass ?? 1;
+}
+
+function writeCharacter(floats: Float32Array, o: number, settings: CharacterSettings): void {
+	floats.set([
+		settings.maximumHorizontalForce ?? 200, settings.maximumVerticalForce ?? 1000, settings.jumpVelocity ?? 10, settings.slopeAngle ?? 50,
+		settings.airControlForceScale ?? 0.2, settings.airControlScale ?? 0.2,
+	], o);
+}
+
+function writeBody(floats: Float32Array, words: Uint32Array, o: number, body: BodyDesc, index: number, firstShape: number, character: number): void {
+	const motion = MOTIONS[body.motion ?? 'static'];
+	if (motion === undefined) throw new TypeError(`body ${index}: motion must be 'static', 'dynamic', 'kinematic' or 'character', not '${String(body.motion)}'`);
+	if (body.shapes.length === 0) throw new RangeError(`body ${index} needs at least one shape`);
+	const layer = body.layer ?? 0;
+	if (!Number.isInteger(layer) || layer < 0 || layer > 31) throw new RangeError(`body ${index}: layer must be an integer 0..31, got ${layer}`);
+	words[o] = motion;
+	words[o + 1] = (body.interpolated ? BODY_INTERPOLATED : 0) | (body.gravity === false ? BODY_NO_GRAVITY : 0);
+	words[o + 2] = body.transform ?? 0;
+	const position = body.position ?? ORIGIN, rotation = body.rotation ?? IDENTITY;
+	floats.set([position[0]!, position[1]!, position[2]!, rotation[0]!, rotation[1]!, rotation[2]!, rotation[3]!], o + 3);
+	words[o + 10] = firstShape;
+	words[o + 11] = body.shapes.length;
+	words[o + 12] = layer;
+	floats[o + 13] = body.friction ?? 1;
+	words[o + 14] = character;
+}
+
 
 /** sn_transform_columns：5 个指针加 capacity。 */
 const COLUMNS_SIZE = 24;
