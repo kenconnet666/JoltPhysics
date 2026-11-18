@@ -718,6 +718,10 @@ SN_API int32_t sn_physics_add_bodies(int32_t world, const sn_body *bodies, uint3
 			// 槽位现在的世界位姿；缩放只作用到网格形状（同 Stride：复合碰撞体按绝对尺寸）
 			Mat44 matrix = store->ComputeWorldMatrix(body.transform);
 			pose = RMat44::sRotationTranslation(matrix.Decompose(scale).GetQuaternion().Normalized(), RVec3(matrix.GetTranslation()));
+			// 世界矩阵不是旋转（比如某一级的四元数接近 0，或是 (0, 0.5, 0.5, 0) 这种按公式得到奇异矩阵的）时分解出 NaN；
+			// NaN 的物体会让 Jolt 的宽相卡死，这里直接报错
+			if (!pose.GetQuaternion().IsNormalized() || matrix.GetTranslation().IsNaN())
+				return SetLastError(SN_ERROR_INVALID_ARGUMENT, where + "transform slot " + std::to_string(body.transform) + " has a world matrix that is not a rotation (check the quaternions)");
 		}
 		const sn_shape *own = shapes + body.first_shape;
 		for (uint32_t s = 0; s < body.shape_count; ++s)

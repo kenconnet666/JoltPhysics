@@ -396,6 +396,20 @@ describe('stride-native and stride-tools', () => {
 		}
 	});
 
+	it('rejects bodies whose transform slot has a world matrix that is not a rotation (NaN poses hang the broad phase)', () => {
+		using transforms = native.createTransforms(4);
+		const [slot] = transforms.allocate(1);
+		// 按 Stride 的公式，(0, 0.5, 0.5, 0) 得到的矩阵是奇异的
+		transforms.rotation.set([0, 0.5, 0.5, 0], slot * 4);
+		transforms.update();
+		const world = native.createPhysicsWorld(4, { transforms });
+		try {
+			assert.throws(() => world.addBodies([{ motion: 'dynamic', shapes: [{ type: 'box', size: [1, 1, 1] }], transform: slot }]), /not a rotation/);
+		} finally {
+			world.destroy();
+		}
+	});
+
 	it('steps a large-capacity world (the temp allocator falls back to malloc instead of aborting)', () => {
 		const world = native.createPhysicsWorld(32768);
 		try {
