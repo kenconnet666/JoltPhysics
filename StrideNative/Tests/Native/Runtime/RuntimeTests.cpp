@@ -1,5 +1,6 @@
 #include <TestSupport.h>
 #include <StrideNative/Runtime.h>
+#include <StrideNative/Values.h>
 
 #include <meshoptimizer.h>
 
@@ -31,6 +32,37 @@ namespace
 				outTriangles.insert(outTriangles.end(), { i, i + inCells + 1, i + 1, i + 1, i + inCells + 1, i + inCells + 2 });
 			}
 	}
+}
+
+TEST_CASE("Values: dates, date-times and decimals match the stride-ts layouts")
+{
+	// 和 stride-ts 的 values.test.ts 用同一组对照值（由 JS 的 Date 独立算出）
+	struct Case { int32_t year, month, day; sn_date days; };
+	const Case cases[] = {
+		{ 1970, 1, 1, 0 }, { 1969, 12, 31, -1 }, { 2000, 3, 1, 11017 }, { 2024, 1, 31, 19753 }, { 2024, 2, 29, 19782 },
+		{ 1900, 3, 1, -25508 }, { 1600, 2, 29, -135081 }, { -1, 12, 31, -719529 }, { 9999, 12, 31, 2932896 },
+	};
+	for (const Case &c : cases)
+	{
+		CHECK(sn_date_from_civil(c.year, c.month, c.day) == c.days);
+		int32_t year = 0, month = 0, day = 0;
+		sn_date_to_civil(c.days, &year, &month, &day);
+		CHECK(year == c.year);
+		CHECK(month == c.month);
+		CHECK(day == c.day);
+	}
+
+	// 1969-12-31T23:00 是负的纳秒数：日期部分要向下取整成 -1，时刻部分是 23:00
+	const sn_datetime before_epoch = sn_datetime_from(-1, INT64_C(23) * 3600 * SN_NANOS_PER_SECOND);
+	CHECK(before_epoch == -SN_NANOS_PER_SECOND * 3600);
+	CHECK(sn_datetime_date(before_epoch) == -1);
+	CHECK(sn_datetime_time(before_epoch) == INT64_C(23) * 3600 * SN_NANOS_PER_SECOND);
+
+	CHECK(sn_decimal64_rescale(1250, 2, 4) == 125000);			// 12.50 → 12.5000
+	CHECK(sn_decimal64_rescale(1225, 2, 1) == 122);				// 12.25 → 12.2（银行家舍入）
+	CHECK(sn_decimal64_rescale(1235, 2, 1) == 124);				// 12.35 → 12.4
+	CHECK(sn_decimal64_rescale(-1235, 2, 1) == -124);
+	CHECK(sn_decimal64_rescale(1236, 2, 1) == 124);
 }
 
 TEST_CASE("Init reports the worker count")

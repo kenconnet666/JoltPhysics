@@ -184,9 +184,19 @@ if (EMSCRIPTEN)
 		add_custom_command(TARGET ${TARGET_NAME} POST_BUILD
 			COMMAND ${CMAKE_COMMAND} -E make_directory ${DIST_DIR}
 			COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:${TARGET_NAME}> $<TARGET_FILE_DIR:${TARGET_NAME}>/${TARGET_NAME}.wasm ${DIST_DIR}
-			COMMAND ${CMAKE_COMMAND} -E copy_directory ${STRIDE_NATIVE_ROOT}/JS ${DIST_DIR}
 			VERBATIM)
 	endforeach()
+	# The wrappers are copied by their own target: changing only JS relinks nothing, so a POST_BUILD step
+	# on the wasm targets would leave dist/ with the old wrappers.
+	file(GLOB JS_WRAPPERS ${STRIDE_NATIVE_ROOT}/JS/*)
+	set(JS_STAMP ${CMAKE_BINARY_DIR}/js-wrappers.stamp)
+	add_custom_command(OUTPUT ${JS_STAMP}
+		COMMAND ${CMAKE_COMMAND} -E make_directory ${DIST_DIR}
+		COMMAND ${CMAKE_COMMAND} -E copy_if_different ${JS_WRAPPERS} ${DIST_DIR}
+		COMMAND ${CMAKE_COMMAND} -E touch ${JS_STAMP}
+		DEPENDS ${JS_WRAPPERS}
+		VERBATIM)
+	add_custom_target(stride-native-js ALL DEPENDS ${JS_STAMP})
 else()
 	# Native test executables, one per module (the two link different zstd/transcoder builds):
 	# the same C API as the wasm modules, debuggable in the IDE.

@@ -21,7 +21,7 @@ $buildDir = Join-Path $root "Build\WASM_$Config"
 $toolchain = Join-Path $Emsdk 'upstream\emscripten\cmake\Modules\Platform\Emscripten.cmake'
 
 cmake -S $root -B $buildDir -G Ninja "-DCMAKE_BUILD_TYPE=$Config" "-DCMAKE_TOOLCHAIN_FILE=$toolchain"
-cmake --build $buildDir --target stride-native-core stride-tools-core
+cmake --build $buildDir --target stride-native-core stride-tools-core stride-native-js
 
 if (-not $SkipTests) {
     $env:STRIDE_NATIVE_DIST = Join-Path $buildDir 'dist'

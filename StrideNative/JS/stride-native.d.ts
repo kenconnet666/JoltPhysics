@@ -81,6 +81,21 @@ export class StrideNative {
 	readonly buffer: SharedArrayBuffer;
 	shutdown(): void;
 
+	/** 16-byte aligned allocation in module memory (an offset); release it with free. */
+	alloc(size: number): number;
+	free(ptr: number): void;
+	/**
+	 * 模块内存上的视图，不拷贝。i64 / u64 是 stride-ts 的 i64、decimal、time、datetime、instant 列的布局，
+	 * 和 C 侧 StrideNative/Values.h 的 sn_decimal64、sn_time、sn_datetime、sn_instant 相同；date 列是 i32。
+	 */
+	u8(ptr: number, length: number): Uint8Array;
+	i32(ptr: number, length: number): Int32Array;
+	u32(ptr: number, length: number): Uint32Array;
+	f32(ptr: number, length: number): Float32Array;
+	f64(ptr: number, length: number): Float64Array;
+	i64(ptr: number, length: number): BigInt64Array;
+	u64(ptr: number, length: number): BigUint64Array;
+
 	createPhysicsWorld(maxBodies?: number): PhysicsWorld;
 
 	decodeMeshopt(source: Uint8Array, count: number, stride: number, mode?: number, filter?: number): Uint8Array;

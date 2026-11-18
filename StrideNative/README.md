@@ -16,7 +16,7 @@ There is no single-threaded build: pages must be cross-origin isolated
 ```
 StrideNative/
   CMakeLists.txt        the only build file (Jolt comes in through ../Build/CMakeLists.txt, unchanged)
-  Include/StrideNative/ C API: Core.h (init, memory, tasks), Runtime.h, Tools.h
+  Include/StrideNative/ C API: Core.h (init, memory, tasks), Runtime.h, Tools.h; Values.h (header-only value types shared with stride-ts columns: sn_decimal64, sn_date, sn_time, sn_datetime, sn_instant)
   Source/Core/          job system access, tasks, handle tables
   Source/Shared/        code both modules use (tiled navmesh builder and its file format)
   Source/Runtime/       stride-native exports

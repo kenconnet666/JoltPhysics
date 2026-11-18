@@ -61,6 +61,10 @@ export class NativeModule {
 	i32(ptr, length) { return new Int32Array(this.buffer, ptr, length); }
 	u32(ptr, length) { return new Uint32Array(this.buffer, ptr, length); }
 	f32(ptr, length) { return new Float32Array(this.buffer, ptr, length); }
+	f64(ptr, length) { return new Float64Array(this.buffer, ptr, length); }
+	// int64 / uint64 的视图：stride-ts 的 i64、decimal、time、datetime、instant 列和 C 的 sn_* 值类型（Values.h）共用这个布局
+	i64(ptr, length) { return new BigInt64Array(this.buffer, ptr, length); }
+	u64(ptr, length) { return new BigUint64Array(this.buffer, ptr, length); }
 	view(ptr, length) { return new DataView(this.buffer, ptr, length); }
 
 	alloc(size) {

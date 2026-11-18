@@ -45,6 +45,20 @@ describe('stride-native and stride-tools', () => {
 		assert.ok(native.buffer instanceof SharedArrayBuffer);
 	});
 
+	it('views native memory as int64 for decimal and date-time columns', () => {
+		const ptr = native.alloc(4 * 8);
+		try {
+			const values = native.i64(ptr, 4);
+			values.set([-(2n ** 63n), 2n ** 63n - 1n, 1_706_679_900_000_000_000n, -1n]);
+			// 同一块内存按字节看，最后一个 -1 是 8 个 0xff：确认是小端的 int64，和 C 的 int64_t 一致
+			assert.deepEqual([...native.u8(ptr + 24, 8)], [255, 255, 255, 255, 255, 255, 255, 255]);
+			assert.equal(native.u64(ptr, 4)[3], 2n ** 64n - 1n);
+			assert.equal(native.i64(ptr, 4)[2], 1_706_679_900_000_000_000n);
+		} finally {
+			native.free(ptr);
+		}
+	});
+
 	it('steps physics on the shared job system', () => {
 		const world = native.createPhysicsWorld(64);
 		assert.equal(world.addBox({ position: [0, -1, 0], halfExtent: [50, 1, 50], motion: 'static' }), 0);
