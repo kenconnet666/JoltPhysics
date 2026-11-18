@@ -103,10 +103,18 @@ export function defaultWorkerThreads(): number {
 	return Math.max(1, cores - 1);
 }
 
+/** 模块自己的 wasm：Emscripten 请求它时用的文件名，和打包器改写过的地址。 */
+export interface ModuleWasm {
+	readonly file: string;
+	readonly url: URL;
+}
+
 /**
  * 实例化 Emscripten 模块并启动任务系统。浏览器里只有跨源隔离的页面（COOP + COEP 响应头）才能用共享内存。
+ * 要加载侧模块时必须给出 wasm：给了 locateFile，Emscripten 就不再用它自己的 new URL(..., import.meta.url)，
+ * 打包器给模块 wasm 改的（带哈希的）地址只能由调用方的 new URL 提供。
  */
-export async function instantiate<E extends string>(factory: CoreFactory<E>, { workerThreads = defaultWorkerThreads(), debug = false, locateFile, features = [] }: ModuleOptions = {}): Promise<LoadedModule<E>> {
+export async function instantiate<E extends string>(factory: CoreFactory<E>, { workerThreads = defaultWorkerThreads(), debug = false, locateFile, features = [] }: ModuleOptions = {}, wasm?: ModuleWasm): Promise<LoadedModule<E>> {
 	if (!isNode && !globalThis.crossOriginIsolated) {
 		throw new NativeError('StrideNative needs a cross-origin isolated page: serve it with ' +
 			'"Cross-Origin-Opener-Policy: same-origin" and "Cross-Origin-Embedder-Policy: require-corp"', -4);
@@ -114,13 +122,14 @@ export async function instantiate<E extends string>(factory: CoreFactory<E>, { w
 	// 侧模块在启动时加载（主线程和线程池里的每个线程都加载，之后才运行任何代码）。Emscripten 按 <名字>.wasm
 	// 登记它们，实际地址由 locateFile 给出
 	const libraries = new Map<string, URL>();
+	if (features.length > 0 && !wasm) throw new NativeError('this module cannot load features', -3);
 	for (const feature of features) {
 		if (!FEATURE_NAME.test(feature.name)) throw new TypeError(`feature name must be a C identifier, not '${feature.name}'`);
 		if (libraries.has(`${feature.name}.wasm`)) throw new TypeError(`feature '${feature.name}' is listed twice`);
 		libraries.set(`${feature.name}.wasm`, debug ? feature.debugUrl ?? feature.url : feature.url);
 	}
 	const locate = (path: string, prefix: string) => {
-		const url = libraries.get(path);
+		const url = libraries.get(path) ?? (path === wasm?.file && !locateFile ? wasm.url : undefined);
 		if (url) return isNode && url.protocol === 'file:' ? decodeURIComponent(url.pathname.replace(/^\/(\w:)/, '$1')) : url.href;
 		return locateFile ? locateFile(path, prefix) : prefix + path;
 	};

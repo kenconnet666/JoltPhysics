@@ -96,9 +96,12 @@ export interface AnimationSampleRequest {
  * `createStrideNative({ features: [physics, navigation] })`；没选用的功能，调用它的方法会抛 NativeError。
  */
 export async function createStrideNative({ debug = false, ...options }: ModuleOptions = {}): Promise<StrideNative> {
-	// 动态导入：打包器把两个版本分开，页面只下载用到的那个
-	const core = debug ? await import('./stride-native-core-debug.mjs') : await import('./stride-native-core.mjs');
-	return new StrideNative(await instantiate(core.default, { debug, ...options }));
+	// 动态导入：打包器把两个版本分开，页面只下载用到的那个。wasm 的地址也写成 new URL(..., import.meta.url)，
+	// 打包器改写成和 Emscripten 胶水里同一个文件（见 instantiate）
+	const core = debug
+		? { factory: (await import('./stride-native-core-debug.mjs')).default, wasm: { file: 'stride-native-core-debug.wasm', url: new URL('./stride-native-core-debug.wasm', import.meta.url) } }
+		: { factory: (await import('./stride-native-core.mjs')).default, wasm: { file: 'stride-native-core.wasm', url: new URL('./stride-native-core.wasm', import.meta.url) } };
+	return new StrideNative(await instantiate(core.factory, { debug, ...options }, core.wasm));
 }
 
 export class StrideNative extends NativeModule<RuntimeExport> {
