@@ -57,4 +57,8 @@ namespace StrideNative
 		std::vector<uint32_t>	mBuckets;
 		bool					mOrderDirty = false;
 	};
+
+	/// 按句柄找变换存储，找不到时记下错误（提到 inWhat）。别的模块（物理）必须通过它找：句柄表是模板里的静态变量，
+	/// 物理在 wasm 里是侧模块，有自己的一份，只有定义在这里（运行时模块）的这个函数用的是创建存储的那一份。
+	TransformStore *LookupTransformStore(int32_t inHandle, const char *inWhat = "transform store");
 }

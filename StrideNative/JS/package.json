@@ -1,7 +1,7 @@
 {
   "name": "@stride-ts/native",
-  "version": "0.5.0",
-  "description": "StrideNative for the browser and Node: Jolt physics, Recast navigation, ozz animation, meshopt and KTX2 decoding as multithreaded SIMD WebAssembly, plus the asset tools",
+  "version": "0.6.0",
+  "description": "StrideNative for the browser and Node: Jolt physics, Recast navigation, ozz animation, meshopt and KTX2 decoding as multithreaded SIMD WebAssembly (a core module plus optional side modules and third-party plugins), plus the asset tools",
   "license": "MIT",
   "type": "module",
   "sideEffects": false,
@@ -13,6 +13,15 @@
   "types": "./dist/stride-native.d.ts",
   "typesVersions": {
     "*": {
+      "physics": [
+        "./dist/physics.d.ts"
+      ],
+      "texture": [
+        "./dist/texture.d.ts"
+      ],
+      "navigation": [
+        "./dist/navigation.d.ts"
+      ],
       "tools": [
         "./dist/stride-tools.d.ts"
       ]
@@ -23,12 +32,30 @@
       "types": "./dist/stride-native.d.ts",
       "default": "./dist/stride-native.js"
     },
+    "./physics": {
+      "types": "./dist/physics.d.ts",
+      "default": "./dist/physics.js"
+    },
+    "./texture": {
+      "types": "./dist/texture.d.ts",
+      "default": "./dist/texture.js"
+    },
+    "./navigation": {
+      "types": "./dist/navigation.d.ts",
+      "default": "./dist/navigation.js"
+    },
     "./tools": {
       "types": "./dist/stride-tools.d.ts",
       "default": "./dist/stride-tools.js"
     },
     "./stride-native-core.wasm": "./dist/stride-native-core.wasm",
     "./stride-native-core-debug.wasm": "./dist/stride-native-core-debug.wasm",
+    "./stride-native-physics.wasm": "./dist/stride-native-physics.wasm",
+    "./stride-native-physics-debug.wasm": "./dist/stride-native-physics-debug.wasm",
+    "./stride-native-texture.wasm": "./dist/stride-native-texture.wasm",
+    "./stride-native-texture-debug.wasm": "./dist/stride-native-texture-debug.wasm",
+    "./stride-native-navigation.wasm": "./dist/stride-native-navigation.wasm",
+    "./stride-native-navigation-debug.wasm": "./dist/stride-native-navigation-debug.wasm",
     "./stride-tools-core.wasm": "./dist/stride-tools-core.wasm",
     "./package.json": "./package.json"
   },

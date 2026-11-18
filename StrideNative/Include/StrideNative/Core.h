@@ -8,7 +8,8 @@
 
 #ifdef __EMSCRIPTEN__
 	#include <emscripten/emscripten.h>
-	#define SN_EXPORT EMSCRIPTEN_KEEPALIVE
+	// default 可见性：拆分构建的侧模块用 -fvisibility=hidden 编译，只导出 C API
+	#define SN_EXPORT EMSCRIPTEN_KEEPALIVE __attribute__((visibility("default")))
 #else
 	#define SN_EXPORT
 #endif

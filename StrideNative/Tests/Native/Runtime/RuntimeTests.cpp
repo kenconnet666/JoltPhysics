@@ -1,5 +1,8 @@
 #include <TestSupport.h>
+#include <StrideNative/Navigation.h>
+#include <StrideNative/Physics.h>
 #include <StrideNative/Runtime.h>
+#include <StrideNative/Texture.h>
 #include <StrideNative/Values.h>
 
 #include <meshoptimizer.h>

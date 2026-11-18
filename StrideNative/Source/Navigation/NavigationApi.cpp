@@ -4,7 +4,8 @@
 #include <Core/HandleTable.h>
 #include <Core/Tasks.h>
 #include <Shared/NavMeshBuilder.h>
-#include <StrideNative/Runtime.h>
+#include <StrideNative/Navigation.h>
+#include <StrideNative/Plugin.h>
 
 #include <DetourCrowd.h>
 #include <DetourNavMesh.h>
@@ -16,6 +17,8 @@
 #include <memory>
 #include <string>
 #include <vector>
+
+SN_PLUGIN(navigation)
 
 namespace
 {

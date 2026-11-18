@@ -1,4 +1,5 @@
-// stride-native runtime C API: physics, decoding, navigation and animation.
+// stride-native 运行时模块（stride-native-core）的 C API：变换、网格解码、动画。物理、贴图转码、导航是单独的侧模块，
+// 见 Physics.h、Texture.h、Navigation.h；第三方插件用 Plugin.h。
 // Handles are positive int32 values; negative return values are SN_ERROR_* codes.
 #pragma once
 
@@ -34,38 +35,6 @@ SN_API int32_t sn_transforms_set_parent(int32_t transforms, int32_t slot, int32_
 SN_API int32_t sn_transforms_update(int32_t transforms);
 /// 发出去过的最大槽位号（释放了也不降）：用到的槽位都在 1..它 之内，上传世界矩阵时只传这一段。
 SN_API int32_t sn_transforms_slot_limit(int32_t transforms);
-
-// ---------------------------------------------------------------------------------------------
-// Physics (smoke test only; the Stride-shaped physics API is a separate milestone)
-// ---------------------------------------------------------------------------------------------
-
-enum
-{
-	SN_BODY_DYNAMIC = 1,			///< sn_box flag; without it the box is static
-};
-
-typedef struct sn_box
-{
-	float position[3];				///< 没有绑定变换时的初始位置
-	float half_extent[3];
-	uint32_t flags;					///< SN_BODY_*
-	/// 绑定的变换槽位，0 表示不绑定。绑定后初始位姿取这个槽位当前的世界位姿（缩放不影响形状），
-	/// 动态物体每步结束把位姿写回槽位的本地位置和旋转（有父节点时换算到父节点空间）。
-	int32_t transform;
-} sn_box;
-
-/// Creates a world that steps on the shared job system. Returns a world handle. transforms 是物体可以绑定的
-/// 变换存储（0 表示不用）；它要比世界活得久，绑定的槽位在物体存在期间不能释放。
-SN_API int32_t sn_physics_create(uint32_t max_bodies, int32_t transforms);
-SN_API void sn_physics_destroy(int32_t world);
-/// Adds count boxes as one batch (Jolt builds their broadphase nodes together). Returns the index of
-/// the first new body; bodies are indexed in creation order.
-SN_API int32_t sn_physics_add_boxes(int32_t world, const sn_box *boxes, uint32_t count);
-/// Steps, then writes every body's position into the positions buffer.
-SN_API int32_t sn_physics_step(int32_t world, float delta_time, int32_t collision_steps);
-/// The world's positions buffer: xyz per body in creation order, room for max_bodies. It stays at this
-/// address until the world is destroyed, so callers keep one view of it; add_boxes and step update it.
-SN_API const float *sn_physics_positions(int32_t world);
 
 // ---------------------------------------------------------------------------------------------
 // Mesh decoding (EXT_meshopt_compression / KHR_meshopt_compression)
@@ -105,85 +74,6 @@ typedef struct sn_meshopt_request
 /// Decodes many buffer views in parallel. The requests and buffers must stay alive until the task
 /// finishes. Returns a task; it fails if any request failed (see each request's result).
 SN_API int32_t sn_meshopt_decode_batch(sn_meshopt_request *requests, uint32_t count);
-
-// ---------------------------------------------------------------------------------------------
-// KTX2 / Basis Universal transcoding
-// ---------------------------------------------------------------------------------------------
-
-/// Transcode targets, named after the WebGPU format they upload to.
-enum
-{
-	SN_TEXTURE_RGBA8 = 0,			///< rgba8unorm(-srgb)
-	SN_TEXTURE_BC7 = 1,				///< bc7-rgba-unorm(-srgb), texture-compression-bc
-	SN_TEXTURE_ASTC_4X4 = 2,		///< astc-4x4-unorm(-srgb), texture-compression-astc
-	SN_TEXTURE_ETC2_RGBA8 = 3,		///< etc2-rgba8unorm(-srgb), texture-compression-etc2
-};
-
-typedef struct sn_ktx2_info
-{
-	uint32_t width;
-	uint32_t height;
-	uint32_t levels;
-	uint32_t layers;				///< 0 for a plain 2D texture
-	uint32_t faces;					///< 6 for cubemaps
-	int32_t has_alpha;
-	int32_t is_srgb;
-	int32_t is_hdr;
-} sn_ktx2_info;
-
-SN_API int32_t sn_ktx2_get_info(const void *data, uint32_t size, sn_ktx2_info *out_info);
-
-/// Transcodes every mip level in parallel. data must stay alive until the task finishes.
-/// Outputs: one buffer per level (level 0 first) for layer 0 / face 0.
-/// Results: [0] width, [1] height, [2] level count, [3] bytes per block (or per pixel for RGBA8).
-SN_API int32_t sn_ktx2_transcode(const void *data, uint32_t size, int32_t target);
-
-// ---------------------------------------------------------------------------------------------
-// Navigation (Recast/Detour)
-// ---------------------------------------------------------------------------------------------
-
-typedef struct sn_nav_config
-{
-	float cell_size;
-	float cell_height;
-	float agent_height;
-	float agent_radius;
-	float agent_max_climb;
-	float agent_max_slope_degrees;
-	int32_t tile_size;				///< In cells; tiles are built in parallel
-	float max_edge_length;
-	float max_simplification_error;
-	float min_region_size;
-	float merge_region_size;
-	float detail_sample_distance;
-	float detail_sample_max_error;
-} sn_nav_config;
-
-/// Fills a config with the Recast demo defaults for a human-sized agent.
-SN_API void sn_nav_default_config(sn_nav_config *out_config);
-
-/// Builds a tiled navmesh from a triangle soup, tiles in parallel. Inputs must stay alive until
-/// the task finishes. Result [0]: navmesh handle; [1]: tile count.
-SN_API int32_t sn_nav_build(const float *vertices, uint32_t vertex_count, const int32_t *triangles, uint32_t triangle_count, const sn_nav_config *config);
-/// Loads a navmesh serialized by sn_nav_serialize or the stride-tools bake. Returns a handle.
-SN_API int32_t sn_nav_load(const void *data, uint32_t size);
-/// Serializes a navmesh. Result buffer is allocated with sn_alloc; the caller frees it.
-SN_API int32_t sn_nav_serialize(int32_t navmesh, void **out_data, uint32_t *out_size);
-SN_API void sn_nav_destroy(int32_t navmesh);
-/// Straight path between two points (corners written as xyz). Returns the corner count.
-SN_API int32_t sn_nav_find_path(int32_t navmesh, const float *start3, const float *end3, const float *search_extents3, float *out_points, uint32_t max_points);
-
-SN_API int32_t sn_crowd_create(int32_t navmesh, uint32_t max_agents, float max_agent_radius);
-SN_API void sn_crowd_destroy(int32_t crowd);
-/// Returns the agent index.
-SN_API int32_t sn_crowd_add_agent(int32_t crowd, const float *position3, float radius, float height, float max_speed, float max_acceleration);
-SN_API void sn_crowd_remove_agent(int32_t crowd, int32_t agent);
-SN_API int32_t sn_crowd_request_move(int32_t crowd, int32_t agent, const float *target3);
-/// Moves the agents, then writes their positions into the positions buffer.
-SN_API void sn_crowd_update(int32_t crowd, float delta_time);
-/// The crowd's positions buffer: xyz per agent slot (NaN for empty slots), room for max_agents. It stays
-/// at this address until the crowd is destroyed; add_agent, remove_agent and update keep it current.
-SN_API const float *sn_crowd_positions(int32_t crowd);
 
 // ---------------------------------------------------------------------------------------------
 // Animation (ozz-animation runtime)

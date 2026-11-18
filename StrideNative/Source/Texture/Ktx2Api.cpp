@@ -1,12 +1,15 @@
 // KTX2 (Basis Universal) transcoding to the GPU formats WebGPU can sample; mip levels in parallel.
 #include <Core/Core.h>
 #include <Core/Tasks.h>
-#include <StrideNative/Runtime.h>
+#include <StrideNative/Texture.h>
+#include <StrideNative/Plugin.h>
 
 #include <basisu_transcoder.h>
 
 #include <memory>
 #include <mutex>
+
+SN_PLUGIN(texture)
 
 namespace
 {

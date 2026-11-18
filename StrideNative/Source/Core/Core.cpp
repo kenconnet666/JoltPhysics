@@ -1,9 +1,7 @@
 #include <Core/Core.h>
 #include <Core/Tasks.h>
 
-#include <Jolt/Core/Factory.h>
 #include <Jolt/Core/JobSystemThreadPool.h>
-#include <Jolt/RegisterTypes.h>
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten/emscripten.h>
@@ -114,8 +112,8 @@ SN_API int32_t sn_init(int32_t worker_threads)
 	JPH::RegisterDefaultAllocator();
 	JPH::Trace = TraceImpl;
 	JPH_IF_ENABLE_ASSERTS(JPH::AssertFailed = AssertFailedImpl;)
-	JPH::Factory::sInstance = new JPH::Factory();
-	JPH::RegisterTypes();
+	// Jolt 的类型（形状、约束……）由物理模块在第一次创建世界时注册，见 PhysicsApi.cpp：
+	// 物理是单独的侧模块（wasm 里），核心不能依赖它
 
 	sTempAllocator = std::make_unique<JPH::TempAllocatorImpl>(cTempAllocatorSize);
 	sJobSystem = std::make_unique<JPH::JobSystemThreadPool>(cMaxJobs, cMaxBarriers, worker_threads);
@@ -133,9 +131,6 @@ SN_API void sn_shutdown(void)
 
 	sJobSystem.reset();
 	sTempAllocator.reset();
-	JPH::UnregisterTypes();
-	delete JPH::Factory::sInstance;
-	JPH::Factory::sInstance = nullptr;
 }
 
 SN_API int32_t sn_worker_thread_count(void)

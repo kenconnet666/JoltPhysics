@@ -2,13 +2,18 @@
 #include <Core/Core.h>
 #include <Core/HandleTable.h>
 #include <Runtime/Transforms.h>
-#include <StrideNative/Runtime.h>
+#include <StrideNative/Physics.h>
+#include <StrideNative/Plugin.h>
 
+#include <Jolt/Core/Factory.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
 #include <Jolt/Physics/PhysicsSystem.h>
+#include <Jolt/RegisterTypes.h>
 
 #include <vector>
+
+SN_PLUGIN(physics)
 
 namespace
 {
@@ -69,7 +74,7 @@ namespace
 	/// 世界绑定的变换存储；存储先被销毁时记下错误、返回 nullptr。
 	StrideNative::TransformStore *BoundStore(const World &inWorld)
 	{
-		return StrideNative::Lookup<StrideNative::TransformStore>(inWorld.mTransforms, "transform store (destroyed before the physics world?)");
+		return StrideNative::LookupTransformStore(inWorld.mTransforms, "transform store (destroyed before the physics world?)");
 	}
 
 	/// 动态物体的位姿写回绑定的槽位。静态物体不动，不用写。
@@ -109,12 +114,36 @@ namespace
 
 using namespace StrideNative;
 
+namespace
+{
+	/// 第一次创建物理世界时注册 Jolt 的类型，sn_shutdown 时注销。放在物理这边而不是 sn_init 里：物理在 wasm 里是
+	/// 单独的侧模块，核心模块不链接 Jolt 的物理部分。JS 只在主线程上调用，不需要加锁。
+	void EnsureTypesRegistered()
+	{
+		// 关闭钩子每次 sn_shutdown 都会执行（同 HandleTable），只注册一次，没注册过类型时什么也不做
+		static const bool sHooked = (StrideNative::AddShutdownHook([]
+		{
+			if (Factory::sInstance == nullptr)
+				return;
+			UnregisterTypes();
+			delete Factory::sInstance;
+			Factory::sInstance = nullptr;
+		}), true);
+		(void)sHooked;
+		if (Factory::sInstance != nullptr)
+			return;
+		Factory::sInstance = new Factory();
+		RegisterTypes();
+	}
+}
+
 SN_API int32_t sn_physics_create(uint32_t max_bodies, int32_t transforms)
 {
 	SN_REQUIRE_INIT(SN_ERROR_NOT_INITIALIZED);
+	EnsureTypesRegistered();
 	if (max_bodies == 0)
 		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "max_bodies must be positive");
-	if (transforms != 0 && Lookup<TransformStore>(transforms, "transform store") == nullptr)
+	if (transforms != 0 && LookupTransformStore(transforms) == nullptr)
 		return SN_ERROR_INVALID_HANDLE;
 
 	// Resting bodies touch several others (a box in a stack has up to four neighbours and the

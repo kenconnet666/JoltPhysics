@@ -108,7 +108,8 @@ export interface JointTrack {
 	scales?: readonly (readonly number[])[];
 }
 
-export async function createStrideTools(options: ModuleOptions = {}): Promise<StrideTools> {
+/** 工具模块不拆分，没有调试版和侧模块。 */
+export async function createStrideTools(options: Omit<ModuleOptions, 'debug' | 'features'> = {}): Promise<StrideTools> {
 	return new StrideTools(await instantiate(createStrideToolsCore, options));
 }
 

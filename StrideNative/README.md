@@ -1,12 +1,15 @@
 # StrideNative
 
 The C++ side of stride-ts (a Stride-shaped TypeScript engine): Jolt plus the other native libraries,
-built into two **multithreaded, SIMD** WebAssembly modules with a flat C API and a small JS layer.
+built into **multithreaded, SIMD** WebAssembly modules with a flat C API and a small JS layer.
 
 | Module | Used by | Contents |
 |---|---|---|
-| `stride-native` | the game, in the browser (and Node for tests) | Jolt physics, meshopt decoding, KTX2/Basis transcoding, Recast/Detour navigation and crowds, ozz animation sampling |
-| `stride-tools` | the editor's Node backend (asset pipeline) | glTF/FBX import, MikkTSpace tangents, meshopt optimize/simplify/encode, xatlas UV unwrap, V-HACD convex decomposition, Basis encoding, MSDF glyphs, ozz builders, navmesh baking |
+| `stride-native-core` | the game, in the browser (and Node for tests) | job system, transform store, meshopt decoding, ozz animation sampling, the plugin API |
+| `stride-native-physics` | side module, `features: [physics]` | Jolt physics (everything but `Jolt/Core`, which lives in the core) |
+| `stride-native-texture` | side module, `features: [texture]` | KTX2/Basis transcoding |
+| `stride-native-navigation` | side module, `features: [navigation]` | Recast/Detour navmeshes and crowds |
+| `stride-tools-core` | the editor's Node backend (asset pipeline) | glTF/FBX import, MikkTSpace tangents, meshopt optimize/simplify/encode, xatlas UV unwrap, V-HACD convex decomposition, Basis encoding, MSDF glyphs, ozz builders, navmesh baking |
 
 There is no single-threaded build: pages must be cross-origin isolated
 (`Cross-Origin-Opener-Policy: same-origin`, `Cross-Origin-Embedder-Policy: require-corp`).
@@ -16,11 +19,16 @@ There is no single-threaded build: pages must be cross-origin isolated
 ```
 StrideNative/
   CMakeLists.txt        the only build file (Jolt comes in through ../Build/CMakeLists.txt, unchanged)
-  Include/StrideNative/ C API: Core.h (init, memory, tasks), Runtime.h, Tools.h; Values.h (header-only value types shared with stride-ts columns: sn_decimal64, sn_date, sn_time, sn_datetime, sn_instant)
+  CMake/StrideNativePlugin.cmake  stride_native_plugin(): builds a third-party wasm plugin
+  Include/StrideNative/ C API: Core.h (init, memory, tasks), Runtime.h (core module), Physics.h, Texture.h,
+                        Navigation.h (side modules), Plugin.h (for plugins), Tools.h; Values.h (header-only value
+                        types shared with stride-ts columns: sn_decimal64, sn_date, sn_time, sn_datetime, sn_instant)
   Source/Core/          job system access, tasks, handle tables
-  Source/Shared/        code both modules use (tiled navmesh builder and its file format)
-  Source/Runtime/       stride-native exports
+  Source/Runtime/       core module exports (transforms, meshopt, animation, plugin API)
+  Source/Physics/, Source/Texture/, Source/Navigation/   side module exports
+  Source/Shared/        code the navigation module and the tools share (tiled navmesh builder and its file format)
   Source/Tools/         stride-tools exports
+  Plugins/              how to write a plugin (README.md) and the example plugin
   JS/                   the npm package @stride-ts/native: src/ holds the TypeScript bindings
                         (native-module.ts, stride-native.ts, stride-tools.ts, *-core.d.mts for the
                         Emscripten factories); dist/ (generated) holds the compiled bindings next to
@@ -35,6 +43,28 @@ StrideNative/
 
 Each third-party library is a static library; our code is object libraries so every exported
 function reaches the module; each wasm module is the final link of those.
+
+## Core and side modules
+
+The runtime is split with Emscripten dynamic linking so a game downloads only what it uses: the core is
+the main module (`-sMAIN_MODULE=2`), physics, texture and navigation are side modules
+(`-sSIDE_MODULE=2`). They share one memory, one allocator and one job system, so splitting costs
+nothing at run time (measured: stepping 1000 boxes is as fast as with the single module).
+
+- Side modules are loaded at startup only, on the main thread and in every worker
+  (`createStrideNative({ features })` passes them as `dynamicLibraries`); there is no `dlopen` later.
+- `MAIN_MODULE=2` exports only what the side modules on its link line import, so the core stays
+  small. The side modules go on the link line after the objects; placed before them, the core would
+  resolve its own weak symbols (typeinfo) as imports.
+- Side modules are compiled `-fPIC -fvisibility=hidden`; `SN_EXPORT` has default visibility, so they
+  export only the C API.
+- Code in different modules must share state through non-inline functions defined in the core:
+  template statics (`GetTable<T>`) exist once per module. Physics finds transform stores with
+  `LookupTransformStore` for this reason, and registers Jolt's types itself on first use.
+- Every side module declares `SN_PLUGIN(name)`; the JS loader checks its plugin ABI version.
+- Natively everything links into one test executable per module, as before.
+
+Third-party plugins are side modules too; see [Plugins/README.md](Plugins/README.md).
 
 ## Threading
 
@@ -74,7 +104,7 @@ In CLion the CMake root is `StrideNative/`; profiles `Debug` (MinGW, runs
 
 The wasm modules keep their function names (`--profiling-funcs`, about 4% more after brotli), so
 stack traces and Chrome profiles show C++ functions. `-DSTRIDE_NATIVE_DEBUG_CHECKS=ON` builds only the
-runtime module, as `stride-native-core-debug`, with Jolt asserts (a failed assert logs to
+runtime modules, as `stride-native-core-debug` and `stride-native-<feature>-debug`, with Jolt asserts (a failed assert logs to
 `console.error` with the call stack) and Emscripten's `ASSERTIONS` and stack overflow checks;
 `build-wasm.ps1` builds it into `Build/WASM_DebugChecks` next to the release modules, and
 `createStrideNative({ debug: true })` loads it (a dynamic import, so a page downloads only one).
@@ -102,20 +132,25 @@ overrides:
 and depend on `"@stride-ts/native": "^0.1.0"` as usual. Bundlers must not pre-bundle it (Vite:
 `optimizeDeps.exclude`), because the Emscripten modules find their `.wasm` and worker through
 `import.meta.url`. The wasm files are also exported (`@stride-ts/native/stride-native-core.wasm`) for
-setups that pass `locateFile`.
+setups that pass `locateFile`. `dist/sdk/` holds the plugin SDK (Core.h, Runtime.h, Plugin.h and
+`StrideNativePlugin.cmake`).
 
 ## JS usage
 
 ```ts
 import { createStrideNative } from '@stride-ts/native';
+import { navigation } from '@stride-ts/native/navigation';
+import { texture } from '@stride-ts/native/texture';
 
-const native = await createStrideNative();             // workers: hardwareConcurrency - 1
+// workers: hardwareConcurrency - 1; only the listed side modules are downloaded (and bundled)
+const native = await createStrideNative({ features: [texture, navigation] });
 const texture = await native.transcodeKtx2(ktx2Bytes, 'bc7');
 using navMesh = native.loadNavMesh(bakedBytes);        // or navMesh.destroy()
 const path = navMesh.findPath([0, 0, 0], [10, 0, 5]);
 ```
 
-Enumerations are string unions, handles are hidden, ids are branded (`BodyId`, `AgentId`), and failures are `NativeError` with a
+Methods of a feature that was not loaded throw a `NativeError` that says how to load it.
+Enumerations are string unions, handles are hidden (`native.handleOf(object)` gives one to plugin bindings), ids are branded (`BodyId`, `AgentId`), and failures are `NativeError` with a
 string `code` (`'invalid-argument' | 'invalid-handle' | 'failed' | 'not-initialized'`).
 
 Inputs are copied into module memory and outputs copied back, except

@@ -57,7 +57,40 @@ export interface ModuleOptions {
 	debug?: boolean;
 	/** Emscripten 的 locateFile，wasm 放在别的路径时用。 */
 	locateFile?: (path: string, prefix: string) => string;
+	/**
+	 * 运行时要加载的侧模块：内置的功能从各自的入口导入（`import { physics } from '@stride-ts/native/physics'`，
+	 * 还有 texture、navigation），第三方插件给出自己的 NativeFeature。没导入的功能，打包器不会输出它的 wasm。
+	 * 侧模块只能在这里加载（每个线程都要加载一份），之后不能再加。工具模块不用这一项。
+	 */
+	features?: readonly NativeFeature[];
 }
+
+/** NativeFeature 的幻影类型参数的键，只在类型里出现。 */
+export declare const FEATURE_EXPORTS: unique symbol;
+
+/**
+ * 一个侧模块：内置功能（物理、贴图、导航）或第三方插件。E 是它导出的 C 函数名，NativeModule.plugin 按它给出
+ * 带类型的函数表；内置功能的函数已经在 StrideNative 的方法里包好，不用写。
+ */
+export interface NativeFeature<E extends string = string> {
+	/** 和 C 侧 SN_PLUGIN(name) 的名字一致（C 标识符）；加载时调用 sn_plugin_abi_<name> 核对插件 ABI 版本。 */
+	readonly name: string;
+	readonly url: URL;
+	/**
+	 * 调试版运行时（debug: true）用的文件。内置功能都有，它们和调试版的核心一起编译（Jolt 断言会改变结构体布局）；
+	 * 只用插件 C API 的第三方插件不需要，没有时用 url。
+	 */
+	readonly debugUrl?: URL;
+	readonly [FEATURE_EXPORTS]?: E;
+}
+
+/** 实例化好的模块和它加载的侧模块（功能名到导出函数）。 */
+export interface LoadedModule<E extends string> {
+	readonly module: CoreModule<E>;
+	readonly features: ReadonlyMap<string, Readonly<Record<string, NativeFunction>>>;
+}
+
+const FEATURE_NAME = /^[A-Za-z_]\w*$/;
 
 const TASK_RUNNING = 0;
 const TASK_DONE = 1;
@@ -73,18 +106,60 @@ export function defaultWorkerThreads(): number {
 /**
  * 实例化 Emscripten 模块并启动任务系统。浏览器里只有跨源隔离的页面（COOP + COEP 响应头）才能用共享内存。
  */
-export async function instantiate<E extends string>(factory: CoreFactory<E>, { workerThreads = defaultWorkerThreads(), locateFile }: Omit<ModuleOptions, 'debug'> = {}): Promise<CoreModule<E>> {
+export async function instantiate<E extends string>(factory: CoreFactory<E>, { workerThreads = defaultWorkerThreads(), debug = false, locateFile, features = [] }: ModuleOptions = {}): Promise<LoadedModule<E>> {
 	if (!isNode && !globalThis.crossOriginIsolated) {
 		throw new NativeError('StrideNative needs a cross-origin isolated page: serve it with ' +
 			'"Cross-Origin-Opener-Policy: same-origin" and "Cross-Origin-Embedder-Policy: require-corp"', -4);
 	}
-	// Worker 池必须装得下任务系统的所有线程：Jolt 是同步创建它们的
-	const module = await factory({ workerPoolSize: workerThreads, ...(locateFile ? { locateFile } : {}) });
+	// 侧模块在启动时加载（主线程和线程池里的每个线程都加载，之后才运行任何代码）。Emscripten 按 <名字>.wasm
+	// 登记它们，实际地址由 locateFile 给出
+	const libraries = new Map<string, URL>();
+	for (const feature of features) {
+		if (!FEATURE_NAME.test(feature.name)) throw new TypeError(`feature name must be a C identifier, not '${feature.name}'`);
+		if (libraries.has(`${feature.name}.wasm`)) throw new TypeError(`feature '${feature.name}' is listed twice`);
+		libraries.set(`${feature.name}.wasm`, debug ? feature.debugUrl ?? feature.url : feature.url);
+	}
+	const locate = (path: string, prefix: string) => {
+		const url = libraries.get(path);
+		if (url) return isNode && url.protocol === 'file:' ? decodeURIComponent(url.pathname.replace(/^\/(\w:)/, '$1')) : url.href;
+		return locateFile ? locateFile(path, prefix) : prefix + path;
+	};
+	let module: CoreModule<E>;
+	try {
+		// Worker 池必须装得下任务系统的所有线程：Jolt 是同步创建它们的
+		module = await factory({
+			workerPoolSize: workerThreads,
+			...(features.length > 0 ? { dynamicLibraries: [...libraries.keys()], locateFile: locate } : locateFile ? { locateFile } : {}),
+		});
+	} catch (error) {
+		// 插件用了运行时没导出的符号时，Emscripten 在这里报 undefined symbol
+		const loading = features.length > 0 ? ` with features ${features.map((f) => f.name).join(', ')}` : '';
+		throw new NativeError(`loading StrideNative${loading} failed: ${error instanceof Error ? error.message : String(error)}`, -3);
+	}
+	const loaded = new Map<string, Record<string, NativeFunction>>();
+	const ldso = (module as unknown as { LDSO?: { loadedLibsByName: Record<string, { exports: Record<string, unknown> } | undefined> } }).LDSO;
+	const abiVersion = (module as unknown as Partial<Record<'_sn_plugin_abi_version', NativeFunction>>)._sn_plugin_abi_version;
+	for (const { name } of features) {
+		const library = ldso?.loadedLibsByName[`${name}.wasm`];
+		if (!library || !abiVersion) throw new NativeError(`feature '${name}' was not loaded: only the runtime module (stride-native-core) loads features`, -3);
+		const exports: Record<string, NativeFunction> = {};
+		for (const [symbol, value] of Object.entries(library.exports)) if (typeof value === 'function') exports[symbol] = value as NativeFunction;
+		const pluginAbi = exports[`sn_plugin_abi_${name}`];
+		if (!pluginAbi) throw new NativeError(`feature '${name}' does not export sn_plugin_abi_${name}: declare it with SN_PLUGIN(${name})`, -3);
+		if (pluginAbi() !== abiVersion()) {
+			throw new NativeError(`feature '${name}' was built for plugin ABI ${pluginAbi()}, the runtime has ${abiVersion()}`, -3);
+		}
+		// 侧模块的导出只并进了 Emscripten 的全局符号表：挂到模块上，内置功能的绑定照常用 module._sn_xxx 调用
+		for (const [symbol, fn] of Object.entries(exports)) {
+			if (!(`_${symbol}` in module)) (module as unknown as Record<string, unknown>)[`_${symbol}`] = fn;
+		}
+		loaded.set(name, exports);
+	}
 	const status = module._sn_init(workerThreads);
 	if (status !== 0) {
 		throw new NativeError(`sn_init failed: ${module.UTF8ToString(module._sn_last_error())}`, status);
 	}
-	return module;
+	return { module, features: loaded };
 }
 
 /** 原生任务结束后读结果用的东西。 */
@@ -104,10 +179,42 @@ export interface TypedArrayType<A extends TypedArray> {
 export class NativeModule<E extends string = never> implements Disposable {
 	/** @internal Emscripten 模块，派生类和同一层的包装类用。 */
 	readonly module: CoreModule<E>;
+	readonly #features: LoadedModule<E>['features'];
 	#shutDown = false;
 
-	constructor(module: CoreModule<E>) {
+	constructor({ module, features }: LoadedModule<E>) {
 		this.module = module;
+		this.#features = features;
+	}
+
+	/** 加载了这个功能或插件（createStrideNative 的 features 里有它）。 */
+	hasFeature(feature: NativeFeature | string): boolean {
+		return this.#features.has(typeof feature === 'string' ? feature : feature.name);
+	}
+
+	/**
+	 * 插件导出的 C 函数，按 C 的名字调用：`native.plugin(example).sn_example_wave(...)`。指针参数用 alloc、withArrays
+	 * 这些方法准备，异步任务用 awaitTask 等。插件没加载时抛 NativeError。
+	 */
+	plugin<P extends string>(feature: NativeFeature<P>): { readonly [K in P]: NativeFunction } {
+		const exports = this.#features.get(feature.name);
+		if (!exports) throw new NativeError(`plugin '${feature.name}' is not loaded: pass it to createStrideNative({ features: [...] })`, -4);
+		return exports as { readonly [K in P]: NativeFunction };
+	}
+
+	/**
+	 * 运行时对象（变换存储、物理世界……）的原生句柄，插件的绑定把它传给插件的 C 函数，比如 sn_transforms_columns
+	 * 要的变换存储句柄。对象必须属于这个模块，并且没有销毁。
+	 */
+	handleOf(object: NativeObject<NativeModule<string>>): number {
+		if (!object.belongsTo(this)) throw new NativeError(`${object.constructor.name} belongs to another StrideNative module`, -2);
+		return object[HANDLE];
+	}
+
+	/** 内置功能的方法先调用它：功能没加载时说明怎么加载。 */
+	protected requireFeature(name: string, what: string): void {
+		if (this.#features.has(name)) return;
+		throw new NativeError(`${what} needs the ${name} feature: import { ${name} } from '@stride-ts/native/${name}' and pass it to createStrideNative({ features: [${name}] })`, -4);
 	}
 
 	/** 任务系统的工作线程数（等待任务时当前线程也会帮着跑）。 */
@@ -328,6 +435,11 @@ export abstract class NativeObject<M extends NativeModule<string>> implements Di
 	get [HANDLE](): number {
 		if (!this.#alive) throw new NativeError(`${this.constructor.name} was destroyed`, -2);
 		return this.#handle;
+	}
+
+	/** @internal NativeModule.handleOf 用。 */
+	belongsTo(native: NativeModule<string>): boolean {
+		return this.native === native;
 	}
 
 	get destroyed(): boolean {

@@ -213,13 +213,21 @@ namespace StrideNative
 	}
 }
 
+namespace StrideNative
+{
+	TransformStore *LookupTransformStore(int32_t inHandle, const char *inWhat)
+	{
+		return Lookup<TransformStore>(inHandle, inWhat);
+	}
+}
+
 using namespace StrideNative;
 
 namespace
 {
 	TransformStore *GetStore(int32_t inHandle)
 	{
-		return Lookup<TransformStore>(inHandle, "transform store");
+		return LookupTransformStore(inHandle);
 	}
 }
 

@@ -3,7 +3,7 @@
 #pragma once
 
 #include <StrideNative/Core.h>
-#include <StrideNative/Runtime.h>
+#include <StrideNative/Navigation.h>
 
 // ---------------------------------------------------------------------------------------------
 // Scene import (glTF/GLB via cgltf, FBX via ufbx). Meshes are triangulated and indexed, one per

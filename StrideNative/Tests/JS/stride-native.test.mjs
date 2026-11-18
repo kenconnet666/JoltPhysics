@@ -10,6 +10,12 @@ import { crc32, deflateSync } from 'node:zlib';
 const dist = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'JS', 'dist');
 const { createStrideNative, NativeError } = await import(pathToFileURL(path.join(dist, 'stride-native.js')));
 const { createStrideTools } = await import(pathToFileURL(path.join(dist, 'stride-tools.js')));
+const [{ physics }, { texture }, { navigation }] = await Promise.all(['physics', 'texture', 'navigation'].map((name) => import(pathToFileURL(path.join(dist, `${name}.js`)))));
+const features = [physics, texture, navigation];
+
+// 示例插件不进 npm 包，从正式版的构建目录加载（Scripts/build-wasm.ps1 编出它）
+const examplePlugin = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'Build', 'WASM_Release', 'example-plugin.wasm');
+const example = { name: 'example', url: pathToFileURL(examplePlugin) };
 
 const testData = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'Data');
 const fontPath = process.env.STRIDE_TEST_FONT ?? 'C:/Windows/Fonts/arial.ttf';
@@ -52,7 +58,7 @@ describe('stride-native and stride-tools', () => {
 	let native, tools;
 
 	before(async () => {
-		[native, tools] = await Promise.all([createStrideNative({ workerThreads: 4 }), createStrideTools({ workerThreads: 4 })]);
+		[native, tools] = await Promise.all([createStrideNative({ workerThreads: 4, features }), createStrideTools({ workerThreads: 4 })]);
 	});
 
 	after(() => {
@@ -66,7 +72,7 @@ describe('stride-native and stride-tools', () => {
 	});
 
 	it('loads the debug runtime (Jolt asserts, Emscripten checks) and steps physics with it', async () => {
-		const debug = await createStrideNative({ debug: true, workerThreads: 2 });
+		const debug = await createStrideNative({ debug: true, workerThreads: 2, features: [physics] });
 		try {
 			const world = debug.createPhysicsWorld(8);
 			world.addBox({ position: [0, -1, 0], halfExtent: [10, 1, 10], motion: 'static' });
@@ -78,6 +84,70 @@ describe('stride-native and stride-tools', () => {
 		} finally {
 			debug.shutdown();
 		}
+	});
+
+	it('loads only the requested features and explains how to load a missing one', async () => {
+		const core = await createStrideNative({ workerThreads: 1 });
+		try {
+			assert.equal(core.hasFeature(physics), false);
+			assert.throws(() => core.createPhysicsWorld(8), (error) => error instanceof NativeError && error.code === 'not-initialized'
+				&& /import \{ physics \} from '@stride-ts\/native\/physics'/.test(error.message));
+			await assert.rejects(core.transcodeKtx2(new Uint8Array(4)), /needs the texture feature/);
+			assert.throws(() => core.loadNavMesh(new Uint8Array(4)), /needs the navigation feature/);
+			// 核心自己的功能照常可用
+			using transforms = core.createTransforms(4);
+			transforms.allocate(2);
+			assert.equal(transforms.slotLimit, 2);
+		} finally {
+			core.shutdown();
+		}
+		assert.equal(native.hasFeature(physics) && native.hasFeature('navigation'), true);
+		await assert.rejects(createStrideNative({ workerThreads: 1, features: [{ ...physics, name: 'no-such' }] }), /must be a C identifier/);
+		await assert.rejects(createStrideNative({ workerThreads: 1, features: [physics, physics] }), /listed twice/);
+	});
+
+	it('loads a third-party plugin that works on runtime data through the plugin C API', async () => {
+		const host = await createStrideNative({ workerThreads: 2, features: [physics, example] });
+		try {
+			const plugin = host.plugin(example);
+			assert.throws(() => native.plugin(example), /plugin 'example' is not loaded/);
+
+			// 同步调用：在任务系统上并行改写变换存储的列
+			using transforms = host.createTransforms(64);
+			const slots = transforms.allocate(40);
+			host.withArrays([Int32Array.from(slots)], (pointer) => host.check(plugin.sn_example_wave(host.handleOf(transforms), pointer, slots.length, 0.5, 2), 'sn_example_wave'));
+			for (const slot of slots) assert.ok(Math.abs(transforms.position[slot * 3 + 1] - 2 * Math.sin(0.5 + slot)) < 1e-5);
+			assert.throws(() => host.withArrays([Int32Array.of(99)], (pointer) => host.check(plugin.sn_example_wave(host.handleOf(transforms), pointer, 1, 0, 1), 'sn_example_wave')),
+				/slot 99 is outside 1..64/);
+
+			// 异步任务：和内置任务一样用 awaitTask 等
+			const bytes = new Uint8Array(1000).map((_, i) => (i % 10 === 0 ? 7 : i % 5));
+			const { most, counts, summary } = await host.withArraysAsync([bytes], (pointer) =>
+				host.awaitTask(plugin.sn_example_histogram(pointer, bytes.length), 'sn_example_histogram', (task) => ({
+					most: task.result(0),
+					counts: task.output(Uint32Array, 0),
+					summary: new TextDecoder().decode(task.output(Uint8Array, 1)),
+				})));
+			assert.equal(counts.length, 256);
+			assert.equal(counts[7], 100);
+			assert.equal(most, 1); // 0 只有 100 个（i % 10 === 5），1..4 各 200 个
+			assert.equal(summary, '1000 bytes, most common 1');
+			await assert.rejects(host.awaitTask(plugin.sn_example_histogram(0, 0), 'sn_example_histogram'), /no data/);
+
+			// 插件自己的对象；sn_shutdown 时由插件注册的钩子释放
+			const counter = host.withArrays([new TextEncoder().encode('hits\0')], (name) => host.check(plugin.sn_example_counter_create(name), 'create'));
+			plugin.sn_example_counter_add(counter, 5);
+			assert.equal(plugin.sn_example_counter_add(counter, 3), 8);
+			assert.equal(host.module.UTF8ToString(plugin.sn_example_counter_name(counter)), 'hits');
+			plugin.sn_example_counter_destroy(counter);
+			assert.throws(() => host.check(plugin.sn_example_counter_add(counter, 1), 'sn_example_counter_add'), /unknown counter/);
+
+			// 内置功能和插件可以一起用
+			assert.ok(host.createPhysicsWorld(4) && host.hasFeature('example'));
+		} finally {
+			host.shutdown();
+		}
+		await assert.rejects(createStrideNative({ workerThreads: 1, features: [{ name: 'other', url: example.url }] }), /does not export sn_plugin_abi_other: declare it with SN_PLUGIN\(other\)/);
 	});
 
 	it('views native memory as int64 for decimal and date-time columns', () => {
@@ -149,7 +219,7 @@ describe('stride-native and stride-tools', () => {
 		assert.equal(transforms.allocate(5).length, 5);
 	});
 
-	it('releases native objects with using and reports failures as NativeError codes', () => {
+	it('releases native objects with using and reports failures as NativeError codes', async () => {
 		let escaped;
 		{
 			using world = native.createPhysicsWorld(4);
@@ -158,7 +228,7 @@ describe('stride-native and stride-tools', () => {
 		}
 		assert.equal(escaped.destroyed, true);
 		assert.throws(() => native.loadNavMesh(new Uint8Array(16)), (error) => error instanceof NativeError && error.code === 'failed' && error.status === -3);
-		assert.throws(() => native.transcodeKtx2(new Uint8Array(4), 'png'), /target must be one of 'rgba8', 'bc7', 'astc4x4', 'etc2rgba8', not 'png'/);
+		await assert.rejects(native.transcodeKtx2(new Uint8Array(4), 'png'), /target must be one of 'rgba8', 'bc7', 'astc4x4', 'etc2rgba8', not 'png'/);
 		assert.throws(() => native.decodeMeshopt({ source: new Uint8Array(4), count: 1, stride: 4, filter: 'zip' }), /MeshoptRequest.filter/);
 	});
 

@@ -6,7 +6,7 @@ import {
 } from './native-module.ts';
 
 export { NativeError, defaultWorkerThreads } from './native-module.ts';
-export type { ModuleOptions, NativeErrorCode, NavConfig } from './native-module.ts';
+export type { ModuleOptions, NativeErrorCode, NativeFeature, NavConfig } from './native-module.ts';
 
 /** xyz；数组、元组和 Vector3 之类的 ArrayLike 都行。 */
 export type Vec3 = ArrayLike<number>;
@@ -91,11 +91,14 @@ export interface AnimationSampleRequest {
 	ratio: number;
 }
 
-/** 加载模块并启动任务系统。 */
+/**
+ * 加载运行时模块并启动任务系统。物理、贴图转码、导航是单独的侧模块，用 features 选用，比如
+ * `createStrideNative({ features: [physics, navigation] })`；没选用的功能，调用它的方法会抛 NativeError。
+ */
 export async function createStrideNative({ debug = false, ...options }: ModuleOptions = {}): Promise<StrideNative> {
 	// 动态导入：打包器把两个版本分开，页面只下载用到的那个
 	const core = debug ? await import('./stride-native-core-debug.mjs') : await import('./stride-native-core.mjs');
-	return new StrideNative(await instantiate(core.default, options));
+	return new StrideNative(await instantiate(core.default, { debug, ...options }));
 }
 
 export class StrideNative extends NativeModule<RuntimeExport> {
@@ -104,7 +107,9 @@ export class StrideNative extends NativeModule<RuntimeExport> {
 		return new TransformStore(this, this.check(this.module._sn_transforms_create(capacity), 'sn_transforms_create'));
 	}
 
+	/** 需要 physics 功能。 */
 	createPhysicsWorld(maxBodies = 1024, { transforms }: PhysicsWorldOptions = {}): PhysicsWorld {
+		this.requireFeature('physics', 'createPhysicsWorld');
 		const handle = this.module._sn_physics_create(maxBodies, transforms ? transforms[HANDLE] : 0);
 		return new PhysicsWorld(this, this.check(handle, 'sn_physics_create'), maxBodies);
 	}
@@ -150,7 +155,9 @@ export class StrideNative extends NativeModule<RuntimeExport> {
 		}
 	}
 
+	/** 需要 texture 功能。 */
 	ktx2Info(bytes: Uint8Array): Ktx2Info {
+		this.requireFeature('texture', 'ktx2Info');
 		return this.withArrays([bytes], (data) => this.withScratch(32, (info) => {
 			this.check(this.module._sn_ktx2_get_info(data, bytes.byteLength, info), 'sn_ktx2_get_info');
 			const v = this.i32(info, 8);
@@ -158,8 +165,9 @@ export class StrideNative extends NativeModule<RuntimeExport> {
 		}));
 	}
 
-	/** 并行转码所有 mip 级。 */
-	transcodeKtx2(bytes: Uint8Array, target: TextureTarget = 'rgba8'): Promise<TranscodedTexture> {
+	/** 并行转码所有 mip 级。需要 texture 功能。 */
+	async transcodeKtx2(bytes: Uint8Array, target: TextureTarget = 'rgba8'): Promise<TranscodedTexture> {
+		this.requireFeature('texture', 'transcodeKtx2');
 		const code = enumCode(TEXTURE_TARGETS, target, 'target');
 		return this.withArraysAsync([bytes], (data) =>
 			this.awaitTask(this.module._sn_ktx2_transcode(data, bytes.byteLength, code), 'sn_ktx2_transcode', (task) => ({
@@ -170,8 +178,9 @@ export class StrideNative extends NativeModule<RuntimeExport> {
 			})));
 	}
 
-	/** 从三角形汤构建分块导航网格，各 tile 并行。 */
-	buildNavMesh(vertices: Float32Array, triangles: Int32Array, config: NavConfig = {}): Promise<NavMesh> {
+	/** 从三角形汤构建分块导航网格，各 tile 并行。需要 navigation 功能。 */
+	async buildNavMesh(vertices: Float32Array, triangles: Int32Array, config: NavConfig = {}): Promise<NavMesh> {
+		this.requireFeature('navigation', 'buildNavMesh');
 		return this.withArraysAsync([vertices, triangles], (v, t) => this.withScratch(NAV_CONFIG_SIZE, (cfg) => {
 			writeNavConfig(this, cfg, config);
 			return this.awaitTask(this.module._sn_nav_build(v, vertices.length / 3, t, triangles.length / 3, cfg), 'sn_nav_build',
@@ -179,8 +188,9 @@ export class StrideNative extends NativeModule<RuntimeExport> {
 		}));
 	}
 
-	/** 加载 NavMesh.serialize 或 stride-tools 烘焙出的导航网格。 */
+	/** 加载 NavMesh.serialize 或 stride-tools 烘焙出的导航网格。需要 navigation 功能。 */
 	loadNavMesh(bytes: Uint8Array): NavMesh {
+		this.requireFeature('navigation', 'loadNavMesh');
 		return this.withArrays([bytes], (data) => new NavMesh(this, this.check(this.module._sn_nav_load(data, bytes.byteLength), 'sn_nav_load')));
 	}
 

@@ -16,6 +16,9 @@
 <ul id="results"></ul>
 <script type="module">
 import { createStrideNative } from '/dist/stride-native.js';
+import { physics } from '/dist/physics.js';
+import { texture } from '/dist/texture.js';
+import { navigation } from '/dist/navigation.js';
 
 const results = [];
 const list = document.getElementById('results');
@@ -44,9 +47,24 @@ let native;
 
 await check('crossOriginIsolated and module start', async () => {
 	assert(crossOriginIsolated, 'page is not cross-origin isolated');
-	native = await createStrideNative();
+	native = await createStrideNative({ features: [physics, texture, navigation] });
 	assert(native.buffer instanceof SharedArrayBuffer, 'memory is not shared');
 	return `${native.workerThreadCount} worker threads, hardwareConcurrency ${navigator.hardwareConcurrency}`;
+});
+
+await check('core only: no side modules downloaded, features refuse with a hint', async () => {
+	const core = await createStrideNative({ workerThreads: 1 });
+	try {
+		let message = '';
+		try { core.createPhysicsWorld(4); } catch (error) { message = error.message; }
+		assert(/needs the physics feature/.test(message), `unexpected: ${message}`);
+	} finally {
+		core.shutdown();
+	}
+	// 只有完整实例要了侧模块：每个侧模块只下载一次
+	const sideModules = performance.getEntriesByType('resource').filter((entry) => /stride-native-(physics|texture|navigation).wasm$/.test(entry.name));
+	assert(sideModules.length === 3, `side modules fetched ${sideModules.length} times`);
+	return sideModules.map((entry) => entry.name.split('/').pop()).join(', ');
 });
 
 await check('physics steps on the shared job system (main thread waits and helps)', async () => {

@@ -3,7 +3,7 @@
 // rcContext and scratch data, the input is only read.
 #pragma once
 
-#include <StrideNative/Runtime.h>
+#include <StrideNative/Navigation.h>
 
 #include <cstdint>
 #include <string>
