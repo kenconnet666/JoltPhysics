@@ -1,7 +1,7 @@
 // stride-native 运行时模块的 JS API（浏览器和 Node）。页面必须跨源隔离（COOP: same-origin，COEP: require-corp）。
 import type { RuntimeExport } from './stride-native-core.mjs';
 import {
-	HANDLE, NAV_CONFIG_SIZE, NativeModule, NativeObject, enumCode, instantiate, writeNavConfig,
+	HANDLE, NAV_CONFIG_SIZE, NativeError, NativeModule, NativeObject, enumCode, instantiate, writeNavConfig,
 	type Branded, type ModuleOptions, type NavConfig,
 } from './native-module.ts';
 
@@ -400,9 +400,127 @@ export class TransformStore extends NativeObject<StrideNative> {
 		this.native.check(this.native.module._sn_transforms_update(this[HANDLE]), 'sn_transforms_update');
 	}
 
+	/** 这个存储的视锥剔除工作区；渲染器每帧复用一个。 */
+	createCuller(): FrustumCuller {
+		return new FrustumCuller(this.native, this);
+	}
+
 	protected override release(): void {
 		this.native.module._sn_transforms_destroy(this[HANDLE]);
 		this.native.free(this.#scratch);
+	}
+}
+
+/** sn_cull_view：6 个平面（24 个 float）、plane_count、measure_distance、distance_plane（4 个 float）、min、max。 */
+const CULL_VIEW_WORDS = 32;
+const MAX_CULL_VIEWS = 8;
+
+/**
+ * 视锥剔除（sn_transforms_cull）的工作区：输入和输出都在原生内存里，属性是常驻的视图，每帧直接写、直接读，不分配。
+ * 用法：reserve 容量 → 往 slots 按批次连续写槽位、batchEnds 写每批的结束下标、bounds 写每批的本地包围盒（中心、半长）
+ * → setView 写各视图的平面 → cull → 读 counts、visibleSlots 和视图的距离范围。
+ */
+export class FrustumCuller implements Disposable {
+	readonly #native: StrideNative;
+	readonly #transforms: TransformStore;
+	#slotCapacity = 0;
+	#batchCapacity = 0;
+	// 一次分配：slots、batchEnds、bounds、views、visibleSlots、counts
+	#block = 0;
+	#slots: Int32Array = new Int32Array(0);
+	#batchEnds: Uint32Array = new Uint32Array(0);
+	#bounds: Float32Array = new Float32Array(0);
+	#views: Float32Array = new Float32Array(0);
+	#viewWords: Int32Array = new Int32Array(0);
+	#visibleSlots: Int32Array = new Int32Array(0);
+	#counts: Uint32Array = new Uint32Array(0);
+	#viewsAddress = 0;
+	#destroyed = false;
+
+	/** @internal 用 TransformStore.createCuller 创建。 */
+	constructor(native: StrideNative, transforms: TransformStore) {
+		this.#native = native;
+		this.#transforms = transforms;
+	}
+
+	/** 实例的槽位，按批次连续排。 */
+	get slots(): Int32Array { return this.#slots; }
+	/** 每批的结束下标（不含）。 */
+	get batchEnds(): Uint32Array { return this.#batchEnds; }
+	/** 每批 6 个 float：本地包围盒的中心 xyz、半长 xyz。半长为 0 的总是可见。 */
+	get bounds(): Float32Array { return this.#bounds; }
+	/** 上一次 cull 的结果：第 v 个视图的可见槽位在 v * slotCount 起的一段里，每批放在这批原来的起点。 */
+	get visibleSlots(): Int32Array { return this.#visibleSlots; }
+	/** 上一次 cull 的结果：第 v 个视图第 b 批的可见个数在 v * batchCount + b。 */
+	get counts(): Uint32Array { return this.#counts; }
+	get slotCapacity(): number { return this.#slotCapacity; }
+	get batchCapacity(): number { return this.#batchCapacity; }
+
+	/** 保证能放这么多实例和批次；容量变了就重新分配，之前取到的属性数组不能再用（内容不保留）。 */
+	reserve(slotCount: number, batchCount: number): void {
+		if (this.#destroyed) throw new NativeError('FrustumCuller was destroyed', -2);
+		if (slotCount <= this.#slotCapacity && batchCount <= this.#batchCapacity) return;
+		const slots = Math.max(slotCount, this.#slotCapacity * 2, 64);
+		const batches = Math.max(batchCount, this.#batchCapacity * 2, 16);
+		const n = this.#native;
+		if (this.#block) n.free(this.#block);
+		// 各段按 4 字节对齐，sn_cull_view 只有 4 字节的成员
+		const words = slots + batches + batches * 6 + MAX_CULL_VIEWS * CULL_VIEW_WORDS + MAX_CULL_VIEWS * slots + MAX_CULL_VIEWS * batches;
+		const block = (this.#block = n.alloc(words * 4));
+		let offset = block;
+		const take = <A extends Int32Array | Uint32Array | Float32Array>(type: { new (buffer: ArrayBufferLike, byteOffset: number, length: number): A }, length: number): A => {
+			const view = new type(n.buffer, offset, length);
+			offset += length * 4;
+			return view;
+		};
+		this.#slots = take(Int32Array, slots);
+		this.#batchEnds = take(Uint32Array, batches);
+		this.#bounds = take(Float32Array, batches * 6);
+		this.#viewsAddress = offset;
+		this.#views = take(Float32Array, MAX_CULL_VIEWS * CULL_VIEW_WORDS);
+		this.#viewWords = new Int32Array(n.buffer, this.#viewsAddress, MAX_CULL_VIEWS * CULL_VIEW_WORDS);
+		this.#visibleSlots = take(Int32Array, MAX_CULL_VIEWS * slots);
+		this.#counts = take(Uint32Array, MAX_CULL_VIEWS * batches);
+		this.#slotCapacity = slots;
+		this.#batchCapacity = batches;
+	}
+
+	/**
+	 * 写第 index 个视图（最多 8 个）：planes 是 6 个朝内的平面（xyzw，dot(n, p) + w > 0 在内侧，近、远平面在最后），
+	 * planeCount 是 6 或 4（4 忽略近、远平面）；给了 distancePlane（xyz 法线、w，距离 = dot(n, p) - w）就量出可见物体的距离范围。
+	 */
+	setView(index: number, planes: ArrayLike<number>, planeCount: 4 | 6, distancePlane?: ArrayLike<number>): void {
+		if (!Number.isInteger(index) || index < 0 || index >= MAX_CULL_VIEWS) throw new RangeError(`view index must be 0..${MAX_CULL_VIEWS - 1}, got ${index}`);
+		if (planes.length < planeCount * 4) throw new RangeError(`planes must hold ${planeCount * 4} numbers, got ${planes.length}`);
+		const o = index * CULL_VIEW_WORDS;
+		for (let i = 0; i < 24; i++) this.#views[o + i] = i < planeCount * 4 ? planes[i]! : 0;
+		this.#viewWords[o + 24] = planeCount;
+		this.#viewWords[o + 25] = distancePlane ? 1 : 0;
+		for (let i = 0; i < 4; i++) this.#views[o + 26 + i] = distancePlane?.[i] ?? 0;
+	}
+
+	/** 剔除前 viewCount 个视图。batchEnds 的最后一个必须等于 slotCount。 */
+	cull(slotCount: number, batchCount: number, viewCount: number): void {
+		const n = this.#native;
+		if (slotCount > this.#slotCapacity || batchCount > this.#batchCapacity) throw new RangeError('FrustumCuller: reserve before writing more slots or batches');
+		if (viewCount > MAX_CULL_VIEWS) throw new RangeError(`FrustumCuller: at most ${MAX_CULL_VIEWS} views, got ${viewCount}`);
+		n.check(n.module._sn_transforms_cull(n.handleOf(this.#transforms), this.#slots.byteOffset, slotCount, this.#batchEnds.byteOffset, this.#bounds.byteOffset, batchCount,
+			this.#viewsAddress, viewCount, this.#visibleSlots.byteOffset, this.#counts.byteOffset), 'sn_transforms_cull');
+	}
+
+	/** 第 index 个视图里可见物体到距离平面的最近距离；没有可见物体时是 +Infinity。 */
+	minDistance(index: number): number { return this.#views[index * CULL_VIEW_WORDS + 30]!; }
+	maxDistance(index: number): number { return this.#views[index * CULL_VIEW_WORDS + 31]!; }
+
+	destroy(): void {
+		if (this.#destroyed) return;
+		this.#destroyed = true;
+		if (this.#block) this.#native.free(this.#block);
+		this.#block = 0;
+	}
+
+	[Symbol.dispose](): void {
+		this.destroy();
 	}
 }
 

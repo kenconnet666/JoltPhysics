@@ -214,6 +214,104 @@ TEST_CASE("变换：世界矩阵按层级传播，挂接和释放都做检查")
 	sn_transforms_destroy(store);
 }
 
+/// 一个盒子形状的"视锥"：|x| <= 5、|y| <= 5、-20 <= z <= 0，近平面是 z = 0。距离按 -z 量。
+static sn_cull_view BoxView(uint32_t inPlaneCount)
+{
+	sn_cull_view view {};
+	const float planes[6][4] = { { 1, 0, 0, 5 }, { -1, 0, 0, 5 }, { 0, 1, 0, 5 }, { 0, -1, 0, 5 }, { 0, 0, -1, 0 }, { 0, 0, 1, 20 } };
+	std::memcpy(view.planes, planes, sizeof(planes));
+	view.plane_count = inPlaneCount;
+	view.measure_distance = 1;
+	view.distance_plane[2] = -1;
+	return view;
+}
+
+TEST_CASE("剔除：包围盒按世界矩阵变换后和视图的平面比较，可见的按批次紧凑写出并量出距离范围")
+{
+	ModuleScope module;
+	int32_t store = sn_transforms_create(4);
+	sn_transform_columns c {};
+	REQUIRE(sn_transforms_columns(store, &c) == SN_OK);
+	int32_t slots[4] = {};
+	REQUIRE(sn_transforms_alloc(store, slots, 4) == 4);
+	// 第 0 批（单位立方体）：x = -10 在外面；z = +3 在近平面后面；x = 4.8、z = -10 压着边界，算可见
+	c.position[slots[0] * 3] = -10;
+	c.position[slots[1] * 3 + 2] = 3;
+	c.position[slots[2] * 3] = 4.8f;
+	c.position[slots[2] * 3 + 2] = -10;
+	// 第 1 批的包围盒半长是 0：总是可见，不参与量距离
+	c.position[slots[3] * 3] = 100;
+	REQUIRE(sn_transforms_update(store) == SN_OK);
+
+	const uint32_t batch_ends[2] = { 3, 4 };
+	const float bounds[12] = { 0, 0, 0, 0.5f, 0.5f, 0.5f, 0, 0, 0, 0, 0, 0 };
+	// 第二个视图忽略近、远平面（阴影级联的做法）：z = +3 的那个也可见
+	sn_cull_view views[2] = { BoxView(6), BoxView(4) };
+	int32_t out[8] = {};
+	uint32_t counts[4] = {};
+	REQUIRE(sn_transforms_cull(store, slots, 4, batch_ends, bounds, 2, views, 2, out, counts) == SN_OK);
+	CHECK(counts[0] == 1);
+	CHECK(out[0] == slots[2]);
+	CHECK(counts[1] == 1);
+	CHECK(out[3] == slots[3]);
+	CHECK(views[0].min_distance == doctest::Approx(9.5f));
+	CHECK(views[0].max_distance == doctest::Approx(10.5f));
+	CHECK(counts[2] == 2);
+	CHECK((out[4] == slots[1] && out[5] == slots[2]));
+	CHECK(views[1].min_distance == doctest::Approx(-3.5f));
+
+	// 旋转的盒子：绕 Y 转 90° 后 x 方向的半长变成 z 方向的
+	const float wide[12] = { 0, 0, 0, 8, 0.5f, 0.5f, 0, 0, 0, 0, 0, 0 };
+	c.position[slots[0] * 3] = 0;
+	c.position[slots[0] * 3 + 2] = -10;
+	SetQuarterTurnAroundY(&c.rotation[slots[0] * 4]);
+	REQUIRE(sn_transforms_update(store) == SN_OK);
+	sn_cull_view rotated = BoxView(6);
+	REQUIRE(sn_transforms_cull(store, slots, 4, batch_ends, wide, 2, &rotated, 1, out, counts) == SN_OK);
+	CHECK(rotated.min_distance == doctest::Approx(2.0f));
+	CHECK(rotated.max_distance == doctest::Approx(18.0f));
+
+	const int32_t free_slot = 99;
+	CHECK(sn_transforms_cull(store, &free_slot, 1, batch_ends, bounds, 1, views, 1, out, counts) == SN_ERROR_INVALID_ARGUMENT);
+	sn_transforms_destroy(store);
+}
+
+TEST_CASE("剔除：实例多时分到多个线程上，结果和单线程一样")
+{
+	ModuleScope module;
+	const uint32_t count = 6000;
+	int32_t store = sn_transforms_create(count);
+	sn_transform_columns c {};
+	REQUIRE(sn_transforms_columns(store, &c) == SN_OK);
+	std::vector<int32_t> slots(count);
+	REQUIRE(sn_transforms_alloc(store, slots.data(), count) == int32_t(count));
+	// 一半在视图里（z = -1），一半在右边外面（x = 50）
+	for (uint32_t i = 0; i < count; ++i)
+	{
+		c.position[slots[i] * 3] = i % 2 == 0 ? 0.0f : 50.0f;
+		c.position[slots[i] * 3 + 2] = -1;
+	}
+	REQUIRE(sn_transforms_update(store) == SN_OK);
+	std::vector<uint32_t> batch_ends;
+	std::vector<float> bounds;
+	for (uint32_t end = 100; end <= count; end += 100)
+	{
+		batch_ends.push_back(end);
+		bounds.insert(bounds.end(), { 0, 0, 0, 0.5f, 0.5f, 0.5f });
+	}
+	sn_cull_view views[2] = { BoxView(6), BoxView(6) };
+	std::vector<int32_t> out(count * 2);
+	std::vector<uint32_t> counts(batch_ends.size() * 2);
+	REQUIRE(sn_transforms_cull(store, slots.data(), count, batch_ends.data(), bounds.data(), uint32_t(batch_ends.size()), views, 2, out.data(), counts.data()) == SN_OK);
+	for (uint32_t b = 0; b < counts.size(); ++b)
+		CHECK(counts[b] == 50);
+	CHECK(out[0] == slots[0]);
+	CHECK(out[1] == slots[2]);
+	CHECK(views[1].min_distance == doctest::Approx(0.5f));
+	CHECK(views[1].max_distance == doctest::Approx(1.5f));
+	sn_transforms_destroy(store);
+}
+
 TEST_CASE("物理：绑定变换的物体从槽位出发，步进后把位姿写回槽位")
 {
 	ModuleScope module;

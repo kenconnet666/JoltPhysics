@@ -36,6 +36,27 @@ SN_API int32_t sn_transforms_update(int32_t transforms);
 /// 发出去过的最大槽位号（释放了也不降）：用到的槽位都在 1..它 之内，上传世界矩阵时只传这一段。
 SN_API int32_t sn_transforms_slot_limit(int32_t transforms);
 
+/// 剔除用的一个视图（同 Stride 的 VisibilityGroup.TryCollect）。
+typedef struct sn_cull_view
+{
+	/// 朝内的平面，xyz 法线、w：dot(n, p) + w > 0 在内侧（同 Stride 的 BoundingFrustum）。近、远平面放在最后两个。
+	float planes[6][4];
+	/// 6；阴影级联用 4，忽略近、远平面（Stride 的 VisiblityIgnoreDepthPlanes）
+	uint32_t plane_count;
+	/// 非 0 时量出可见物体的包围盒到 distance_plane 的最近、最远距离，写进 min_distance、max_distance
+	int32_t measure_distance;
+	/// xyz 法线、w：距离 = dot(n, p) - w（同 Stride 的 VisibilityGroup 里的相机近平面）
+	float distance_plane[4];
+	float min_distance;				///< 输出；没有可见物体时是 +inf
+	float max_distance;				///< 输出；没有可见物体时是 -inf
+} sn_cull_view;
+
+/// 视锥剔除：实例的变换槽位按批次连续排在 slots 里，batch_ends[b] 是第 b 批的结束下标；同一批（同一个网格）共用一个本地
+/// 包围盒，bounds 每批 6 个 float（中心 xyz、半长 xyz）。包围盒用槽位的世界矩阵变换（中心按点变换，半长按矩阵分量的绝对值
+/// 变换，同 Stride 的 BoundingBoxExt.Transform），半长为 0 的包围盒总是可见、不参与量距离。第 v 个视图的结果写进
+/// out_slots 的第 v * slot_count 段：每批可见的槽位按原顺序紧凑地放在这批原来的起点，个数写进 out_counts[v * batch_count + b]。
+SN_API int32_t sn_transforms_cull(int32_t transforms, const int32_t *slots, uint32_t slot_count, const uint32_t *batch_ends, const float *bounds, uint32_t batch_count, sn_cull_view *views, uint32_t view_count, int32_t *out_slots, uint32_t *out_counts);
+
 // ---------------------------------------------------------------------------------------------
 // Mesh decoding (EXT_meshopt_compression / KHR_meshopt_compression)
 // ---------------------------------------------------------------------------------------------

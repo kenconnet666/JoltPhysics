@@ -184,6 +184,34 @@ describe('stride-native and stride-tools', () => {
 		assert.throws(() => world.step(1 / 60), (error) => error instanceof NativeError && error.code === 'invalid-handle' && /PhysicsWorld was destroyed/.test(error.message));
 	});
 
+	it('culls instances against view frustums in native memory, batch by batch', () => {
+		using transforms = native.createTransforms(8);
+		const slots = transforms.allocate(4);
+		// 盒子形状的视锥：|x| <= 5、|y| <= 5、-20 <= z <= 0；第 0 批是单位立方体，第 1 批的包围盒半长是 0（总是可见）
+		const at = [[-10, 0, -5], [0, 0, 3], [4.8, 0, -10], [100, 0, 0]];
+		slots.forEach((slot, i) => transforms.position.set(at[i], slot * 3));
+		transforms.update();
+		using culler = transforms.createCuller();
+		culler.reserve(4, 2);
+		culler.slots.set(slots);
+		culler.batchEnds.set([3, 4]);
+		culler.bounds.set([0, 0, 0, 0.5, 0.5, 0.5, 0, 0, 0, 0, 0, 0]);
+		const planes = [1, 0, 0, 5, -1, 0, 0, 5, 0, 1, 0, 5, 0, -1, 0, 5, 0, 0, -1, 0, 0, 0, 1, 20];
+		culler.setView(0, planes, 6, [0, 0, -1, 0]);
+		culler.setView(1, planes, 4);
+		culler.cull(4, 2, 2);
+		assert.deepEqual(Array.from(culler.counts.subarray(0, 4)), [1, 1, 2, 1]);
+		assert.equal(culler.visibleSlots[0], slots[2]);
+		assert.equal(culler.visibleSlots[3], slots[3]);
+		assert.deepEqual(Array.from(culler.visibleSlots.subarray(4, 6)), [slots[1], slots[2]]);
+		assert.ok(Math.abs(culler.minDistance(0) - 9.5) < 1e-5 && Math.abs(culler.maxDistance(0) - 10.5) < 1e-5);
+		assert.equal(culler.minDistance(1), Infinity, 'the second view does not measure distances');
+		assert.throws(() => culler.setView(8, planes, 6), /view index must be 0..7/);
+		// 容量不够时重新分配
+		culler.reserve(100, 40);
+		assert.ok(culler.slotCapacity >= 100 && culler.batchCapacity >= 40);
+	});
+
 	it('propagates transforms parent-first and writes physics poses back into slots', () => {
 		using transforms = native.createTransforms(8);
 		const [root, parent, child] = transforms.allocate(3);
