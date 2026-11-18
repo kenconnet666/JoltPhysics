@@ -121,6 +121,11 @@ enum
 /// Result [0]: width, [1]: height, [2]: channels in the file. Output [0]: the pixels, rows top-down.
 SN_API int32_t st_image_decode(const void *data, uint32_t size);
 
+/// Resamples RGBA8 pixels (rows top-down) to out_width x out_height with a Lanczos3 filter on the stored values, edges clamped
+/// (Stride's TextureTool.Resize with Filter.Rescaling.Lanczos3). rgba must stay alive until the task finishes.
+/// Output [0]: the resampled pixels.
+SN_API int32_t st_image_resize(const uint8_t *rgba, uint32_t width, uint32_t height, uint32_t out_width, uint32_t out_height);
+
 /// Cubemaps below are RGBA32F, faces in the order +X -X +Y -Y +Z -Z, rows top-down (the D3D/WebGPU layout).
 
 /// Prefilters a radiance cubemap for GGX environment lighting like Stride's RadiancePrefilteringGGX:

@@ -497,6 +497,13 @@ export interface NativeExports {
 	 * C: Tools.h
 	 */
 	_st_image_decode(data: number, size: number): number;
+	/**
+	 * Resamples RGBA8 pixels (rows top-down) to out_width x out_height with a Lanczos3 filter on the stored values, edges clamped
+	 * (Stride's TextureTool.Resize with Filter.Rescaling.Lanczos3). rgba must stay alive until the task finishes.
+	 * Output [0]: the resampled pixels.
+	 * C: Tools.h
+	 */
+	_st_image_resize(rgba: number, width: number, height: number, outWidth: number, outHeight: number): number;
 	/** C: Tools.h */
 	_st_meshopt_encode_index_bound(indexCount: number, vertexCount: number): number;
 	/** C: Tools.h */
@@ -710,6 +717,7 @@ export type ToolsExport =
 	| 'st_uv_unwrap'
 	| 'st_convex_decompose'
 	| 'st_image_decode'
+	| 'st_image_resize'
 	| 'st_cubemap_prefilter_ggx'
 	| 'st_cubemap_sh_lambert'
 	| 'st_basis_encode'

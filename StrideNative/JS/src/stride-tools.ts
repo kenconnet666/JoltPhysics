@@ -247,6 +247,13 @@ export class StrideTools extends NativeModule<ToolsExport> {
 			})));
 	}
 
+	/** 用 Lanczos3 把 RGBA8 的图片缩放到 outWidth x outHeight（同 Stride 的 TextureTool.Resize），边缘钳住。 */
+	resizeImage(rgba: Uint8Array, width: number, height: number, outWidth: number, outHeight: number): Promise<Uint8Array> {
+		return this.withArraysAsync([rgba], (pixels) =>
+			this.awaitTask(this.module._st_image_resize(pixels, width, height, outWidth, outHeight), 'st_image_resize',
+				(task) => task.output(Uint8Array, 0)));
+	}
+
 	/**
 	 * 天空盒的镜面光照：GGX 预滤波成 outSize 的立方体贴图（同 Stride 的 RadiancePrefilteringGGX，默认 256、1024 个采样）。
 	 * 最高一级是源贴图重采样，不滤波。

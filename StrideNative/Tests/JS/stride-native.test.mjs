@@ -584,6 +584,17 @@ describe('stride-native and stride-tools', () => {
 		assert.deepEqual(triangles(new Uint32Array(decodedIndices.buffer)), triangles(indices));
 	});
 
+	it('resizes RGBA8 with Lanczos3: a constant image stays constant, sizes are checked', async () => {
+		const rgba = new Uint8Array(7 * 5 * 4);
+		for (let i = 0; i < 7 * 5; ++i)
+			rgba.set([200, 100, 50, 255], i * 4);
+		const resized = await tools.resizeImage(rgba, 7, 5, 8, 8);
+		assert.equal(resized.length, 8 * 8 * 4);
+		for (let i = 0; i < 8 * 8; ++i)
+			assert.deepEqual([...resized.subarray(i * 4, i * 4 + 4)], [200, 100, 50, 255]);
+		await assert.rejects(async () => tools.resizeImage(rgba, 7, 5, 0, 8), /both sizes are required/);
+	});
+
 	it('decodes PNG and encodes KTX2 (tools), then transcodes every mip level in parallel (runtime)', async () => {
 		const size = 128;
 		const rgba = new Uint8Array(size * size * 4);
