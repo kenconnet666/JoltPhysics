@@ -312,6 +312,11 @@ export interface NativeExports {
 	 */
 	_sn_physics_remove_constraint(world: number, constraint: number): number;
 	/**
+	 * 运行中改重力（Stride 的 BepuSimulation.PoseGravity）；睡着的物体要被碰到或唤醒才受新的重力。
+	 * C: Physics.h
+	 */
+	_sn_physics_set_gravity(world: number, gravity: number): number;
+	/**
 	 * 球体扫掠（Stride 的 SweepCast 加 Sphere），同 sn_physics_ray_cast；flags 是 SN_CAST_*。
 	 * C: Physics.h
 	 */
@@ -619,6 +624,7 @@ export type RuntimeExport =
 	| 'sn_crowd_positions'
 	| 'sn_physics_create'
 	| 'sn_physics_destroy'
+	| 'sn_physics_set_gravity'
 	| 'sn_physics_create_mesh'
 	| 'sn_physics_create_hull'
 	| 'sn_physics_remove_bodies'
