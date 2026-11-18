@@ -140,7 +140,7 @@ SN_API int32_t sn_physics_body_set_gravity(int32_t world, int32_t body, int32_t 
 SN_API int32_t sn_physics_body_set_never_sleep(int32_t world, int32_t body, int32_t never_sleep);
 
 // ---------------------------------------------------------------------------------------------
-// 约束（Stride.BepuPhysics 的约束组件，语义照 Bepu；Bepu 的约束都是软的，这里是刚性的）
+// 约束（Stride.BepuPhysics 的约束组件，语义照 Bepu；Bepu 的约束都是软的，这里除了伺服和距离限制都是刚性的）
 // ---------------------------------------------------------------------------------------------
 
 enum
@@ -153,6 +153,12 @@ enum
 	SN_CONSTRAINT_SWING_LIMIT = 5,			///< axis_a、axis_b 的夹角不超过 maximum（弧度）
 	SN_CONSTRAINT_TWIST_LIMIT = 6,			///< 绕 basis_a、basis_b 的 Z 轴的扭转（从 X 量向 Y）在 [minimum, maximum] 里
 	SN_CONSTRAINT_WELD = 7,					///< B 在 A 的 offset_a 处、相对 A 的朝向是 basis_a（FixedConstraint）
+	// 单体约束：只有 body_a，另一边是世界（body_b 忽略）。目标在世界空间
+	SN_CONSTRAINT_ONE_BODY_LINEAR_SERVO = 8,	///< A 的 offset_a 点被弹簧（spring）拉向世界坐标 target，力不超过 max_force
+	SN_CONSTRAINT_ONE_BODY_ANGULAR_SERVO = 9,	///< A 的朝向被弹簧拉向世界朝向 target（xyzw），力矩不超过 max_force
+	SN_CONSTRAINT_ONE_BODY_ANGULAR_MOTOR = 10,	///< A 的角速度被拉向世界角速度 target，力矩不超过 max_force
+	SN_CONSTRAINT_DISTANCE_LIMIT = 11,		///< offset_a、offset_b 两点的距离在 [minimum, maximum] 里，超出时用弹簧（spring）拉回（DistanceConstraint）
+	SN_CONSTRAINT_BALL_SOCKET_MOTOR = 12,	///< B 的 offset_b 点相对 A 的速度被拉向 target（A 的本地空间），力不超过 max_force
 };
 
 /// 一个约束；向量和四元数都在各自物体的本地空间，四元数是 xyzw。不用的字段忽略。
@@ -170,6 +176,9 @@ typedef struct sn_constraint
 	float minimum;
 	float maximum;
 	float scale;
+	float target[4];				///< 伺服和马达的目标，见各类型
+	float spring[2];				///< 频率（Hz）、阻尼比；频率 <= 0 时是刚性的
+	float max_force;				///< 伺服和马达的最大力（矩）；<= 0 时不限
 } sn_constraint;
 
 /// 加一个约束（两个物体都会唤醒），返回约束句柄（> 0）。

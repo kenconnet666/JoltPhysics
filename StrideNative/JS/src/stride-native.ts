@@ -215,10 +215,12 @@ const BODY_CONTACT_EVENTS = 16;
 // sn_contact_event：type、body_a、body_b
 const CONTACT_EVENT_WORDS = 3;
 const CONTACT_TYPES = { 1: 'started', 2: 'stopped' } as const;
-// sn_constraint：type、body_a、body_b、offset_a[3]、offset_b[3]、axis_a[3]、axis_b[3]、basis_a[4]、basis_b[4]、minimum、maximum、scale
-const CONSTRAINT_WORDS = 26;
+// sn_constraint：type、body_a、body_b、offset_a[3]、offset_b[3]、axis_a[3]、axis_b[3]、basis_a[4]、basis_b[4]、minimum、maximum、
+// scale、target[4]、spring[2]、max_force
+const CONSTRAINT_WORDS = 33;
 const CONSTRAINT_TYPES = {
 	ballSocket: 0, hinge: 1, angularAxisGearMotor: 2, pointOnLine: 3, linearAxisLimit: 4, swingLimit: 5, twistLimit: 6, weld: 7,
+	oneBodyLinearServo: 8, oneBodyAngularServo: 9, oneBodyAngularMotor: 10, distanceLimit: 11, ballSocketMotor: 12,
 } as const;
 const ALL_LAYERS = 0xffffffff;
 
@@ -338,11 +340,18 @@ const CAST_IGNORE_INITIAL_OVERLAP = 1;
 /** 用 PhysicsWorld.addConstraint 建的约束。 */
 export type PhysicsConstraint = Branded<number, 'PhysicsConstraint'>;
 
+/** 伺服、软约束的弹簧（Bepu 的 SpringSettings），默认频率 30、阻尼比 5（同 Stride）。 */
+export interface ConstraintSpring {
+	springFrequency?: number;
+	springDampingRatio?: number;
+}
+
 /**
- * 两个物体之间的约束（Stride.BepuPhysics 的约束组件，字段名和语义照它们）。向量在各自物体的本地空间，四元数是 xyzw，
- * 角度是弧度。和 Bepu 不同：Bepu 的约束是软的（弹簧），这里是刚性的。
+ * 约束（Stride.BepuPhysics 的约束组件，字段名和语义照它们）。向量在各自物体的本地空间，四元数是 xyzw，角度是弧度。
+ * 单体约束（oneBody 开头的）只有 bodyA，另一边是世界，目标在世界空间。和 Bepu 不同：除了伺服、马达和距离限制，
+ * 这里都是刚性的（Bepu 的约束都是弹簧）；伺服的最大速度、马达的阻尼不用（Jolt 的马达只限力）。
  */
-export type ConstraintDesc = { bodyA: BodyId; bodyB: BodyId } & (
+export type ConstraintDesc = ({ bodyA: BodyId; bodyB: BodyId } & (
 	/** 两点重合。 */
 	| { type: 'ballSocket'; localOffsetA?: Vec3; localOffsetB?: Vec3 }
 	/** 两点重合，两条铰链轴重合。 */
@@ -359,7 +368,18 @@ export type ConstraintDesc = { bodyA: BodyId; bodyB: BodyId } & (
 	| { type: 'twistLimit'; localBasisA?: ArrayLike<number>; localBasisB?: ArrayLike<number>; minimumAngle: number; maximumAngle: number }
 	/** B 在 A 的 localOffset 处，相对 A 的朝向是 localOrientation。 */
 	| { type: 'weld'; localOffset?: Vec3; localOrientation?: ArrayLike<number> }
-);
+	/** 两点的距离在 [minimumDistance, maximumDistance] 里，超出时用弹簧拉回。 */
+	| ({ type: 'distanceLimit'; localOffsetA?: Vec3; localOffsetB?: Vec3; minimumDistance: number; maximumDistance: number } & ConstraintSpring)
+	/** B 的 localOffsetB 点相对 A 的速度（A 的本地空间）被拉向 targetVelocityLocalA，力不超过 motorMaximumForce（默认 1000）。 */
+	| { type: 'ballSocketMotor'; localOffsetB?: Vec3; targetVelocityLocalA: Vec3; motorMaximumForce?: number }
+)) | ({ bodyA: BodyId } & (
+	/** A 的 localOffset 点被弹簧拉向世界坐标 target，力不超过 servoMaximumForce（默认 1000）。 */
+	| ({ type: 'oneBodyLinearServo'; localOffset?: Vec3; target: Vec3; servoMaximumForce?: number } & ConstraintSpring)
+	/** A 的朝向被弹簧拉向世界朝向 targetOrientation，力矩不超过 servoMaximumForce（默认 1000）。 */
+	| ({ type: 'oneBodyAngularServo'; targetOrientation: ArrayLike<number>; servoMaximumForce?: number } & ConstraintSpring)
+	/** A 的角速度被拉向世界角速度 targetVelocity，力矩不超过 motorMaximumForce（默认 1e7）。 */
+	| { type: 'oneBodyAngularMotor'; targetVelocity: Vec3; motorMaximumForce?: number }
+));
 
 /** 一次接触事件；self 是打开了接触事件的那个物体（两个都打开时是编号小的）。 */
 export interface ContactEvent {
@@ -674,7 +694,7 @@ function writeConstraint(floats: Float32Array, ints: Int32Array, desc: Constrain
 	floats.fill(0);
 	ints[0] = type;
 	ints[1] = desc.bodyA;
-	ints[2] = desc.bodyB;
+	ints[2] = 'bodyB' in desc ? desc.bodyB : -1;
 	const put = (at: number, values: ArrayLike<number> | undefined, width: number) => {
 		for (let i = 0; i < width; i++) floats[at + i] = values?.[i] ?? 0;
 	};
@@ -723,8 +743,38 @@ function writeConstraint(floats: Float32Array, ints: Int32Array, desc: Constrain
 			put(3, desc.localOffset, 3);
 			if (desc.localOrientation) put(15, desc.localOrientation, 4);
 			break;
+		case 'distanceLimit':
+			put(3, desc.localOffsetA, 3);
+			put(6, desc.localOffsetB, 3);
+			floats[23] = desc.minimumDistance;
+			floats[24] = desc.maximumDistance;
+			break;
+		case 'ballSocketMotor':
+			put(6, desc.localOffsetB, 3);
+			put(26, desc.targetVelocityLocalA, 3);
+			floats[32] = desc.motorMaximumForce ?? 1000;
+			break;
+		case 'oneBodyLinearServo':
+			put(3, desc.localOffset, 3);
+			put(26, desc.target, 3);
+			floats[32] = desc.servoMaximumForce ?? 1000;
+			break;
+		case 'oneBodyAngularServo':
+			put(26, desc.targetOrientation, 4);
+			floats[32] = desc.servoMaximumForce ?? 1000;
+			break;
+		case 'oneBodyAngularMotor':
+			put(26, desc.targetVelocity, 3);
+			floats[32] = desc.motorMaximumForce ?? 1e7;
+			break;
 		default:
 			break;
+	}
+	// 伺服和距离限制的弹簧，默认同 Stride（频率 30、阻尼比 5）
+	if ('springFrequency' in desc || desc.type === 'distanceLimit' || desc.type === 'oneBodyLinearServo' || desc.type === 'oneBodyAngularServo') {
+		const spring = desc as ConstraintSpring;
+		floats[30] = spring.springFrequency ?? 30;
+		floats[31] = spring.springDampingRatio ?? 5;
 	}
 }
 

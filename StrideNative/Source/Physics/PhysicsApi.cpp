@@ -19,6 +19,7 @@
 #include <Jolt/Physics/Collision/ShapeCast.h>
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
 #include <Jolt/Physics/Collision/Shape/EmptyShape.h>
+#include <Jolt/Physics/Constraints/DistanceConstraint.h>
 #include <Jolt/Physics/Constraints/FixedConstraint.h>
 #include <Jolt/Physics/Constraints/GearConstraint.h>
 #include <Jolt/Physics/Constraints/HingeConstraint.h>
@@ -246,7 +247,10 @@ namespace
 		struct ConstraintRecord
 		{
 			Ref<Constraint>	mConstraint;
-			int32_t			mBodyA = -1, mBodyB = -1;
+			int32_t			mBodyA = -1, mBodyB = -1;	///< 单体约束的 mBodyB 是 -1
+			/// 单体角马达的世界角速度：Jolt 的目标角速度在物体的约束空间里，每步按物体当前的朝向换算
+			bool			mWorldAngularVelocity = false;
+			Vec3			mTarget = Vec3::sZero();
 		};
 		std::vector<ConstraintRecord>	mConstraints;
 	};
@@ -836,6 +840,13 @@ SN_API int32_t sn_physics_step(int32_t world, float delta_time, int32_t collisio
 		if (character.mCharacter != nullptr)
 			UpdateCharacter(*w, character, delta_time);
 	w->mContacts.mEvents.clear();
+	// 单体角马达：世界角速度换到物体当前的本地空间（Jolt 的转动马达在物体 2 的约束空间里）
+	for (const World::ConstraintRecord &record : w->mConstraints)
+		if (record.mWorldAngularVelocity && record.mConstraint != nullptr)
+		{
+			Quat rotation = w->mSystem.GetBodyInterface().GetRotation(w->mBodies[record.mBodyA].mID);
+			static_cast<SixDOFConstraint &>(*record.mConstraint).SetTargetAngularVelocityCS(rotation.Conjugated() * record.mTarget);
+		}
 	EPhysicsUpdateError errors = w->mSystem.Update(delta_time, collision_steps > 0 ? collision_steps : 1, &GetTempAllocator(), &GetJobSystem());
 	if (DebugEnabled())
 	{
@@ -967,7 +978,20 @@ namespace
 		return inAxis.GetNormalizedPerpendicular();
 	}
 
-	/// 约束的 Jolt 设置；a、b 是 Jolt 的两个物体（齿轮里和 Bepu 的 A、B 对调）
+	bool IsOneBody(uint32_t inType)
+	{
+		return inType == SN_CONSTRAINT_ONE_BODY_LINEAR_SERVO || inType == SN_CONSTRAINT_ONE_BODY_ANGULAR_SERVO || inType == SN_CONSTRAINT_ONE_BODY_ANGULAR_MOTOR;
+	}
+
+	/// 马达设置：频率 > 0 时位置马达带弹簧；最大力 <= 0 时不限
+	MotorSettings MakeMotor(const sn_constraint &inConstraint)
+	{
+		float limit = inConstraint.max_force > 0.0f ? inConstraint.max_force : FLT_MAX;
+		float frequency = inConstraint.spring[0] > 0.0f ? inConstraint.spring[0] : 0.0f;
+		return MotorSettings(frequency, inConstraint.spring[1], limit, limit);
+	}
+
+	/// 约束的 Jolt 设置；a、b 是 Jolt 的两个物体（齿轮里和 Bepu 的 A、B 对调；单体约束里 a 是世界）
 	Ref<TwoBodyConstraintSettings> MakeConstraintSettings(const sn_constraint &inConstraint, const Body &inA, const Body &inB, std::string &outError)
 	{
 		const sn_constraint &c = inConstraint;
@@ -1052,6 +1076,58 @@ namespace
 			}
 			return settings.GetPtr();
 		}
+		case SN_CONSTRAINT_ONE_BODY_LINEAR_SERVO:
+		case SN_CONSTRAINT_ONE_BODY_ANGULAR_SERVO:
+		case SN_CONSTRAINT_ONE_BODY_ANGULAR_MOTOR:
+		{
+			// 世界（物体 1）和物体（物体 2）之间的 SixDOF，全部自由度放开，用马达驱动。约束坐标系：物体 1 是世界的轴，
+			// 物体 2 是物体本地的轴，所以平移的目标就是世界坐标，朝向的目标就是世界朝向
+			using EAxis = SixDOFConstraintSettings::EAxis;
+			Ref<SixDOFConstraintSettings> settings = new SixDOFConstraintSettings;
+			settings->mSpace = EConstraintSpace::LocalToBodyCOM;
+			settings->mPosition1 = RVec3::sZero();
+			settings->mPosition2 = RVec3(c.type == SN_CONSTRAINT_ONE_BODY_LINEAR_SERVO ? Load3(c.offset_a) : Vec3::sZero());
+			settings->mAxisX1 = settings->mAxisX2 = Vec3::sAxisX();
+			settings->mAxisY1 = settings->mAxisY2 = Vec3::sAxisY();
+			for (int axis = 0; axis < EAxis::Num; ++axis)
+			{
+				settings->MakeFreeAxis(EAxis(axis));
+				settings->mMotorSettings[axis] = MakeMotor(c);
+			}
+			return settings.GetPtr();
+		}
+		case SN_CONSTRAINT_DISTANCE_LIMIT:
+		{
+			Ref<DistanceConstraintSettings> settings = new DistanceConstraintSettings;
+			settings->mSpace = EConstraintSpace::LocalToBodyCOM;
+			settings->mPoint1 = RVec3(Load3(c.offset_a));
+			settings->mPoint2 = RVec3(Load3(c.offset_b));
+			settings->mMinDistance = c.minimum;
+			settings->mMaxDistance = c.maximum;
+			if (c.spring[0] > 0.0f)
+				settings->mLimitsSpringSettings = SpringSettings(ESpringMode::FrequencyAndDamping, c.spring[0], c.spring[1]);
+			return settings.GetPtr();
+		}
+		case SN_CONSTRAINT_BALL_SOCKET_MOTOR:
+		{
+			// A、B 之间的 SixDOF：平移的速度马达（物体 1 的约束空间就是 A 的本地轴），A 上的点取建约束时和 B 的点重合的位置
+			using EAxis = SixDOFConstraintSettings::EAxis;
+			Ref<SixDOFConstraintSettings> settings = new SixDOFConstraintSettings;
+			settings->mSpace = EConstraintSpace::LocalToBodyCOM;
+			RVec3 anchor = inB.GetCenterOfMassTransform() * Load3(c.offset_b);
+			settings->mPosition1 = inA.GetInverseCenterOfMassTransform() * anchor;
+			settings->mPosition2 = RVec3(Load3(c.offset_b));
+			settings->mAxisX1 = Vec3::sAxisX();
+			settings->mAxisY1 = Vec3::sAxisY();
+			settings->mAxisX2 = a_to_b * Vec3::sAxisX();
+			settings->mAxisY2 = a_to_b * Vec3::sAxisY();
+			for (int axis = 0; axis < EAxis::Num; ++axis)
+			{
+				settings->MakeFreeAxis(EAxis(axis));
+				settings->mMotorSettings[axis] = MakeMotor(c);
+			}
+			return settings.GetPtr();
+		}
 		case SN_CONSTRAINT_WELD:
 		{
 			Ref<FixedConstraintSettings> settings = new FixedConstraintSettings;
@@ -1079,31 +1155,69 @@ SN_API int32_t sn_physics_add_constraint(int32_t world, const sn_constraint *con
 		return SN_ERROR_INVALID_HANDLE;
 	if (constraint == nullptr)
 		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "constraint is required");
-	BodyRecord *a = GetBody(*w, constraint->body_a);
-	BodyRecord *b = a != nullptr ? GetBody(*w, constraint->body_b) : nullptr;
-	if (b == nullptr)
+	const sn_constraint &c = *constraint;
+	bool one_body = IsOneBody(c.type);
+	BodyRecord *a = GetBody(*w, c.body_a);
+	BodyRecord *b = a == nullptr || one_body ? nullptr : GetBody(*w, c.body_b);
+	if (a == nullptr || (!one_body && b == nullptr))
 		return SN_ERROR_INVALID_ARGUMENT;
-	if (constraint->body_a == constraint->body_b)
+	if (!one_body && c.body_a == c.body_b)
 		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "a constraint needs two different bodies");
-	// 齿轮马达里 Jolt 的物体 1 是 Bepu 的 B
-	bool swapped = constraint->type == SN_CONSTRAINT_ANGULAR_AXIS_GEAR_MOTOR;
-	BodyID ids[2] = { swapped ? b->mID : a->mID, swapped ? a->mID : b->mID };
 	Ref<Constraint> created;
 	std::string error;
+	if (one_body)
 	{
+		// 物体 1 是世界
+		BodyLockWrite lock(w->mSystem.GetBodyLockInterface(), a->mID);
+		if (!lock.Succeeded())
+			return SetLastError(SN_ERROR_INVALID_ARGUMENT, "constraint body is not in the physics system");
+		Ref<TwoBodyConstraintSettings> settings = MakeConstraintSettings(c, Body::sFixedToWorld, lock.GetBody(), error);
+		if (settings == nullptr)
+			return SetLastError(SN_ERROR_INVALID_ARGUMENT, error);
+		created = settings->Create(Body::sFixedToWorld, lock.GetBody());
+	}
+	else
+	{
+		// 齿轮马达里 Jolt 的物体 1 是 Bepu 的 B
+		bool swapped = c.type == SN_CONSTRAINT_ANGULAR_AXIS_GEAR_MOTOR;
+		BodyID ids[2] = { swapped ? b->mID : a->mID, swapped ? a->mID : b->mID };
 		BodyLockMultiWrite lock(w->mSystem.GetBodyLockInterface(), ids, 2);
 		Body *body1 = lock.GetBody(0), *body2 = lock.GetBody(1);
 		if (body1 == nullptr || body2 == nullptr)
 			return SetLastError(SN_ERROR_INVALID_ARGUMENT, "constraint bodies are not in the physics system");
-		Ref<TwoBodyConstraintSettings> settings = MakeConstraintSettings(*constraint, *body1, *body2, error);
+		Ref<TwoBodyConstraintSettings> settings = MakeConstraintSettings(c, *body1, *body2, error);
 		if (settings == nullptr)
 			return SetLastError(SN_ERROR_INVALID_ARGUMENT, error);
 		created = settings->Create(*body1, *body2);
 	}
+	World::ConstraintRecord record { created, c.body_a, one_body ? -1 : c.body_b };
+	// 伺服、马达的目标
+	if (c.type == SN_CONSTRAINT_ONE_BODY_LINEAR_SERVO || c.type == SN_CONSTRAINT_ONE_BODY_ANGULAR_SERVO || c.type == SN_CONSTRAINT_ONE_BODY_ANGULAR_MOTOR || c.type == SN_CONSTRAINT_BALL_SOCKET_MOTOR)
+	{
+		using EAxis = SixDOFConstraintSettings::EAxis;
+		SixDOFConstraint &six = static_cast<SixDOFConstraint &>(*created);
+		bool linear = c.type == SN_CONSTRAINT_ONE_BODY_LINEAR_SERVO || c.type == SN_CONSTRAINT_BALL_SOCKET_MOTOR;
+		EMotorState state = c.type == SN_CONSTRAINT_ONE_BODY_ANGULAR_MOTOR || c.type == SN_CONSTRAINT_BALL_SOCKET_MOTOR ? EMotorState::Velocity : EMotorState::Position;
+		for (int axis = 0; axis < 3; ++axis)
+			six.SetMotorState(EAxis((linear ? EAxis::TranslationX : EAxis::RotationX) + axis), state);
+		if (c.type == SN_CONSTRAINT_ONE_BODY_LINEAR_SERVO)
+			six.SetTargetPositionCS(Load3(c.target));
+		else if (c.type == SN_CONSTRAINT_ONE_BODY_ANGULAR_SERVO)
+			six.SetTargetOrientationCS(LoadQuat(c.target));
+		else if (c.type == SN_CONSTRAINT_BALL_SOCKET_MOTOR)
+			six.SetTargetVelocityCS(Load3(c.target));
+		else
+		{
+			record.mWorldAngularVelocity = true;
+			record.mTarget = Load3(c.target);
+		}
+	}
 	w->mSystem.AddConstraint(created);
 	BodyInterface &bodies = w->mSystem.GetBodyInterface();
-	bodies.ActivateBodies(ids, 2);
-	w->mConstraints.push_back({ created, constraint->body_a, constraint->body_b });
+	bodies.ActivateBody(a->mID);
+	if (b != nullptr)
+		bodies.ActivateBody(b->mID);
+	w->mConstraints.push_back(record);
 	return int32_t(w->mConstraints.size());
 }
 
@@ -1122,7 +1236,7 @@ SN_API int32_t sn_physics_remove_constraint(int32_t world, int32_t constraint)
 	// 两边醒过来：之前被约束住的状态变了
 	BodyInterface &bodies = w->mSystem.GetBodyInterface();
 	for (int32_t body : { record.mBodyA, record.mBodyB })
-		if (!w->mBodies[body].mRemoved)
+		if (body >= 0 && !w->mBodies[body].mRemoved)
 			bodies.ActivateBody(w->mBodies[body].mID);
 	return SN_OK;
 }

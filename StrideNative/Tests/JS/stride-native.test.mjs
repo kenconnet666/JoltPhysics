@@ -385,6 +385,40 @@ describe('stride-native and stride-tools', () => {
 		}
 	});
 
+	it('drives single bodies toward world targets (servos, angular motor) and limits distances with a spring', () => {
+		using transforms = native.createTransforms(4);
+		const [slot] = transforms.allocate(1);
+		transforms.update();
+		const world = native.createPhysicsWorld(8, { gravity: [0, -9, 0], transforms });
+		try {
+			const [anchor, crate, wheel, ball] = world.addBodies([
+				{ motion: 'kinematic', shapes: [{ type: 'box', size: [1, 1, 1] }], position: [0, 10, 0] },
+				{ motion: 'dynamic', shapes: [{ type: 'box', size: [1, 1, 1] }], transform: slot, neverSleep: true },
+				{ motion: 'dynamic', shapes: [{ type: 'cylinder', radius: 1, length: 0.5 }], position: [10, 0, 0], neverSleep: true, gravity: false },
+				{ motion: 'dynamic', shapes: [{ type: 'sphere', radius: 0.5 }], position: [0, 4, 0], neverSleep: true },
+			]);
+			// 重力枪：线性伺服把箱子的中心拉到 (2, 3, 0)，角度伺服把它转到绕 Y 90°
+			world.addConstraint({ type: 'oneBodyLinearServo', bodyA: crate, target: [2, 3, 0] });
+			const quarter = [0, Math.SQRT1_2, 0, Math.SQRT1_2];
+			world.addConstraint({ type: 'oneBodyAngularServo', bodyA: crate, targetOrientation: quarter });
+			// 单体角马达：轮子绕世界 Y 每秒 2 弧度
+			world.addConstraint({ type: 'oneBodyAngularMotor', bodyA: wheel, targetVelocity: [0, 2, 0] });
+			// 距离限制：球离锚点不超过 3 米（软的，允许一点点超出）
+			world.addConstraint({ type: 'distanceLimit', bodyA: anchor, bodyB: ball, minimumDistance: 0, maximumDistance: 3 });
+			for (let i = 0; i < 180; i++) world.step(1 / 60);
+			const p = world.positions(), r = transforms.rotation.subarray(slot * 4, slot * 4 + 4);
+			assert.ok(Math.hypot(p[3] - 2, p[4] - 3, p[5]) < 0.1, `servo position ${[p[3], p[4], p[5]]}`);
+			assert.ok(Math.abs(Math.abs(r[1]) - Math.SQRT1_2) < 0.02, `servo orientation ${[...r]}`);
+			const angular = [0, 0, 0];
+			world.velocity(wheel, [0, 0, 0], angular);
+			assert.ok(Math.abs(angular[1] - 2) < 0.05 && Math.abs(angular[0]) < 0.05, `motor ${angular}`);
+			assert.ok(Math.hypot(p[9], p[10] - 10, p[11]) < 3.2, `distance ${p[10]}`);
+			assert.throws(() => world.addConstraint({ type: 'oneBodyLinearServo', bodyA: 99, target: [0, 0, 0] }), /does not exist|99/);
+		} finally {
+			world.destroy();
+		}
+	});
+
 	it('culls instances against view frustums in native memory, batch by batch', () => {
 		using transforms = native.createTransforms(8);
 		const slots = transforms.allocate(4);
