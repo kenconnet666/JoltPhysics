@@ -18,7 +18,7 @@ namespace StrideNative
 		void Fail(std::string inMessage);
 		bool HasFailed() const { return mFailed.load(std::memory_order_acquire); }
 
-		void SetResult(uint32_t inIndex, int32_t inValue) { mResults[inIndex] = inValue; }
+		void SetResult(uint32_t inIndex, int32_t inValue) { JPH_ASSERT(inIndex < SN_TASK_RESULT_COUNT); mResults[inIndex] = inValue; }
 
 		/// Allocates an output buffer owned by the task. Not thread-safe; parallel items use
 		/// SetOutput on slots created by RunParallelTask instead.
@@ -41,7 +41,7 @@ namespace StrideNative
 		std::atomic<bool>	mReleaseWhenDone { false };
 		std::mutex			mErrorMutex;
 		std::string			mError;
-		int32_t				mResults[4] = {};
+		int32_t				mResults[SN_TASK_RESULT_COUNT] = {};
 		std::vector<Output>	mOutputs;
 	};
 

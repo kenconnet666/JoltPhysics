@@ -176,6 +176,28 @@ TEST_CASE("场景导入：节点按深度优先排，蒙皮网格带关节、逆
 	st_scene_destroy(scene);
 }
 
+TEST_CASE("场景导入：STRIDE_TEST_SCENE 指定的文件（排查用，没设时跳过）")
+{
+	const char *file = std::getenv("STRIDE_TEST_SCENE");
+	if (file == nullptr)
+		return;
+	ModuleScope module;
+	std::vector<char> data = ReadFile(file);
+	REQUIRE(!data.empty());
+	int32_t task = st_scene_load(data.data(), uint32_t(data.size()), ST_FORMAT_AUTO);
+	REQUIRE(WaitForTask(task) == SN_TASK_DONE);
+	int32_t scene = sn_task_result(task, 0);
+	MESSAGE("meshes " << sn_task_result(task, 1) << ", nodes " << sn_task_result(task, 3) << ", animations " << sn_task_result(task, 4));
+	sn_task_release(task);
+	if (st_scene_animation_name(scene, 0) != nullptr)
+	{
+		int32_t bake = st_scene_animation_bake(scene, 0, 30);
+		REQUIRE(WaitForTask(bake) == SN_TASK_DONE);
+		sn_task_release(bake);
+	}
+	st_scene_destroy(scene);
+}
+
 TEST_CASE("Tangents, meshopt, UV unwrap and convex decomposition")
 {
 	ModuleScope module;

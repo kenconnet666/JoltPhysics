@@ -38,7 +38,7 @@ typedef int32_t (*sn_task_fn)(void *user, sn_task_context *task);
 /// 启动任务，返回任务 id（> 0）。name 要一直有效（用字符串字面量），性能分析里显示它。free_user 不为空时，
 /// fn 返回后用 user 调用它。
 SN_API int32_t sn_run_task(const char *name, sn_task_fn fn, void *user, void (*free_user)(void *user));
-/// 小整数结果，index 是 0..3。
+/// 小整数结果，index 是 0..SN_TASK_RESULT_COUNT-1（8 个），超出的忽略。
 SN_API void sn_task_set_result(sn_task_context *task, uint32_t index, int32_t value);
 /// 加一个归任务所有的输出缓冲（sn_task_release 时释放），返回它的地址，由 fn 填写。
 SN_API void *sn_task_add_output(sn_task_context *task, uint32_t size);

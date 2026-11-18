@@ -287,11 +287,12 @@ export interface NativeExports {
 	_sn_task_release(task: number): void;
 	/**
 	 * Small integer results (handles, counts, dimensions); meaning depends on the operation.
+	 * index is 0..SN_TASK_RESULT_COUNT-1; other indices read 0.
 	 * C: Core.h
 	 */
 	_sn_task_result(task: number, index: number): number;
 	/**
-	 * 小整数结果，index 是 0..3。
+	 * 小整数结果，index 是 0..SN_TASK_RESULT_COUNT-1（8 个），超出的忽略。
 	 * C: Plugin.h
 	 */
 	_sn_task_set_result(task: number, index: number, value: number): void;

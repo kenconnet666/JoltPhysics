@@ -63,7 +63,7 @@ namespace StrideNative
 
 		static int32_t Status(Task &inTask) { return inTask.mStatus.load(std::memory_order_acquire); }
 		static const char *Error(Task &inTask) { return inTask.mError.c_str(); }
-		static int32_t Result(Task &inTask, uint32_t inIndex) { return inIndex < 4 ? inTask.mResults[inIndex] : 0; }
+		static int32_t Result(Task &inTask, uint32_t inIndex) { return inIndex < SN_TASK_RESULT_COUNT ? inTask.mResults[inIndex] : 0; }
 		static const std::vector<Task::Output> &Outputs(Task &inTask) { return inTask.mOutputs; }
 
 	private:

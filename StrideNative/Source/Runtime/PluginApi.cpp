@@ -48,7 +48,7 @@ SN_API int32_t sn_run_task(const char *name, sn_task_fn fn, void *user, void (*f
 
 SN_API void sn_task_set_result(sn_task_context *task, uint32_t index, int32_t value)
 {
-	if (index < 4)
+	if (index < SN_TASK_RESULT_COUNT)
 		ToTask(task).SetResult(index, value);
 }
 

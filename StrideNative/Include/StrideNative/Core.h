@@ -55,7 +55,10 @@ enum
 SN_API int32_t sn_task_status(int32_t task);
 SN_API const int32_t *sn_task_status_address(int32_t task);
 SN_API const char *sn_task_error(int32_t task);
+/// Number of small integer results a task has (sn_task_result).
+#define SN_TASK_RESULT_COUNT 8
 /// Small integer results (handles, counts, dimensions); meaning depends on the operation.
+/// index is 0..SN_TASK_RESULT_COUNT-1; other indices read 0.
 SN_API int32_t sn_task_result(int32_t task, uint32_t index);
 /// Output buffers produced by the task. They stay valid until sn_task_release.
 SN_API uint32_t sn_task_output_count(int32_t task);
