@@ -169,7 +169,16 @@ namespace StrideNative
 	Mat44 TransformStore::LocalMatrix(int32_t inSlot) const
 	{
 		const float *p = &mPosition[inSlot * 3], *r = &mRotation[inSlot * 4], *s = &mScale[inSlot * 3];
-		return Mat44::sRotationTranslation(Quat(r[0], r[1], r[2], r[3]), Vec3(p[0], p[1], p[2])).PreScaled(Vec3(s[0], s[1], s[2]));
+		// 四元数直接按标准公式变成矩阵（同 Stride 的 Matrix.RotationQuaternion），不要求归一化：场景里手填的旋转常常
+		// 不是单位长度，Stride 也不归一化（Jolt 的 sRotation 在调试版里会断言）
+		const float x = r[0], y = r[1], z = r[2], w = r[3];
+		const float xx = x * x, yy = y * y, zz = z * z, xy = x * y, zw = z * w, zx = z * x, yw = y * w, yz = y * z, xw = x * w;
+		Mat44 rotation(
+			Vec4(1.0f - 2.0f * (yy + zz), 2.0f * (xy + zw), 2.0f * (zx - yw), 0.0f),
+			Vec4(2.0f * (xy - zw), 1.0f - 2.0f * (zz + xx), 2.0f * (yz + xw), 0.0f),
+			Vec4(2.0f * (zx + yw), 2.0f * (yz - xw), 1.0f - 2.0f * (yy + xx), 0.0f),
+			Vec4(p[0], p[1], p[2], 1.0f));
+		return rotation.PreScaled(Vec3(s[0], s[1], s[2]));
 	}
 
 	Mat44 TransformStore::LoadWorld(int32_t inSlot) const
