@@ -516,8 +516,13 @@ namespace
 	template <class List, class Evaluate>
 	uint32_t AppendKeys(const List &inKeys, double inDuration, int inComponents, Evaluate inEvaluate, std::vector<float> &ioKeys)
 	{
+		if (inKeys.count == 0)
+			return 0;
+		// 补了边界上的键时，正好落在边界上的原有键不再要（ozz 要求时间严格递增）
+		const bool clip_start = inKeys.data[0].time < 0.0;
+		const bool clip_end = inKeys.data[inKeys.count - 1].time > inDuration;
 		uint32_t count = 0;
-		if (inKeys.count > 0 && inKeys.data[0].time < 0.0)
+		if (clip_start)
 		{
 			AppendKey(0.0f, inEvaluate(inKeys, 0.0), inComponents, ioKeys);
 			++count;
@@ -525,12 +530,14 @@ namespace
 		for (size_t k = 0; k < inKeys.count; ++k)
 		{
 			double time = inKeys.data[k].time;
-			if (time < 0.0 || time > inDuration)
+			if (clip_start ? time <= 0.0 : time < 0.0)
+				continue;
+			if (clip_end ? time >= inDuration : time > inDuration)
 				continue;
 			AppendKey(float(time), inKeys.data[k].value, inComponents, ioKeys);
 			++count;
 		}
-		if (inKeys.count > 0 && inKeys.data[inKeys.count - 1].time > inDuration)
+		if (clip_end)
 		{
 			AppendKey(float(inDuration), inEvaluate(inKeys, inDuration), inComponents, ioKeys);
 			++count;
