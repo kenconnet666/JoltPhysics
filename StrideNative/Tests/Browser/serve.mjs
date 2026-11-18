@@ -3,6 +3,7 @@
 //   node StrideNative/Tests/Browser/serve.mjs [port]     (STRIDE_NATIVE_DIST = build dist folder)
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
+import { stripTypeScriptTypes } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -10,7 +11,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const dist = process.env.STRIDE_NATIVE_DIST ?? path.join(here, '..', '..', 'Build', 'WASM_Release', 'dist');
 const port = Number(process.argv[2] ?? 8190);
 
-const { createStrideTools, BasisMode } = await import(pathToFileURL(path.join(dist, 'stride-tools.mjs')));
+const { createStrideTools } = await import(pathToFileURL(path.join(dist, 'stride-tools.ts')));
 
 async function makeFixtures() {
 	const tools = await createStrideTools();
@@ -35,7 +36,7 @@ async function makeFixtures() {
 
 	const s = Math.SQRT1_2;
 	const [ktx2, navmesh] = await Promise.all([
-		tools.encodeBasis(rgba, size, size, { mode: BasisMode.uastc, mipmaps: true }),
+		tools.encodeBasis(rgba, size, size, { mode: 'uastc', mipmaps: true }),
 		tools.bakeNavMesh(new Float32Array(ground), new Int32Array(triangles), { tileSize: 32 }),
 	]);
 	const fixtures = {
@@ -56,7 +57,7 @@ async function makeFixtures() {
 }
 
 const fixtures = await makeFixtures();
-const types = { '.html': 'text/html', '.mjs': 'text/javascript', '.js': 'text/javascript', '.wasm': 'application/wasm' };
+const types = { '.html': 'text/html', '.mjs': 'text/javascript', '.js': 'text/javascript', '.ts': 'text/javascript', '.wasm': 'application/wasm' };
 
 createServer(async (request, response) => {
 	const url = new URL(request.url, 'http://localhost');
@@ -74,6 +75,8 @@ createServer(async (request, response) => {
 			file = url.pathname === '/' ? path.join(here, 'index.html') : path.join(dist, path.normalize(url.pathname.replace(/^\/dist\//, '')));
 			if (!file.startsWith(here) && !file.startsWith(dist)) throw new Error('outside served folders');
 			body = await readFile(file);
+			// 绑定是 TypeScript，浏览器拿到的是去掉类型的版本（只用了可擦除的语法，行列不变）
+			if (file.endsWith('.ts')) body = stripTypeScriptTypes(body.toString('utf8'));
 		}
 		response.writeHead(200, { ...headers, 'Content-Type': types[path.extname(file ?? '')] ?? 'application/octet-stream' });
 		response.end(body);

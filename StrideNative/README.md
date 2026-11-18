@@ -21,7 +21,8 @@ StrideNative/
   Source/Shared/        code both modules use (tiled navmesh builder and its file format)
   Source/Runtime/       stride-native exports
   Source/Tools/         stride-tools exports
-  JS/                   native-module.mjs (shared), stride-native.mjs/.d.ts, stride-tools.mjs/.d.ts
+  JS/                   TypeScript bindings: native-module.ts (shared), stride-native.ts, stride-tools.ts;
+                        *-core.d.mts type the Emscripten factories
   ThirdParty/           libraries copied once; versions and licenses in ThirdParty/README.md
   Tests/Native/         doctest executables, one per module (debug these in CLion)
   Tests/JS/             Node tests: tools produce assets, the runtime consumes them
@@ -52,8 +53,8 @@ function reaches the module; each wasm module is the final link of those.
 
 ## Build and test
 
-Requirements: emsdk 6.0.8 at `C:\Users\Administrator\emsdk`, Node 22+; CMake and Ninja are taken
-from CLion.
+Requirements: emsdk 6.0.8 at `C:\Users\Administrator\emsdk`, Node 22.18+ or 24 (runs the
+TypeScript bindings by stripping types); CMake and Ninja are taken from CLion.
 
 ```powershell
 pwsh StrideNative/Scripts/build-wasm.ps1          # both modules + Node tests -> Build/WASM_Release/dist
@@ -69,14 +70,19 @@ In CLion the CMake root is `StrideNative/`; profiles `Debug` (MinGW, runs
 
 ## JS usage
 
-```js
-import { createStrideNative, TextureTarget } from './dist/stride-native.mjs';
+```ts
+import { createStrideNative } from './dist/stride-native.ts';
 
 const native = await createStrideNative();             // workers: hardwareConcurrency - 1
-const texture = await native.transcodeKtx2(ktx2Bytes, TextureTarget.bc7);
-const navMesh = native.loadNavMesh(bakedBytes);
+const texture = await native.transcodeKtx2(ktx2Bytes, 'bc7');
+using navMesh = native.loadNavMesh(bakedBytes);        // or navMesh.destroy()
 const path = navMesh.findPath([0, 0, 0], [10, 0, 5]);
 ```
+
+The bindings only use erasable TypeScript syntax: Node runs them directly, bundlers (Vite) compile
+them, and the browser test server strips the types before serving. Enumerations are string unions,
+handles are hidden, ids are branded (`BodyId`, `AgentId`), and failures are `NativeError` with a
+string `code` (`'invalid-argument' | 'invalid-handle' | 'failed' | 'not-initialized'`).
 
 Inputs are copied into module memory and outputs copied back, except
 `AnimationInstance.modelMatrices()`, which is a view of native memory for direct GPU upload.

@@ -15,7 +15,7 @@
 <p id="summary">Running…</p>
 <ul id="results"></ul>
 <script type="module">
-import { createStrideNative, MeshoptMode, TextureTarget } from '/dist/stride-native.mjs';
+import { createStrideNative } from '/dist/stride-native.ts';
 
 const results = [];
 const list = document.getElementById('results');
@@ -67,7 +67,7 @@ await check('physics steps on the shared job system (main thread waits and helps
 
 await check('meshopt batch decode (parallel)', async () => {
 	const [encoded, original] = await Promise.all([fixture('vertices.meshopt'), fixture('vertices.bin')]);
-	const requests = Array.from({ length: 8 }, () => ({ source: encoded, count: original.length / 16, stride: 16, mode: MeshoptMode.attributes }));
+	const requests = Array.from({ length: 8 }, () => ({ source: encoded, count: original.length / 16, stride: 16, mode: 'attributes' }));
 	const decoded = await native.decodeMeshoptBatch(requests);
 	decoded.forEach((bytes) => assert(bytes.every((value, i) => value === original[i]), 'decoded bytes differ'));
 	return `8 × ${original.length / 16} vertices`;
@@ -76,8 +76,8 @@ await check('meshopt batch decode (parallel)', async () => {
 await check('KTX2 transcode, mip levels in parallel', async () => {
 	const ktx2 = await fixture('texture.ktx2');
 	const info = native.ktx2Info(ktx2);
-	const rgba = await native.transcodeKtx2(ktx2, TextureTarget.rgba8);
-	const bc7 = await native.transcodeKtx2(ktx2, TextureTarget.bc7);
+	const rgba = await native.transcodeKtx2(ktx2, 'rgba8');
+	const bc7 = await native.transcodeKtx2(ktx2, 'bc7');
 	assert(rgba.levels.length === info.levels && rgba.levels[0].length === info.width * info.height * 4, 'unexpected RGBA levels');
 	assert(bc7.levels[0].length === (info.width / 4) * (info.height / 4) * 16, 'unexpected BC7 size');
 	return `${info.width}×${info.height}, ${info.levels} levels, RGBA8 and BC7`;

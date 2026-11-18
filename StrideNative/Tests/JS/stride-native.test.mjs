@@ -8,8 +8,9 @@ import path from 'node:path';
 
 const dist = process.env.STRIDE_NATIVE_DIST;
 assert.ok(dist, 'STRIDE_NATIVE_DIST must point at the build dist folder');
-const { createStrideNative, MeshoptMode, TextureTarget } = await import(pathToFileURL(path.join(dist, 'stride-native.mjs')));
-const { createStrideTools, BasisMode } = await import(pathToFileURL(path.join(dist, 'stride-tools.mjs')));
+// 绑定是 TypeScript：Node 24 直接去掉类型运行
+const { createStrideNative, NativeError } = await import(pathToFileURL(path.join(dist, 'stride-native.ts')));
+const { createStrideTools } = await import(pathToFileURL(path.join(dist, 'stride-tools.ts')));
 
 const testData = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'Data');
 const fontPath = process.env.STRIDE_TEST_FONT ?? 'C:/Windows/Fonts/arial.ttf';
@@ -63,7 +64,7 @@ describe('stride-native and stride-tools', () => {
 		const world = native.createPhysicsWorld(64);
 		assert.equal(world.addBox({ position: [0, -1, 0], halfExtent: [50, 1, 50], motion: 'static' }), 0);
 		const boxes = Array.from({ length: 20 }, (_, i) => ({ position: [(i % 5) * 2, 2 + Math.floor(i / 5) * 2, 0], halfExtent: [0.5, 0.5, 0.5] }));
-		assert.equal(world.addBoxes(boxes), 1);
+		assert.deepEqual(world.addBoxes(boxes), Array.from({ length: 20 }, (_, i) => i + 1));
 		const positions = world.positions();
 		assert.equal(positions.length, 21 * 3);
 		assert.equal(positions[1 * 3 + 1], 2, 'positions are written when bodies are added');
@@ -74,6 +75,22 @@ describe('stride-native and stride-tools', () => {
 			assert.ok(positions[body * 3 + 1] > 0.3 && positions[body * 3 + 1] < 8, `body ${body} rests on the floor or stack`);
 		assert.throws(() => world.addBox({ position: [0, 0, 0], halfExtent: [1, 1, 1], motion: 'kinematic' }), /motion/);
 		world.destroy();
+		world.destroy(); // 重复释放没有效果
+		assert.ok(world.destroyed);
+		assert.throws(() => world.step(1 / 60), (error) => error instanceof NativeError && error.code === 'invalid-handle' && /PhysicsWorld was destroyed/.test(error.message));
+	});
+
+	it('releases native objects with using and reports failures as NativeError codes', () => {
+		let escaped;
+		{
+			using world = native.createPhysicsWorld(4);
+			escaped = world;
+			assert.equal(world.destroyed, false);
+		}
+		assert.equal(escaped.destroyed, true);
+		assert.throws(() => native.loadNavMesh(new Uint8Array(16)), (error) => error instanceof NativeError && error.code === 'failed' && error.status === -3);
+		assert.throws(() => native.transcodeKtx2(new Uint8Array(4), 'png'), /target must be one of 'rgba8', 'bc7', 'astc4x4', 'etc2rgba8', not 'png'/);
+		assert.throws(() => native.decodeMeshopt({ source: new Uint8Array(4), count: 1, stride: 4, filter: 'zip' }), /MeshoptRequest.filter/);
 	});
 
 	it('round-trips meshopt encoding (tools) and parallel decoding (runtime)', async () => {
@@ -85,8 +102,8 @@ describe('stride-native and stride-tools', () => {
 		assert.ok(encodedVertices.length < vertices.byteLength);
 
 		const [decodedVertices, decodedIndices] = await native.decodeMeshoptBatch([
-			{ source: encodedVertices, count: vertexCount, stride, mode: MeshoptMode.attributes },
-			{ source: encodedIndices, count: indices.length, stride: 4, mode: MeshoptMode.triangles },
+			{ source: encodedVertices, count: vertexCount, stride, mode: 'attributes' },
+			{ source: encodedIndices, count: indices.length, stride: 4, mode: 'triangles' },
 		]);
 		assert.deepEqual(new Float32Array(decodedVertices.buffer), vertices);
 		const triangles = (array) => {
@@ -106,19 +123,19 @@ describe('stride-native and stride-tools', () => {
 		const rgba = new Uint8Array(size * size * 4);
 		for (let i = 0; i < size * size; ++i)
 			rgba.set([(i % size) * 2, Math.floor(i / size) * 2, 100, 255], i * 4);
-		const ktx2 = await tools.encodeBasis(rgba, size, size, { mode: BasisMode.uastc, mipmaps: true });
+		const ktx2 = await tools.encodeBasis(rgba, size, size, { mode: 'uastc', mipmaps: true });
 		const info = native.ktx2Info(ktx2);
 		assert.equal(info.width, size);
 		assert.equal(info.levels, 8);
 
-		const rgbaResult = await native.transcodeKtx2(ktx2, TextureTarget.rgba8);
+		const rgbaResult = await native.transcodeKtx2(ktx2, 'rgba8');
 		assert.equal(rgbaResult.levels.length, 8);
 		assert.equal(rgbaResult.levels[0].length, size * size * 4);
 		// UASTC is lossy but close: compare a pixel in the middle.
 		const p = (64 * size + 64) * 4;
 		assert.ok(Math.abs(rgbaResult.levels[0][p] - 128) < 12 && Math.abs(rgbaResult.levels[0][p + 1] - 128) < 12);
 
-		const bc7 = await native.transcodeKtx2(ktx2, TextureTarget.bc7);
+		const bc7 = await native.transcodeKtx2(ktx2, 'bc7');
 		assert.equal(bc7.unitSize, 16);
 		assert.equal(bc7.levels[0].length, (size / 4) * (size / 4) * 16);
 	});
