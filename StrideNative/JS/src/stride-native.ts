@@ -884,6 +884,23 @@ export class TransformStore extends NativeObject<StrideNative> {
 		this.native.check(this.native.module._sn_transforms_set_parent(this[HANDLE], slot, parent ?? 0), 'sn_transforms_set_parent');
 	}
 
+	/**
+	 * 链接（Stride 的 TransformLink，比如挂到骨骼节点）：slot 的世界矩阵改成 linkSlot 的世界矩阵 * matrix * 本地，不再看父节点。
+	 * matrix 是列主序 4x4，拷进存储，每帧变了再调一次；linkSlot 为 null 时去掉链接。linkSlot 不能依赖 slot（会成环）。
+	 */
+	setLink(slot: TransformSlot, linkSlot: TransformSlot | null, matrix?: ArrayLike<number>): void {
+		const n = this.native;
+		if (linkSlot === null) {
+			n.check(n.module._sn_transforms_set_link(this[HANDLE], slot, 0, 0), 'sn_transforms_set_link');
+			return;
+		}
+		if (!matrix || matrix.length < 16) throw new RangeError('setLink needs a 4x4 matrix (16 numbers)');
+		n.withScratch(64, (pointer) => {
+			n.f32(pointer, 16).set(Array.prototype.slice.call(matrix, 0, 16) as number[]);
+			n.check(n.module._sn_transforms_set_link(this[HANDLE], slot, linkSlot, pointer), 'sn_transforms_set_link');
+		});
+	}
+
 	/** 发出去过的最大槽位号（释放了也不降）：用到的槽位都在 1..slotLimit 之内，上传世界矩阵时只传 world 的前 (slotLimit + 1) * 16 个 float。 */
 	get slotLimit(): number {
 		return this.native.check(this.native.module._sn_transforms_slot_limit(this[HANDLE]), 'sn_transforms_slot_limit');

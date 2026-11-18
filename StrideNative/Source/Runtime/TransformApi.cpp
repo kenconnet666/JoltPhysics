@@ -18,7 +18,9 @@ namespace StrideNative
 		mWorld(size_t(inCapacity + 1) * 16, 0.0f),
 		mCapacity(inCapacity),
 		mAlive(inCapacity + 1, 0),
-		mChildCount(inCapacity + 1, 0)
+		mChildCount(inCapacity + 1, 0),
+		mLinkSlot(inCapacity + 1, 0),
+		mLinkMatrix(size_t(inCapacity + 1) * 16, 0.0f)
 	{
 		for (uint32_t slot = 0; slot <= inCapacity; ++slot)
 		{
@@ -48,6 +50,7 @@ namespace StrideNative
 			std::fill_n(&mScale[slot * 3], 3, 1.0f);
 			mParent[slot] = 0;
 			mChildCount[slot] = 0;
+			mLinkSlot[slot] = 0;
 			Mat44::sIdentity().StoreFloat4x4(reinterpret_cast<Float4 *>(&mWorld[slot * 16]));
 			mAlive[slot] = 1;
 			outSlots[i] = slot;
@@ -89,8 +92,17 @@ namespace StrideNative
 				{
 					mAlive[inSlots[i]] = 0;
 					mParent[inSlots[i]] = 0;
+					mLinkSlot[inSlots[i]] = 0;
 					mFreeSlots.push_back(inSlots[i]);
 				}
+				// 释放的槽位上的链接、指向释放的槽位的链接都去掉（那些槽位变回按父节点算）
+				mLinked.erase(std::remove_if(mLinked.begin(), mLinked.end(), [this](int32_t inLinked)
+				{
+					if (mAlive[inLinked] != 0 && mLinkSlot[inLinked] != 0 && mAlive[mLinkSlot[inLinked]] != 0)
+						return false;
+					mLinkSlot[inLinked] = 0;
+					return true;
+				}), mLinked.end());
 				mOrderDirty |= inCount > 0;
 				return true;
 			}
@@ -119,6 +131,14 @@ namespace StrideNative
 				outError = "slot " + std::to_string(inSlot) + " cannot become a descendant of itself";
 				return false;
 			}
+		// 没有链接的槽位按父节点算世界矩阵：父节点也不能经由链接依赖它
+		if (mLinkSlot[inSlot] == 0)
+			for (int32_t ancestor = inParent; ancestor != 0; ancestor = EffectiveParent(ancestor))
+				if (ancestor == inSlot)
+				{
+					outError = "slot " + std::to_string(inSlot) + " cannot become the parent of a slot linked to it";
+					return false;
+				}
 
 		if (int32_t old = mParent[inSlot]; old != 0)
 			--mChildCount[old];
@@ -127,6 +147,54 @@ namespace StrideNative
 		mParent[inSlot] = inParent;
 		mOrderDirty = true;
 		return true;
+	}
+
+	bool TransformStore::SetLink(int32_t inSlot, int32_t inLinkSlot, const float *inMatrix, std::string &outError)
+	{
+		if (!IsAlive(inSlot))
+		{
+			outError = "slot " + std::to_string(inSlot) + " is not allocated";
+			return false;
+		}
+		if (inLinkSlot != 0)
+		{
+			if (!IsAlive(inLinkSlot))
+			{
+				outError = "link slot " + std::to_string(inLinkSlot) + " is not allocated";
+				return false;
+			}
+			if (inMatrix == nullptr)
+			{
+				outError = "a link needs a matrix";
+				return false;
+			}
+			// 链接的槽位不能依赖这个槽位（沿算世界矩阵的"父"往上走不能走到自己）
+			for (int32_t ancestor = inLinkSlot; ancestor != 0; ancestor = EffectiveParent(ancestor))
+				if (ancestor == inSlot)
+				{
+					outError = "slot " + std::to_string(inSlot) + " cannot link to its own descendant " + std::to_string(inLinkSlot);
+					return false;
+				}
+			std::copy_n(inMatrix, 16, &mLinkMatrix[inSlot * 16]);
+		}
+		if (mLinkSlot[inSlot] == inLinkSlot)
+			return true;
+		if (mLinkSlot[inSlot] == 0)
+			mLinked.push_back(inSlot);
+		else if (inLinkSlot == 0)
+			mLinked.erase(std::find(mLinked.begin(), mLinked.end(), inSlot));
+		mLinkSlot[inSlot] = inLinkSlot;
+		mOrderDirty = true;
+		return true;
+	}
+
+	Mat44 TransformStore::ParentWorld(int32_t inSlot) const
+	{
+		if (int32_t link = mLinkSlot[inSlot]; link != 0)
+			return LoadWorld(link) * Mat44::sLoadFloat4x4(reinterpret_cast<const Float4 *>(&mLinkMatrix[inSlot * 16]));
+		if (int32_t parent = mParent[inSlot]; parent != 0)
+			return LoadWorld(parent);
+		return Mat44::sIdentity();
 	}
 
 	void TransformStore::RebuildOrder()
@@ -144,7 +212,7 @@ namespace StrideNative
 				continue;
 			mChain.clear();
 			int32_t known = slot;
-			for (; known != 0 && mDepth[known] < 0; known = mParent[known])
+			for (; known != 0 && mDepth[known] < 0; known = EffectiveParent(known))
 				mChain.push_back(known);
 			int32_t depth = known == 0 ? -1 : mDepth[known];
 			for (auto it = mChain.rbegin(); it != mChain.rend(); ++it)
@@ -189,8 +257,12 @@ namespace StrideNative
 	Mat44 TransformStore::ComputeWorldMatrix(int32_t inSlot) const
 	{
 		Mat44 world = LocalMatrix(inSlot);
-		for (int32_t parent = mParent[inSlot]; parent != 0; parent = mParent[parent])
-			world = LocalMatrix(parent) * world;
+		for (int32_t slot = inSlot; EffectiveParent(slot) != 0; slot = EffectiveParent(slot))
+		{
+			if (mLinkSlot[slot] != 0)
+				world = Mat44::sLoadFloat4x4(reinterpret_cast<const Float4 *>(&mLinkMatrix[slot * 16])) * world;
+			world = LocalMatrix(EffectiveParent(slot)) * world;
+		}
 		return world;
 	}
 
@@ -200,9 +272,7 @@ namespace StrideNative
 			RebuildOrder();
 		for (int32_t slot : mOrder)
 		{
-			Mat44 world = LocalMatrix(slot);
-			if (int32_t parent = mParent[slot]; parent != 0)
-				world = LoadWorld(parent) * world;
+			Mat44 world = EffectiveParent(slot) != 0 ? ParentWorld(slot) * LocalMatrix(slot) : LocalMatrix(slot);
 			world.StoreFloat4x4(reinterpret_cast<Float4 *>(&mWorld[slot * 16]));
 		}
 	}
@@ -210,13 +280,11 @@ namespace StrideNative
 	void TransformStore::UpdateSlot(int32_t inSlot)
 	{
 		std::vector<int32_t> chain;
-		for (int32_t slot = inSlot; slot != 0; slot = mParent[slot])
+		for (int32_t slot = inSlot; slot != 0; slot = EffectiveParent(slot))
 			chain.push_back(slot);
 		for (auto it = chain.rbegin(); it != chain.rend(); ++it)
 		{
-			Mat44 world = LocalMatrix(*it);
-			if (int32_t parent = mParent[*it]; parent != 0)
-				world = LoadWorld(parent) * world;
+			Mat44 world = EffectiveParent(*it) != 0 ? ParentWorld(*it) * LocalMatrix(*it) : LocalMatrix(*it);
 			world.StoreFloat4x4(reinterpret_cast<Float4 *>(&mWorld[*it * 16]));
 		}
 	}
@@ -225,9 +293,9 @@ namespace StrideNative
 	{
 		Vec3 position = inPosition;
 		Quat rotation = inRotation;
-		if (int32_t parent = mParent[inSlot]; parent != 0)
+		if (EffectiveParent(inSlot) != 0)
 		{
-			Mat44 parent_world = LoadWorld(parent);
+			Mat44 parent_world = ParentWorld(inSlot);
 			Vec3 parent_scale;
 			position = parent_world.Inversed() * inPosition;
 			rotation = (parent_world.Decompose(parent_scale).GetQuaternion().Conjugated() * inRotation).Normalized();
@@ -309,6 +377,15 @@ SN_API int32_t sn_transforms_set_parent(int32_t transforms, int32_t slot, int32_
 		return SN_ERROR_INVALID_HANDLE;
 	std::string error;
 	return store->SetParent(slot, parent, error) ? SN_OK : SetLastError(SN_ERROR_INVALID_ARGUMENT, error);
+}
+
+SN_API int32_t sn_transforms_set_link(int32_t transforms, int32_t slot, int32_t link_slot, const float *matrix)
+{
+	TransformStore *store = GetStore(transforms);
+	if (store == nullptr)
+		return SN_ERROR_INVALID_HANDLE;
+	std::string error;
+	return store->SetLink(slot, link_slot, matrix, error) ? SN_OK : SetLastError(SN_ERROR_INVALID_ARGUMENT, error);
 }
 
 SN_API int32_t sn_transforms_slot_limit(int32_t transforms)

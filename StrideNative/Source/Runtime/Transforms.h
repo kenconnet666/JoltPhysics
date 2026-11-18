@@ -25,6 +25,8 @@ namespace StrideNative
 		/// 释放槽位；有留下的子节点时什么都不做，在 outError 里说明原因。
 		bool Free(const int32_t *inSlots, uint32_t inCount, std::string &outError);
 		bool SetParent(int32_t inSlot, int32_t inParent, std::string &outError);
+		/// 链接（Stride 的 TransformLink）：world = inLinkSlot 的 world * inMatrix * 本地，不看父节点；inLinkSlot 为 0 时去掉链接
+		bool SetLink(int32_t inSlot, int32_t inLinkSlot, const float *inMatrix, std::string &outError);
 
 		/// 按父节点在前的顺序算所有世界矩阵。
 		void Update();
@@ -46,12 +48,19 @@ namespace StrideNative
 
 	private:
 		JPH::Mat44				LoadWorld(int32_t inSlot) const;
+		/// 算世界矩阵时的"父"：有链接时是链接的槽位，否则是父节点
+		int32_t					EffectiveParent(int32_t inSlot) const { return mLinkSlot[inSlot] != 0 ? mLinkSlot[inSlot] : mParent[inSlot]; }
+		/// 父的世界矩阵乘到本地矩阵前面的那部分：有链接时是 链接槽位的 world * 链接矩阵，没有父时是单位矩阵
+		JPH::Mat44				ParentWorld(int32_t inSlot) const;
 		void					RebuildOrder();
 
 		uint32_t				mCapacity;
 		std::vector<uint8_t>	mAlive;
 		std::vector<uint32_t>	mChildCount;
 		std::vector<int32_t>	mFreeSlots;			///< 释放过的槽位，后进先出地重用
+		std::vector<int32_t>	mLinkSlot;			///< 链接到的槽位，0 表示没有链接
+		std::vector<float>		mLinkMatrix;		///< 链接矩阵，列主序 4x4
+		std::vector<int32_t>	mLinked;			///< 有链接的槽位（释放槽位时去掉指向它的链接）
 		uint32_t				mHighWater = 0;		///< 发出去过的最大槽位号
 		std::vector<int32_t>	mOrder;				///< 活着的槽位，父节点在前
 		std::vector<int32_t>	mDepth;				///< 以下三个是 RebuildOrder 的临时数据，留着重用

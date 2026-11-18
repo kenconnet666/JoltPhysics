@@ -31,7 +31,11 @@ SN_API int32_t sn_transforms_alloc(int32_t transforms, int32_t *out_slots, uint3
 SN_API int32_t sn_transforms_free(int32_t transforms, const int32_t *slots, uint32_t count);
 /// 把 slot 挂到 parent 下（parent 为 0 表示变成根）。不能形成环。
 SN_API int32_t sn_transforms_set_parent(int32_t transforms, int32_t slot, int32_t parent);
-/// 按父节点在前的顺序算出所有槽位的世界矩阵：world = parent.world * T * R * S。
+/// 链接（Stride 的 TransformLink，比如 ModelNodeLinkComponent 挂到骨骼节点）：slot 的世界矩阵改成
+/// link_slot.world * matrix * T * R * S，不再看父节点（父子关系不变）。matrix 是列主序 4x4，拷进存储；每帧要变时再调一次。
+/// link_slot 为 0 时去掉链接。link_slot 不能依赖 slot（会成环）。槽位释放时，它上面的和指向它的链接一起去掉。
+SN_API int32_t sn_transforms_set_link(int32_t transforms, int32_t slot, int32_t link_slot, const float *matrix);
+/// 按父节点（有链接时是链接的槽位）在前的顺序算出所有槽位的世界矩阵：world = parent.world * T * R * S。
 SN_API int32_t sn_transforms_update(int32_t transforms);
 /// 只算 slot 和它的祖先的世界矩阵（Stride 的 TransformComponent.UpdateWorldMatrix）：脚本在这一帧的 sn_transforms_update
 /// 之前要用世界位姿时调用。

@@ -415,6 +415,13 @@ export interface NativeExports {
 	 */
 	_sn_transforms_free(transforms: number, slots: number, count: number): number;
 	/**
+	 * 链接（Stride 的 TransformLink，比如 ModelNodeLinkComponent 挂到骨骼节点）：slot 的世界矩阵改成
+	 * link_slot.world * matrix * T * R * S，不再看父节点（父子关系不变）。matrix 是列主序 4x4，拷进存储；每帧要变时再调一次。
+	 * link_slot 为 0 时去掉链接。link_slot 不能依赖 slot（会成环）。槽位释放时，它上面的和指向它的链接一起去掉。
+	 * C: Runtime.h
+	 */
+	_sn_transforms_set_link(transforms: number, slot: number, linkSlot: number, matrix: number): number;
+	/**
 	 * 把 slot 挂到 parent 下（parent 为 0 表示变成根）。不能形成环。
 	 * C: Runtime.h
 	 */
@@ -425,7 +432,7 @@ export interface NativeExports {
 	 */
 	_sn_transforms_slot_limit(transforms: number): number;
 	/**
-	 * 按父节点在前的顺序算出所有槽位的世界矩阵：world = parent.world * T * R * S。
+	 * 按父节点（有链接时是链接的槽位）在前的顺序算出所有槽位的世界矩阵：world = parent.world * T * R * S。
 	 * C: Runtime.h
 	 */
 	_sn_transforms_update(transforms: number): number;
@@ -673,6 +680,7 @@ export type RuntimeExport =
 	| 'sn_transforms_alloc'
 	| 'sn_transforms_free'
 	| 'sn_transforms_set_parent'
+	| 'sn_transforms_set_link'
 	| 'sn_transforms_update'
 	| 'sn_transforms_update_slot'
 	| 'sn_transforms_slot_limit'

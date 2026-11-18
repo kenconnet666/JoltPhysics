@@ -555,6 +555,34 @@ describe('stride-native and stride-tools', () => {
 		assert.equal(transforms.allocate(5).length, 5);
 	});
 
+	it('links a slot to another slot through a matrix (Stride TransformLink, ModelNodeLink), ignoring its parent', () => {
+		using transforms = native.createTransforms(8);
+		const [model, hand, other] = transforms.allocate(3);
+		const { position, world } = transforms;
+		const near = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-4, `${actual} is not near ${expected}`);
+		// 模型在 (10, 0, 0)；骨骼节点在模型空间 (0, 2, 0)；手的本地平移 (1, 0, 0)；手的父节点是 other（链接后不看）
+		position[model * 3] = 10;
+		position[other * 3 + 2] = 50;
+		transforms.setParent(hand, other);
+		position[hand * 3] = 1;
+		const node = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 2, 0, 1];
+		transforms.setLink(hand, model, node);
+		transforms.update();
+		[11, 2, 0].forEach((v, i) => near(world[hand * 16 + 12 + i], v));
+		// 每帧换节点矩阵；只算这条链也一样
+		node[13] = 3;
+		transforms.setLink(hand, model, node);
+		transforms.updateSlot(hand);
+		[11, 3, 0].forEach((v, i) => near(world[hand * 16 + 12 + i], v));
+		// 成环的链接拒绝；链接到的槽位释放后，回到按父节点算
+		assert.throws(() => transforms.setLink(model, hand, node), /cannot link to its own descendant/);
+		assert.throws(() => transforms.setParent(model, hand), /cannot become the parent of a slot linked to it/);
+		transforms.free(model);
+		transforms.update();
+		[1, 0, 50].forEach((v, i) => near(world[hand * 16 + 12 + i], v));
+		transforms.setLink(hand, null);
+	});
+
 	it('releases native objects with using and reports failures as NativeError codes', async () => {
 		let escaped;
 		{
