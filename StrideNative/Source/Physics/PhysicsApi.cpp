@@ -17,6 +17,7 @@
 #include <Jolt/Physics/Collision/ContactListener.h>
 #include <Jolt/Physics/Collision/RayCast.h>
 #include <Jolt/Physics/Collision/ShapeCast.h>
+#include <Jolt/Physics/Collision/TransformedShape.h>
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
 #include <Jolt/Physics/Collision/CollisionDispatch.h>
 #include <Jolt/Physics/Collision/Shape/EmptyShape.h>
@@ -1634,11 +1635,16 @@ SN_API int32_t sn_physics_static_triangles(int32_t world, uint32_t mask, float *
 		const Body &body = lock.GetBody();
 		if ((mask >> CollisionLayerOf(body.GetObjectLayer()) & 1) == 0)
 			continue;
-		const Shape *shape = body.GetShape();
-		Shape::GetTrianglesContext context;
-		shape->GetTrianglesStart(context, AABox::sBiggest(), body.GetCenterOfMassPosition(), body.GetRotation(), Vec3::sOne());
-		for (int count; (count = shape->GetTrianglesNext(context, cBatch, batch)) > 0;)
-			vertices.insert(vertices.end(), batch, batch + 3 * count);
+		// 复合、平移旋转这些非叶子形状不能直接三角化：先收集叶子形状（各带自己的世界变换）
+		AllHitCollisionCollector<TransformedShapeCollector> leaves;
+		body.GetTransformedShape().CollectTransformedShapes(AABox::sBiggest(), leaves);
+		for (const TransformedShape &leaf : leaves.mHits)
+		{
+			Shape::GetTrianglesContext context;
+			leaf.GetTrianglesStart(context, AABox::sBiggest(), RVec3::sZero());
+			for (int count; (count = leaf.GetTrianglesNext(context, cBatch, batch)) > 0;)
+				vertices.insert(vertices.end(), batch, batch + 3 * count);
+		}
 	}
 	if (vertices.empty())
 		return 0;

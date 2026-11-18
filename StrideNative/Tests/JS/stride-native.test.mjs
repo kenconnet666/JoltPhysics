@@ -700,7 +700,8 @@ describe('stride-native and stride-tools', () => {
 		const world = native.createPhysicsWorld(16);
 		try {
 			// 地面 20 x 20（层 6），中间一堵墙（层 6）；同一处一个触发器（层 6）和一个层 0 的箱子都不算
-			world.addBody({ shapes: [{ type: 'box', size: [20, 1, 20] }], position: [0, -0.5, 0], layer: 6 });
+			// 地面用带本地偏移的盒子（复合形状里的叶子，TopDownRPG 的 GridBase10x10）
+			world.addBody({ shapes: [{ type: 'box', size: [20, 1, 20], position: [0, -0.5, 0] }], layer: 6 });
 			world.addBody({ shapes: [{ type: 'box', size: [1, 2, 16] }], position: [0, 1, -2], layer: 6 });
 			world.addBody({ shapes: [{ type: 'box', size: [4, 4, 4] }], position: [0, 2, 8], layer: 6, sensor: true });
 			world.addBody({ shapes: [{ type: 'box', size: [4, 4, 4] }], position: [0, 2, 8], layer: 0 });
