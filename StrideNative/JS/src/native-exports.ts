@@ -234,6 +234,12 @@ export interface NativeExports {
 	 */
 	_sn_physics_body_set_never_sleep(world: number, body: number, neverSleep: number): number;
 	/**
+	 * 只改朝向（Stride 的 SetTargetPose(Quaternion)、CharacterComponent.Orientation），并唤醒：位置和它的插值不动，所以可以每帧调
+	 * （鼠标转视角带着角色转）。绑定了变换的立即写回旋转。角色之后的 MoveVector 按新的朝向换到世界。
+	 * C: Physics.h
+	 */
+	_sn_physics_body_set_rotation(world: number, body: number, rotation: number): number;
+	/**
 	 * 设成或取消传感器（SN_BODY_SENSOR）。
 	 * C: Physics.h
 	 */
@@ -708,6 +714,7 @@ export type RuntimeExport =
 	| 'sn_physics_body_set_awake'
 	| 'sn_physics_body_awake'
 	| 'sn_physics_body_teleport'
+	| 'sn_physics_body_set_rotation'
 	| 'sn_physics_body_velocity'
 	| 'sn_physics_body_set_velocity'
 	| 'sn_physics_body_apply_impulse'

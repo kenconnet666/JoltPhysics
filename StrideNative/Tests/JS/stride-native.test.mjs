@@ -243,6 +243,10 @@ describe('stride-native and stride-tools', () => {
 			world.interpolate(0.5);
 			const halfway = transforms.position[playerSlot * 3 + 1];
 			assert.ok(halfway > before && halfway < world.positions()[player * 3 + 1], 'interpolation writes a pose between the last two steps');
+			// 只改朝向（鼠标转视角带着角色转）：插值到一半的位置不动，旋转马上写回
+			world.setRotation(player, [0, Math.SQRT1_2, 0, Math.SQRT1_2]);
+			assert.equal(transforms.position[playerSlot * 3 + 1], halfway);
+			assert.ok(Math.abs(transforms.rotation[playerSlot * 4 + 1] - Math.SQRT1_2) < 1e-4, 'the rotation is written back at once');
 
 			// 角色也能瞬移、转身（Stride 的 CharacterComponent.Orientation），朝向一直保持；能读速度
 			world.teleport(player, [0, 3, 2], [0, 1, 0, 0]);

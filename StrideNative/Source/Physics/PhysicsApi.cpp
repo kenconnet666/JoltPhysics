@@ -1583,6 +1583,27 @@ SN_API int32_t sn_physics_body_teleport(int32_t world, int32_t body, const float
 	return SN_OK;
 }
 
+SN_API int32_t sn_physics_body_set_rotation(int32_t world, int32_t body, const float *rotation)
+{
+	World *w = GetWorld(world);
+	BodyRecord *record = GetMovableBody(w, body, "sn_physics_body_set_rotation", true);
+	if (record == nullptr)
+		return w == nullptr ? SN_ERROR_INVALID_HANDLE : SN_ERROR_INVALID_ARGUMENT;
+	if (rotation == nullptr)
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "sn_physics_body_set_rotation: rotation is required");
+	record->mRotation = record->mPreviousRotation = LoadQuat(rotation);
+	w->mSystem.GetBodyInterface().SetRotation(record->mID, record->mRotation, EActivation::Activate);
+	if (record->mSlot != 0)
+	{
+		TransformStore *store = BoundStore(*w);
+		if (store == nullptr)
+			return SN_ERROR_INVALID_HANDLE;
+		// 位置照上次写进去的（插值到一半的）不动，只换旋转
+		WritePose(*store, *record, record->mWrittenPosition, record->mRotation);
+	}
+	return SN_OK;
+}
+
 SN_API int32_t sn_physics_body_velocity(int32_t world, int32_t body, float *linear, float *angular)
 {
 	World *w = GetWorld(world);

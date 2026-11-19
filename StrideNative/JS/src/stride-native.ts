@@ -587,6 +587,15 @@ export class PhysicsWorld extends NativeObject<StrideNative> {
 		this.native.check(this.native.module._sn_physics_body_teleport(this[HANDLE], body, q, q + 12), 'sn_physics_body_teleport');
 	}
 
+	/**
+	 * 只改朝向并唤醒（Stride 的 SetTargetPose(Quaternion)、CharacterComponent.Orientation）：位置和它的插值不动，可以每帧调；
+	 * 绑定了变换的立即写回旋转。
+	 */
+	setRotation(body: BodyId, rotation: ArrayLike<number>): void {
+		this.#queryFloats.set([rotation[0]!, rotation[1]!, rotation[2]!, rotation[3]!]);
+		this.native.check(this.native.module._sn_physics_body_set_rotation(this[HANDLE], body, this.#query), 'sn_physics_body_set_rotation');
+	}
+
 	/** 线速度和角速度（世界空间），写进 linear、angular（各 3 个数）。 */
 	velocity(body: BodyId, linear: Vec3Out, angular: Vec3Out): void {
 		const q = this.#query;

@@ -131,6 +131,9 @@ SN_API int32_t sn_physics_body_awake(int32_t world, int32_t body);
 /// 瞬移到世界位姿（Stride 的 Teleport），并唤醒；绑定了变换的立即写回槽位，插值也从这里重新开始。角色也可以（转身改朝向，
 /// Stride 的 CharacterComponent.Orientation），之后的 MoveVector 按新的朝向换到世界。
 SN_API int32_t sn_physics_body_teleport(int32_t world, int32_t body, const float *position, const float *rotation);
+/// 只改朝向（Stride 的 SetTargetPose(Quaternion)、CharacterComponent.Orientation），并唤醒：位置和它的插值不动，所以可以每帧调
+/// （鼠标转视角带着角色转）。绑定了变换的立即写回旋转。角色之后的 MoveVector 按新的朝向换到世界。
+SN_API int32_t sn_physics_body_set_rotation(int32_t world, int32_t body, const float *rotation);
 /// 读线速度和角速度（世界空间，各 xyz）；不要的传 null。角色也可以读（它的速度由移动目标每步设，不能直接设）。
 SN_API int32_t sn_physics_body_velocity(int32_t world, int32_t body, float *linear, float *angular);
 /// 设线速度和角速度；传 null 的不变。

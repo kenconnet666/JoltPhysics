@@ -473,6 +473,12 @@ TEST_CASE("物理：凸包和 BodyComponent 的控制（运动学切换、瞬移
 	const float place[3] = { 0, 10, 0 }, identity[4] = { 0, 0, 0, 1 }, zero[3] = { 0, 0, 0 }, sideways[3] = { 1, 0, 0 };
 	REQUIRE(sn_physics_body_teleport(world, 1, place, identity) == SN_OK);
 	CHECK(positions[4] == 10.0f);
+	// 只改朝向：位置不动
+	const float quarter_turn[4] = { 0, 0.70710678f, 0, 0.70710678f };
+	REQUIRE(sn_physics_body_set_rotation(world, 1, quarter_turn) == SN_OK);
+	CHECK(positions[4] == 10.0f);
+	CHECK(sn_physics_body_set_rotation(world, 1, nullptr) == SN_ERROR_INVALID_ARGUMENT);
+	REQUIRE(sn_physics_body_set_rotation(world, 1, identity) == SN_OK);
 	REQUIRE(sn_physics_body_set_velocity(world, 1, sideways, zero) == SN_OK);
 	REQUIRE(sn_physics_body_apply_impulse(world, 1, up, nullptr) == SN_OK);
 	Step(world, 60);
