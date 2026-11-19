@@ -1026,9 +1026,15 @@ TEST_CASE("物理：运动学物体跟着被改过的变换走（自己或父节
 	CHECK(c.world[root * 16 + 8] == doctest::Approx(1.0f).epsilon(1e-3));		// z 轴转到 x
 	CheckTranslation(&c.world[moving * 16], -9 + 1.0f / 60.0f, 0, 0, 1e-3);
 
+	// 物理以外再移父节点：没动的运动学物体不写回，子节点的世界位姿马上跟着父节点（不被物体原来的位姿盖掉）
+	c.position[parent * 3] = 7;
+	run(1);
+	CheckTranslation(&c.world[child * 16], 7, 2, 0, 1e-4);
+	CHECK(positions[0] == doctest::Approx(7.0f));
+
 	// 物理里也在新位置：查重叠找得到
 	sn_shape probe = BoxShape(0.2f, 0.2f, 0.2f);
-	probe.position[0] = -3;
+	probe.position[0] = 7;
 	probe.position[1] = 2;
 	int32_t found[4] = {};
 	CHECK(sn_physics_overlap(world, &probe, 0xffffffffu, found, 4) == 1);

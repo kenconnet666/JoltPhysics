@@ -367,7 +367,7 @@ namespace
 	 * 运动学物体跟着变换走：槽位现在的世界位姿和上次写进去的不一样（脚本移动了它或它的父实体），步进前把物体移过去。
 	 * 和 Stride 不同：Bepu 只让 Static 跟着变换（CollidableProcessor），运动学刚体醒着时由仿真写回变换，睡下后变换和物体
 	 * 就分开了。场景的本意是运动学刚体跟着实体走（JumpyJet 移动管子组的根，TopDownRPG 掉落的金币带着子实体上的触发器）。
-	 * 按速度走的运动学物体每步写回，变换和写进去的一样，不受影响。
+	 * 按速度走的运动学物体每步写回，变换和写进去的一样，不受影响；没动的不写回（KinematicStill），父节点动了就看得出来。
 	 */
 	void FollowMovedKinematics(World &ioWorld, const StrideNative::TransformStore &inStore)
 	{
@@ -393,6 +393,12 @@ namespace
 		}
 	}
 
+	/// 这一步在仿真里没动的运动学物体（速度为 0）：不写回，变换保持相对父节点的本地位姿，父节点动了它才看得出来（FollowMovedKinematics）
+	bool KinematicStill(const BodyRecord &inRecord)
+	{
+		return inRecord.mMotion == SN_MOTION_KINEMATIC && inRecord.mPosition == inRecord.mPreviousPosition && inRecord.mRotation == inRecord.mPreviousRotation;
+	}
+
 	/// 会动的物体记下这一步的位姿，写回绑定的槽位（插值的物体由 sn_physics_interpolate 再写一次）
 	void RecordPoses(World &ioWorld, StrideNative::TransformStore *ioStore)
 	{
@@ -404,7 +410,7 @@ namespace
 			record.mPreviousPosition = record.mPosition;
 			record.mPreviousRotation = record.mRotation;
 			bodies.GetPositionAndRotation(record.mID, record.mPosition, record.mRotation);
-			if (ioStore != nullptr && record.mSlot != 0)
+			if (ioStore != nullptr && record.mSlot != 0 && !KinematicStill(record))
 				WritePose(*ioStore, record, record.mPosition, record.mRotation);
 		}
 	}
@@ -1120,7 +1126,7 @@ SN_API int32_t sn_physics_interpolate(int32_t world, float alpha)
 	float t = std::clamp(alpha, 0.0f, 1.0f);
 	for (BodyRecord &record : w->mBodies)
 	{
-		if ((record.mFlags & SN_BODY_INTERPOLATED) == 0 || record.mSlot == 0 || !Integrates(record.mMotion) || record.mRemoved)
+		if ((record.mFlags & SN_BODY_INTERPOLATED) == 0 || record.mSlot == 0 || !Integrates(record.mMotion) || record.mRemoved || KinematicStill(record))
 			continue;
 		RVec3 position = record.mPreviousPosition + (record.mPosition - record.mPreviousPosition) * t;
 		Quat rotation = record.mPreviousRotation.SLERP(record.mRotation, t);
