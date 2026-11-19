@@ -264,6 +264,11 @@ describe('stride-native and stride-tools', () => {
 			// 起点在墙里：默认是距离 0 的命中，忽略起点重叠时打到后面的柱子
 			assert.equal(world.sphereCast(0.5, [5, 2, -6], [1, 0, 0], 20).distance, 0);
 			assert.equal(world.sphereCast(0.5, [5, 2, -6], [1, 0, 0], 20, { ignoreInitialOverlap: true }), undefined, 'nothing behind the wall on this line');
+			// 重叠查询：墙上的球、按遮罩、容量不够时再查一次放得下全部
+			assert.deepEqual(world.overlap({ type: 'sphere', radius: 0.6, position: [5, 2, -6] }), [wall]);
+			assert.deepEqual(world.overlap({ type: 'sphere', radius: 0.6, position: [5, 2, -6] }, { mask: 1 << 1 }), []);
+			assert.deepEqual(world.overlap({ type: 'capsule', radius: 0.2, length: 1, position: [5, 2, -6], rotation: [0, 0, 0.7071068, 0.7071068] }, { capacity: 0 }), [wall]);
+			assert.deepEqual(world.overlap({ type: 'sphere', radius: 0.4, position: [2, 2, -6] }), []);
 			assert.throws(() => world.moveCharacter(wall, 1, 0), /not a character/);
 			assert.throws(() => world.addBody({ motion: 'dynamic', shapes: [{ type: 'mesh', mesh }, { type: 'sphere', radius: 1 }] }), /mesh shape must have only that shape/);
 			assert.throws(() => native.createPhysicsWorld(4, { collisionMasks: [1, 2] }), /32 entries/);

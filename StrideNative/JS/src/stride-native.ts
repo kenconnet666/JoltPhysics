@@ -670,6 +670,23 @@ export class PhysicsWorld extends NativeObject<StrideNative> {
 		return this.#hit(this.native.check(result, 'sn_physics_sphere_cast'), hit);
 	}
 
+	/**
+	 * 形状的重叠查询（Stride 的 BepuSimulation.Overlap）：shape 的 position、rotation 是查询的世界位姿，返回和它重叠的物体
+	 * （去掉重复，触发器也算）。网格、凸包不缩放。
+	 */
+	overlap(shape: ShapeDesc, { mask = ALL_LAYERS, capacity = 64 }: { mask?: number; capacity?: number } = {}): BodyId[] {
+		const n = this.native;
+		const bytes = (SHAPE_WORDS + capacity) * 4;
+		return n.withScratch(bytes, (table) => {
+			writeShape(n.f32(table, SHAPE_WORDS), n.u32(table, SHAPE_WORDS), 0, shape, 0, 0);
+			const out = table + SHAPE_WORDS * 4;
+			const total = n.check(n.module._sn_physics_overlap(this[HANDLE], table, mask >>> 0, out, capacity), 'sn_physics_overlap');
+			// 比 capacity 多时再查一次，放得下全部
+			if (total > capacity) return this.overlap(shape, { mask, capacity: total });
+			return Array.from(n.i32(out, total)) as BodyId[];
+		});
+	}
+
 	#setQuery(origin: Vec3, direction: Vec3): void {
 		const f = this.#queryFloats;
 		f[0] = origin[0]!; f[1] = origin[1]!; f[2] = origin[2]!;

@@ -1704,6 +1704,34 @@ SN_API int32_t sn_physics_static_triangles(int32_t world, uint32_t mask, float *
 	return int32_t(vertices.size() / 3);
 }
 
+SN_API int32_t sn_physics_overlap(int32_t world, const sn_shape *shape, uint32_t mask, int32_t *out_bodies, int32_t capacity)
+{
+	World *w = GetWorld(world);
+	if (w == nullptr)
+		return SN_ERROR_INVALID_HANDLE;
+	if (shape == nullptr || capacity < 0 || (capacity > 0 && out_bodies == nullptr))
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "sn_physics_overlap: shape is required, and out_bodies when capacity > 0");
+	std::string error;
+	RefConst<Shape> query = MakeShape(*w, *shape, Vec3::sOne(), error);
+	if (query == nullptr)
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, error.empty() ? "sn_physics_overlap: invalid shape size" : error);
+	RMat44 pose = RMat44::sRotationTranslation(LoadQuat(shape->rotation), RVec3(Load3(shape->position)));
+	CollideShapeSettings settings;
+	AllHitCollisionCollector<CollideShapeCollector> collector;
+	MaskFilter filter(mask);
+	// 形状的质心不在原点时（网格、凸包），查询的变换是质心的
+	w->mSystem.GetNarrowPhaseQuery().CollideShape(query, Vec3::sOne(), pose * Mat44::sTranslation(query->GetCenterOfMass()), settings, RVec3::sZero(), collector, {}, filter);
+	std::vector<int32_t> bodies;
+	for (const CollideShapeResult &hit : collector.mHits)
+	{
+		int32_t body = BodyIndexOf(*w, hit.mBodyID2);
+		if (std::find(bodies.begin(), bodies.end(), body) == bodies.end())
+			bodies.push_back(body);
+	}
+	std::copy_n(bodies.begin(), std::min<size_t>(bodies.size(), size_t(capacity)), out_bodies);
+	return int32_t(bodies.size());
+}
+
 SN_API int32_t sn_physics_sphere_cast(int32_t world, float radius, const float *origin, const float *direction, float max_distance, uint32_t mask, uint32_t flags, sn_hit *hit)
 {
 	World *w = GetWorld(world);

@@ -329,6 +329,29 @@ TEST_CASE("物理：碰撞层的矩阵和查询的遮罩，射线和球体扫掠
 	const float zero[3] = { 0, 0, 0 };
 	CHECK(sn_physics_ray_cast(world, origin, zero, 100, 1, &hit) == SN_ERROR_INVALID_ARGUMENT);
 
+	// 重叠查询：放在两面墙之间的大盒子碰到两面（按遮罩挑），小球哪面都碰不到；容量不够时返回总数
+	sn_shape box = BoxShape(6, 1, 1);
+	box.position[0] = 7.5f;
+	int32_t found[4] = { -1, -1, -1, -1 };
+	REQUIRE(sn_physics_overlap(world, &box, 0xffffffffu, found, 4) == 2);
+	CHECK(((found[0] == 0 && found[1] == 1) || (found[0] == 1 && found[1] == 0)));
+	REQUIRE(sn_physics_overlap(world, &box, 1u << 1, found, 4) == 1);
+	CHECK(found[0] == 1);
+	CHECK(sn_physics_overlap(world, &box, 0xffffffffu, found, 1) == 2);
+	sn_shape ball = BoxShape(1, 1, 1);
+	ball.type = SN_SHAPE_SPHERE;
+	ball.size[0] = 0.5f;
+	ball.position[0] = 7.5f;
+	CHECK(sn_physics_overlap(world, &ball, 0xffffffffu, found, 4) == 0);
+	// 旋转 90 度（绕 Y）的长盒子：沿 Z 摆，碰不到沿 X 的两面墙之间的空隙两边
+	sn_shape turned = BoxShape(6, 1, 1);
+	turned.position[0] = 7.5f;
+	turned.rotation[1] = 0.70710678f;
+	turned.rotation[3] = 0.70710678f;
+	CHECK(sn_physics_overlap(world, &turned, 0xffffffffu, found, 4) == 0);
+	sn_shape bad = BoxShape(0, 1, 1);
+	CHECK(sn_physics_overlap(world, &bad, 0xffffffffu, found, 4) == SN_ERROR_INVALID_ARGUMENT);
+
 	// 层 2 的箱子穿过层 0 的地面掉下去，层 1 的停在地面上
 	const sn_shape pieces[] = { BoxShape(100, 2, 100), BoxShape(1, 1, 1), BoxShape(1, 1, 1) };
 	const sn_body falling[] = { Body(SN_MOTION_STATIC, 0, -1, 30, 0, 1, 0), Body(SN_MOTION_DYNAMIC, 0, 3, 30, 1, 1, 2), Body(SN_MOTION_DYNAMIC, 3, 3, 30, 2, 1, 1) };

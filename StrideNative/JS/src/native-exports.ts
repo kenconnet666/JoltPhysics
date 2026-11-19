@@ -295,6 +295,13 @@ export interface NativeExports {
 	 */
 	_sn_physics_interpolate(world: number, alpha: number): number;
 	/**
+	 * 形状的重叠查询（Stride 的 BepuSimulation.Overlap）：shape 的 position、rotation 是查询的世界位姿（size、mesh 同 sn_shape，网格
+	 * 不缩放），mask 同射线。和它重叠的物体编号（去掉重复）写进 out_bodies，最多 capacity 个；返回重叠的物体总数（可能比 capacity 多），
+	 * 负数是错误。触发器也算（同 Bepu）。
+	 * C: Physics.h
+	 */
+	_sn_physics_overlap(world: number, shape: number, mask: number, outBodies: number, capacity: number): number;
+	/**
 	 * 每个物体的位置 xyz，按编号排，能放 max_bodies 个；地址在世界销毁前不变，add_bodies 和 step 原地改写。
 	 * C: Physics.h
 	 */
@@ -695,6 +702,7 @@ export type RuntimeExport =
 	| 'sn_physics_character_grounded'
 	| 'sn_physics_ray_cast'
 	| 'sn_physics_sphere_cast'
+	| 'sn_physics_overlap'
 	| 'sn_physics_static_triangles'
 	| 'sn_plugin_abi_version'
 	| 'sn_set_last_error'
