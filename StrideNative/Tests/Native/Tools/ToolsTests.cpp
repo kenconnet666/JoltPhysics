@@ -401,6 +401,7 @@ TEST_CASE("Font descriptions, codepoints and quadratic outlines")
 	CHECK(description.ascent > 0);
 	CHECK(description.descent < 0);
 	CHECK(std::strlen(description.family) > 0);
+	CHECK((description.head_flags & 8) != 0);	// Arial asks for integer ppem
 	CHECK(st_font_describe(font.data(), uint32_t(font.size()), 1, &description) != SN_OK);
 
 	int32_t task = st_font_codepoints(font.data(), uint32_t(font.size()), 0);

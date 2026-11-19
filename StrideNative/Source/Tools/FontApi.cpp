@@ -181,6 +181,7 @@ SN_API int32_t st_font_describe(const void *font, uint32_t font_size, int32_t in
 	uint32_t length = 0;
 	if (const uint8_t *head = FindTable(info, "head", length); head != nullptr && length >= 54)
 	{
+		d.head_flags = ReadU16(head + 16);
 		d.units_per_em = ReadU16(head + 18);
 		for (int i = 0; i < 4; ++i)
 			d.bounds[i] = ReadS16(head + 36 + 2 * i);

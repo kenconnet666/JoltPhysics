@@ -175,6 +175,7 @@ typedef struct st_font_description
 	int32_t win_descent;
 	int32_t x_height;				///< OS/2 version 2+, else 0
 	int32_t cap_height;
+	int32_t head_flags;				///< head flags; bit 3 asks rasterizers to round the ppem to an integer (FreeType does when hinting)
 	char family[128];				///< name ID 1, UTF-8 ("Arial")
 	char subfamily[128];			///< name ID 2 ("Bold Italic")
 	char typographic_family[128];	///< name IDs 16 and 17, empty when absent
