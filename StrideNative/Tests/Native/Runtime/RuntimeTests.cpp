@@ -315,6 +315,23 @@ TEST_CASE("物理：碰撞层的矩阵和查询的遮罩，射线和球体扫掠
 	CHECK(sn_physics_ray_cast(world, origin, along_x, 100, 0, &hit) == 0);
 	CHECK(sn_physics_ray_cast(world, origin, along_x, 4, 1u << 0, &hit) == 0);
 
+	// 穿透的射线：两面墙各一个命中，从近到远；放不下时照样报总数；按层、按距离筛
+	sn_hit hits[4] {};
+	REQUIRE(sn_physics_ray_cast_all(world, origin, along_x, 100, ~0u, hits, 4) == 2);
+	CHECK(hits[0].body == 0);
+	CHECK(hits[0].distance == doctest::Approx(4.5f));
+	CHECK(hits[0].normal[0] == doctest::Approx(-1.0f));
+	CHECK(hits[1].body == 1);
+	CHECK(hits[1].distance == doctest::Approx(9.5f));
+	CHECK(hits[1].point[0] == doctest::Approx(9.5f));
+	sn_hit first {};
+	CHECK(sn_physics_ray_cast_all(world, origin, along_x, 100, ~0u, &first, 1) == 2);
+	CHECK(first.body == 0);
+	CHECK(sn_physics_ray_cast_all(world, origin, along_x, 100, 1u << 1, hits, 4) == 1);
+	CHECK(hits[0].body == 1);
+	CHECK(sn_physics_ray_cast_all(world, origin, along_x, 6, ~0u, hits, 4) == 1);
+	CHECK(sn_physics_ray_cast_all(world, origin, along_x, 4, ~0u, nullptr, 0) == 0);
+
 	// 半径 0.5 的球：碰到 x = 4.5 的墙面时球心在 4
 	REQUIRE(sn_physics_sphere_cast(world, 0.5f, origin, along_x, 100, 0xffffffffu, 0, &hit) == 1);
 	CHECK(hit.distance == doctest::Approx(4.0f).epsilon(0.01));

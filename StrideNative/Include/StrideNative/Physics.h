@@ -243,6 +243,9 @@ typedef struct sn_hit
 /// 射线（Stride 的 RayCast）：direction 不用归一化，max_distance 是米。mask 的第 n 位为 1 表示层 n 的物体参与。
 /// 返回 1 命中（写 hit），0 没有，负数是错误。
 SN_API int32_t sn_physics_ray_cast(int32_t world, const float *origin, const float *direction, float max_distance, uint32_t mask, sn_hit *hit);
+/// 穿透的射线（Stride 的 RayCastPenetrating）：射线穿过的每个物体各一个命中（取进入它的那一处），从近到远写进 out_hits，
+/// 最多 capacity 个；返回命中的物体总数（可能比 capacity 多），负数是错误。参数同 sn_physics_ray_cast。
+SN_API int32_t sn_physics_ray_cast_all(int32_t world, const float *origin, const float *direction, float max_distance, uint32_t mask, sn_hit *out_hits, int32_t capacity);
 enum
 {
 	/// 球体扫掠忽略起点就和球重叠的物体（默认它们算距离 0 的命中，同 Bepu）。比如第三人称相机：贴着旁边的箱子时

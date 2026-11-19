@@ -1710,6 +1710,49 @@ SN_API int32_t sn_physics_ray_cast(int32_t world, const float *origin, const flo
 	return 1;
 }
 
+SN_API int32_t sn_physics_ray_cast_all(int32_t world, const float *origin, const float *direction, float max_distance, uint32_t mask, sn_hit *out_hits, int32_t capacity)
+{
+	World *w = GetWorld(world);
+	if (w == nullptr)
+		return SN_ERROR_INVALID_HANDLE;
+	if (origin == nullptr || direction == nullptr || capacity < 0 || (capacity > 0 && out_hits == nullptr))
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "sn_physics_ray_cast_all: origin and direction are required, and out_hits when capacity > 0");
+	Vec3 unit;
+	if (!QueryDirection(direction, max_distance, unit))
+		return SN_ERROR_INVALID_ARGUMENT;
+	RRayCast ray(RVec3(Load3(origin)), unit * max_distance);
+	RayCastSettings settings;
+	AllHitCollisionCollector<CastRayCollector> collector;
+	MaskFilter filter(mask);
+	w->mSystem.GetNarrowPhaseQuery().CastRay(ray, settings, collector, {}, filter);
+	// 从近到远；一个物体只留最近的那一处（复合形状的每个子形状各报一次）
+	collector.Sort();
+	std::vector<BodyID> seen;
+	int32_t count = 0;
+	for (const RayCastResult &result : collector.mHits)
+	{
+		if (std::find(seen.begin(), seen.end(), result.mBodyID) != seen.end())
+			continue;
+		seen.push_back(result.mBodyID);
+		if (count < capacity)
+		{
+			sn_hit &hit = out_hits[count];
+			RVec3 point = ray.GetPointOnRay(result.mFraction);
+			Vec3 normal;
+			{
+				BodyLockRead lock(w->mSystem.GetBodyLockInterface(), result.mBodyID);
+				normal = lock.GetBody().GetWorldSpaceSurfaceNormal(result.mSubShapeID2, point);
+			}
+			hit.distance = result.mFraction * max_distance;
+			Vec3(point).StoreFloat3(reinterpret_cast<Float3 *>(hit.point));
+			normal.StoreFloat3(reinterpret_cast<Float3 *>(hit.normal));
+			hit.body = BodyIndexOf(*w, result.mBodyID);
+		}
+		count++;
+	}
+	return count;
+}
+
 SN_API int32_t sn_physics_static_triangles(int32_t world, uint32_t mask, float **out_vertices)
 {
 	World *w = GetWorld(world);

@@ -646,6 +646,29 @@ export class PhysicsWorld extends NativeObject<StrideNative> {
 	}
 
 	/**
+	 * 穿透的射线（Stride 的 RayCastPenetrating）：射线穿过的每个物体各一个命中（进入它的那一处），从近到远。
+	 */
+	rayCastAll(origin: Vec3, direction: Vec3, maxDistance: number, { mask = ALL_LAYERS, capacity = 16 }: { mask?: number; capacity?: number } = {}): PhysicsHit[] {
+		const n = this.native;
+		this.#setQuery(origin, direction);
+		const q = this.#query;
+		return n.withScratch(capacity * HIT_WORDS * 4, (out) => {
+			const total = n.check(n.module._sn_physics_ray_cast_all(this[HANDLE], q, q + 12, maxDistance, mask >>> 0, out, capacity), 'sn_physics_ray_cast_all');
+			// 比 capacity 多时再查一次，放得下全部
+			if (total > capacity) return this.rayCastAll(origin, direction, maxDistance, { mask, capacity: total });
+			const floats = n.f32(out, total * HIT_WORDS), ints = n.i32(out, total * HIT_WORDS);
+			return Array.from({ length: total }, (_, i) => {
+				const at = i * HIT_WORDS, hit = new PhysicsHit();
+				hit.distance = floats[at]!;
+				hit.point[0] = floats[at + 1]!; hit.point[1] = floats[at + 2]!; hit.point[2] = floats[at + 3]!;
+				hit.normal[0] = floats[at + 4]!; hit.normal[1] = floats[at + 5]!; hit.normal[2] = floats[at + 6]!;
+				hit.body = ints[at + 7]! as BodyId;
+				return hit;
+			});
+		});
+	}
+
+	/**
 	 * 静态物体表面的三角形（导航网格的输入，同 Stride 的 RecastMeshSystem）：mask 选层，不含传感器（触发器）。每个三角形 9 个
 	 * float（世界坐标，从外面看逆时针），可以直接和顺序的下标一起交给 buildNavMesh。
 	 */

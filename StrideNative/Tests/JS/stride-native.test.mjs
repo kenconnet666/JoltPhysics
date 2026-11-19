@@ -258,6 +258,16 @@ describe('stride-native and stride-tools', () => {
 			assert.ok(hit && Math.abs(hit.distance - 4.5) < 1e-3 && hit.body === wall && hit.normal[0] < -0.99);
 			assert.ok(Math.abs(world.rayCast([0, 2, 0], [1, 0, 0], 20, { mask: 1 << 1 }).distance - 7.75) < 1e-3);
 			assert.equal(world.rayCast([0, 2, 0], [1, 0, 0], 20, { mask: 1 << 3 }), undefined);
+			// 穿透的射线：穿过的每个物体各一个命中，从近到远。从墙的正上方往下：先是墙顶上的小盒子（复合碰撞体的两个盒子只算一次），再是地面
+			const down = world.rayCastAll([5, 10, -6], [0, -1, 0], 20);
+			assert.deepEqual(down.map((h) => h.body), [wall, ground]);
+			assert.ok(Math.abs(down[0].distance - 4.5) < 1e-3 && Math.abs(down[1].distance - 10) < 1e-3, `distances ${down.map((h) => h.distance)}`);
+			assert.ok(down[0].normal[1] > 0.99 && Math.abs(down[1].point[1]) < 1e-3);
+			// 斜着穿过柱子再到地面；按层筛；容量不够时自己再查一次
+			assert.deepEqual(world.rayCastAll([6.5, 2.5, 0], [1, -1, 0], 20).map((h) => h.body), [pole, ground]);
+			assert.deepEqual(world.rayCastAll([6.5, 2.5, 0], [1, -1, 0], 20, { mask: 1 << 1 }).map((h) => h.body), [pole]);
+			assert.deepEqual(world.rayCastAll([5, 10, -6], [0, -1, 0], 20, { capacity: 1 }).map((h) => h.body), [wall, ground]);
+			assert.equal(world.rayCastAll([0, 2, 0], [1, 0, 0], 20, { mask: 1 << 3 }).length, 0);
 			const reused = world.sphereCast(0.5, [0, 2, -6], [1, 0, 0], 20);
 			assert.ok(Math.abs(reused.distance - 4) < 0.01);
 			assert.equal(world.sphereCast(0.5, [0, 2, -6], [1, 0, 0], 20, { mask: 1 << 0, hit: reused }), reused, 'the hit object is reused');

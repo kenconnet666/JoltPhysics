@@ -313,6 +313,12 @@ export interface NativeExports {
 	 */
 	_sn_physics_ray_cast(world: number, origin: number, direction: number, maxDistance: number, mask: number, hit: number): number;
 	/**
+	 * 穿透的射线（Stride 的 RayCastPenetrating）：射线穿过的每个物体各一个命中（取进入它的那一处），从近到远写进 out_hits，
+	 * 最多 capacity 个；返回命中的物体总数（可能比 capacity 多），负数是错误。参数同 sn_physics_ray_cast。
+	 * C: Physics.h
+	 */
+	_sn_physics_ray_cast_all(world: number, origin: number, direction: number, maxDistance: number, mask: number, outHits: number, capacity: number): number;
+	/**
 	 * 移除物体（实体销毁时）：从世界里拿走并释放，编号留给以后加的物体复用；和它有关的接触不再报告。移除过的忽略。
 	 * C: Physics.h
 	 */
@@ -715,6 +721,7 @@ export type RuntimeExport =
 	| 'sn_physics_character_move'
 	| 'sn_physics_character_grounded'
 	| 'sn_physics_ray_cast'
+	| 'sn_physics_ray_cast_all'
 	| 'sn_physics_sphere_cast'
 	| 'sn_physics_overlap'
 	| 'sn_physics_static_triangles'
