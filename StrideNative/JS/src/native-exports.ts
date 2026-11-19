@@ -529,7 +529,7 @@ export interface NativeExports {
 	 */
 	_st_generate_tangents(positions: number, normals: number, uvs: number, indices: number, indexCount: number, outTangents4: number): number;
 	/**
-	 * Decodes a PNG, JPEG or TGA file into RGBA8. data must stay alive until the task finishes.
+	 * Decodes a PNG, JPEG, TGA or DDS file (the largest mip: BC1-BC5, BC7, 24/32-bit RGB) into RGBA8. data must stay alive until the task finishes.
 	 * Result [0]: width, [1]: height, [2]: channels in the file. Output [0]: the pixels, rows top-down.
 	 * C: Tools.h
 	 */

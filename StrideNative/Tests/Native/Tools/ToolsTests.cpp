@@ -315,6 +315,67 @@ TEST_CASE("PNG decodes to RGBA8 and garbage fails")
 	sn_task_release(task);
 }
 
+namespace
+{
+	/// 最小的 DDS 头（128 字节）：宽高、像素格式的标志、FourCC、位数和掩码。
+	std::vector<uint8_t> DdsHeader(uint32_t width, uint32_t height, uint32_t pixelFlags, const char *fourCC, uint32_t bitCount, const uint32_t (&masks)[4])
+	{
+		std::vector<uint8_t> header(128, 0);
+		auto put = [&](size_t offset, uint32_t value) { std::memcpy(&header[offset], &value, 4); };
+		std::memcpy(&header[0], "DDS ", 4);
+		put(4, 124);
+		put(12, height);
+		put(16, width);
+		put(76, 32);
+		put(80, pixelFlags);
+		if (fourCC != nullptr)
+			std::memcpy(&header[84], fourCC, 4);
+		put(88, bitCount);
+		for (int i = 0; i < 4; i++)
+			put(92 + i * 4, masks[i]);
+		return header;
+	}
+}
+
+TEST_CASE("DDS decodes the largest mip of BC1 and uncompressed files into RGBA8")
+{
+	ModuleScope module;
+	// 4x4 的 DXT1：两个端点红 (0xF800)、蓝 (0x001F)，下标全是 0（第一个端点）
+	std::vector<uint8_t> dxt1 = DdsHeader(4, 4, 4, "DXT1", 0, { 0, 0, 0, 0 });
+	const uint8_t block[] = { 0x00, 0xF8, 0x1F, 0x00, 0, 0, 0, 0 };
+	dxt1.insert(dxt1.end(), block, block + sizeof(block));
+	int32_t task = st_image_decode(dxt1.data(), uint32_t(dxt1.size()));
+	REQUIRE(WaitForTask(task) == SN_TASK_DONE);
+	CHECK(sn_task_result(task, 0) == 4);
+	CHECK(sn_task_result(task, 1) == 4);
+	REQUIRE(sn_task_output_size(task, 0) == 64);
+	const uint8_t *pixels = static_cast<const uint8_t *>(sn_task_output_data(task, 0));
+	for (int i = 0; i < 16; i++)
+	{
+		CHECK(pixels[i * 4] == 255);
+		CHECK(pixels[i * 4 + 1] == 0);
+		CHECK(pixels[i * 4 + 2] == 0);
+		CHECK(pixels[i * 4 + 3] == 255);
+	}
+	sn_task_release(task);
+
+	// 1x1 的 32 位 BGRA（掩码决定通道的位置）
+	std::vector<uint8_t> bgra = DdsHeader(1, 1, 0x40 | 1, nullptr, 32, { 0x00ff0000, 0x0000ff00, 0x000000ff, 0xff000000 });
+	const uint8_t pixel[] = { 30, 20, 10, 128 };
+	bgra.insert(bgra.end(), pixel, pixel + 4);
+	task = st_image_decode(bgra.data(), uint32_t(bgra.size()));
+	REQUIRE(WaitForTask(task) == SN_TASK_DONE);
+	const uint8_t expected[] = { 10, 20, 30, 128 };
+	CHECK(std::memcmp(sn_task_output_data(task, 0), expected, 4) == 0);
+	sn_task_release(task);
+
+	// 截断的块数据
+	dxt1.resize(dxt1.size() - 4);
+	task = st_image_decode(dxt1.data(), uint32_t(dxt1.size()));
+	CHECK(WaitForTask(task) == SN_TASK_FAILED);
+	sn_task_release(task);
+}
+
 TEST_CASE("Cubemap prefiltering keeps a constant sky constant and SH evaluates back to it")
 {
 	ModuleScope module;
