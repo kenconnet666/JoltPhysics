@@ -339,11 +339,11 @@ export class StrideTools extends NativeModule<ToolsExport> {
 
 	/** 字体文件（或集合里第 index 个字体）的度量和名字。 */
 	describeFont(font: Uint8Array, index = 0): FontDescription {
-		const SIZE = 19 * 4 + 4 * 128;
+		const SIZE = 18 * 4 + 4 * 128;
 		return this.withArrays([font], (f) => this.withScratch(SIZE, (out) => {
 			this.check(this.module._st_font_describe(f, font.byteLength, index, out), 'st_font_describe');
-			const i = this.i32(out, 19);
-			const text = (at: number) => this.module.UTF8ToString(out + 19 * 4 + at * 128);
+			const i = this.i32(out, 18);
+			const text = (at: number) => this.module.UTF8ToString(out + 18 * 4 + at * 128);
 			return {
 				fontCount: i[0]!, glyphCount: i[1]!, unitsPerEm: i[2]!, bounds: [i[3]!, i[4]!, i[5]!, i[6]!],
 				ascent: i[7]!, descent: i[8]!, lineGap: i[9]!, useTypoMetrics: i[10] !== 0,

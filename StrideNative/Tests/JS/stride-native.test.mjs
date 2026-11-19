@@ -869,7 +869,9 @@ describe('stride-native and stride-tools', () => {
 		const description = tools.describeFont(font);
 		assert.equal(description.fontCount, 1);
 		assert.ok(description.unitsPerEm > 0 && description.ascent > 0 && description.descent < 0);
-		assert.ok(description.family.length > 0);
+		// 名字在 18 个整数之后（读错位置时会少掉前几个字母）
+		if (fontPath.endsWith('arial.ttf')) assert.deepEqual([description.family, description.subfamily], ['Arial', 'Regular']);
+		else assert.ok(description.family.length > 0);
 		const { codepoints, glyphs, kerning } = await tools.fontCodepoints(font);
 		assert.equal(codepoints.length, glyphs.length);
 		assert.equal(kerning.length % 3, 0);
