@@ -576,15 +576,17 @@ export interface NativeExports {
 	 */
 	_st_nav_bake(vertices: number, vertexCount: number, triangles: number, triangleCount: number, config: number): number;
 	/**
-	 * Bakes an animation (FBX only) into linearly interpolated local-transform keys for every node, resampled
-	 * at sample_rate keys per second, times starting at 0. Returns a task; outputs: [0] key counts (uint32,
-	 * translation, rotation, scale per node), [1] keys in st_anim_build_animation's layout, [2] the duration
-	 * in seconds (one float). Nodes the animation leaves alone get one key of their rest transform.
+	 * Bakes an animation into linearly interpolated local-transform keys for every node, resampled at sample_rate
+	 * keys per second, times starting at 0 (FBX: from the start of playback; glTF: from 0, ending at the last key).
+	 * Returns a task; outputs: [0] key counts (uint32, translation, rotation, scale per node), [1] keys in
+	 * st_anim_build_animation's layout, [2] the duration in seconds (one float), [3] morph weight key counts (uint32,
+	 * one per target of every mesh with morph targets, in mesh then target order; 0 when the animation leaves the
+	 * weight alone), [4] morph weight keys (time, weight). Nodes the animation leaves alone get one key of their rest transform.
 	 * C: Tools.h
 	 */
 	_st_scene_animation_bake(scene: number, animation: number, sampleRate: number): number;
 	/**
-	 * Name of an animation (FBX animation stack), valid until the scene is destroyed; null for a bad index.
+	 * Name of an animation (glTF animation, FBX animation stack), valid until the scene is destroyed; null for a bad index.
 	 * C: Tools.h
 	 */
 	_st_scene_animation_name(scene: number, animation: number): number;
@@ -609,6 +611,18 @@ export interface NativeExports {
 	_st_scene_mesh_copy(scene: number, mesh: number, positions: number, normals: number, uvs: number, indices: number): number;
 	/** C: Tools.h */
 	_st_scene_mesh_info(scene: number, mesh: number, outInfo: number): number;
+	/**
+	 * Deltas of a morph target, xyz per vertex in the mesh's (baked, model) space; any output may be null. normal_deltas
+	 * stays untouched when the targets have no normals (st_mesh_info.morph_has_normals).
+	 * C: Tools.h
+	 */
+	_st_scene_mesh_morph(scene: number, mesh: number, target: number, positionDeltas: number, normalDeltas: number): number;
+	/**
+	 * Name of a morph target of a mesh (UTF-8: glTF's extras.targetNames, FBX's blend channel), valid until the scene
+	 * is destroyed; null for a bad index.
+	 * C: Tools.h
+	 */
+	_st_scene_mesh_morph_name(scene: number, mesh: number, target: number): number;
 	/**
 	 * Skin of a skinned mesh (st_mesh_info.joint_count > 0); any output may be null.
 	 * joint_nodes: joint_count node indices. inverse_binds: joint_count column-major 4x4 matrices taking the
@@ -752,6 +766,8 @@ export type ToolsExport =
 	| 'st_scene_node_info'
 	| 'st_scene_node_name'
 	| 'st_scene_mesh_skin'
+	| 'st_scene_mesh_morph_name'
+	| 'st_scene_mesh_morph'
 	| 'st_scene_animation_name'
 	| 'st_scene_animation_bake'
 	| 'st_generate_tangents'

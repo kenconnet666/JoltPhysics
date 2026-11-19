@@ -1,9 +1,11 @@
-// 场景导入：glTF/GLB 用 cgltf，FBX 用 ufbx，都化成带索引的三角形网格，加上节点层级、蒙皮和（FBX 的）动画。
+// 场景导入：glTF/GLB 用 cgltf，FBX 用 ufbx，都化成带索引的三角形网格，加上节点层级、蒙皮、形变目标和动画。
 // 和 Stride 的模型导入一致：每个节点实例上的网格按材质拆开（一份材质一个网格，记下材质在场景材质表里的下标），
 // 节点的世界变换烘焙进顶点和法线（镜像变换时翻转绕序），所以网格都在模型空间里，右手、Y 向上、米。
 // 蒙皮网格按绑定时的姿势烘焙；每个关节的逆绑定矩阵把烘焙后的顶点变到关节空间，关节当前的节点到模型矩阵乘它就是蒙皮矩阵。
 // 节点按深度优先排（父节点在子节点前面，同 Stride 的 .sdskel 和 ozz 的骨架），FBX 的根节点叫 RootNode（同 Stride 的导入）。
 // 没有法线的网格补平面法线（见 AddFlatNormals）。
+// 形变目标（glTF 的 targets、FBX 的 blend channel）存成每个顶点、每个目标的位置和法线增量，同样烘焙进模型空间；动画烘焙时
+// 除了节点的平移、旋转、缩放，还有每个目标的权重曲线。
 #include <Core/Core.h>
 #include <Core/HandleTable.h>
 #include <Core/Tasks.h>
@@ -50,6 +52,25 @@ namespace
 		std::vector<float>		mInverseBinds;
 		std::vector<uint16_t>	mJoints;
 		std::vector<float>		mWeights;
+		// 形变目标：名字；增量按顶点再按目标排（[顶点][目标][xyz]，补平面法线复制顶点时整段复制），没有法线增量时 mMorphNormals 空
+		std::vector<std::string> mMorphNames;
+		std::vector<float>		mMorphPositions;
+		std::vector<float>		mMorphNormals;
+		// 驱动权重的动画通道：glTF 是挂着网格的节点（weights 通道）、FBX 是每个目标的 blend channel
+		int32_t					mGltfNode = -1;
+		std::vector<const ufbx_blend_channel *> mFbxChannels;
+	};
+
+	/// 留着解析好的 glTF 给动画烘焙用：GLB 的二进制块指向文件内容，所以自己存一份
+	struct GltfDocument
+	{
+		std::vector<uint8_t>	mBytes;
+		cgltf_data *			mData = nullptr;
+
+		~GltfDocument()
+		{
+			cgltf_free(mData);
+		}
 	};
 
 	struct ImportedScene
@@ -58,9 +79,11 @@ namespace
 		std::vector<std::string>	mMaterials;		///< 材质名，按网格的 mMaterial 下标
 		std::vector<ImportedNode>	mNodes;
 		std::vector<std::string>	mAnimations;
-		/// FBX 的场景留着给 st_scene_animation_bake 用；mFbxNodes[i] 是我们的第 i 个节点
+		/// 场景留着给 st_scene_animation_bake 用；mFbxNodes[i]、mGltfNodes[i] 是我们的第 i 个节点
 		std::shared_ptr<ufbx_scene>	mFbx;
 		std::vector<const ufbx_node *> mFbxNodes;
+		std::shared_ptr<GltfDocument> mGltf;
+		std::vector<const cgltf_node *> mGltfNodes;
 	};
 
 	/// 不带索引的角顶点流，用 meshoptimizer 焊接成带索引的网格。蒙皮数据也参与比较：同一个位置的角权重不同就不合并。
@@ -71,9 +94,12 @@ namespace
 		float		mUv[2];
 		uint16_t	mJoints[cMaxInfluences];
 		float		mWeights[cMaxInfluences];
+		/// FBX 有形变目标时是控制点（mesh.vertices 的下标，形变偏移按它查），否则 0
+		uint32_t	mControlPoint;
 	};
 
-	ImportedMesh WeldCorners(const std::vector<Vertex> &inCorners, bool inHasNormals, bool inHasUvs, bool inSkinned, uint32_t inMaterial)
+	/// outControlPoints 不为空时写出每个焊接后顶点的 mControlPoint。
+	ImportedMesh WeldCorners(const std::vector<Vertex> &inCorners, bool inHasNormals, bool inHasUvs, bool inSkinned, uint32_t inMaterial, std::vector<uint32_t> *outControlPoints = nullptr)
 	{
 		std::vector<uint32_t> remap(inCorners.size());
 		size_t vertex_count = meshopt_generateVertexRemap(remap.data(), nullptr, inCorners.size(), inCorners.data(), inCorners.size(), sizeof(Vertex));
@@ -95,6 +121,8 @@ namespace
 				mesh.mJoints.insert(mesh.mJoints.end(), v.mJoints, v.mJoints + cMaxInfluences);
 				mesh.mWeights.insert(mesh.mWeights.end(), v.mWeights, v.mWeights + cMaxInfluences);
 			}
+			if (outControlPoints != nullptr)
+				outControlPoints->push_back(v.mControlPoint);
 		}
 		return mesh;
 	}
@@ -125,6 +153,11 @@ namespace
 				append(ioMesh.mJoints, cMaxInfluences);
 				append(ioMesh.mWeights, cMaxInfluences);
 			}
+			const size_t targets = ioMesh.mMorphNames.size();
+			if (targets > 0)
+				append(ioMesh.mMorphPositions, targets * 3);
+			if (!ioMesh.mMorphNormals.empty())
+				append(ioMesh.mMorphNormals, targets * 3);
 			return copy;
 		};
 		for (size_t t = 0; t + 2 < ioMesh.mIndices.size(); t += 3)
@@ -204,10 +237,23 @@ namespace
 				outP[r] = mMatrix[r] * inP[0] + mMatrix[4 + r] * inP[1] + mMatrix[8 + r] * inP[2] + mMatrix[12 + r];
 		}
 
-		void Normal(const float *inN, float *outN) const
+		/// 方向（形变的位置增量）：只用线性部分
+		void Vector(const float *inV, float *outV) const
+		{
+			for (int r = 0; r < 3; ++r)
+				outV[r] = mMatrix[r] * inV[0] + mMatrix[4 + r] * inV[1] + mMatrix[8 + r] * inV[2];
+		}
+
+		/// 法线的增量：乘法线矩阵，不归一化
+		void NormalDelta(const float *inN, float *outN) const
 		{
 			for (int r = 0; r < 3; ++r)
 				outN[r] = mNormal[r * 3] * inN[0] + mNormal[r * 3 + 1] * inN[1] + mNormal[r * 3 + 2] * inN[2];
+		}
+
+		void Normal(const float *inN, float *outN) const
+		{
+			NormalDelta(inN, outN);
 			float length = std::sqrt(outN[0] * outN[0] + outN[1] * outN[1] + outN[2] * outN[2]);
 			if (length > 0)
 				for (int r = 0; r < 3; ++r)
@@ -254,14 +300,16 @@ namespace
 
 	bool ImportGltf(const void *inData, uint32_t inSize, ImportedScene &outScene, std::string &outError)
 	{
+		auto document = std::make_shared<GltfDocument>();
+		document->mBytes.assign(static_cast<const uint8_t *>(inData), static_cast<const uint8_t *>(inData) + inSize);
 		cgltf_options options {};
-		cgltf_data *data = nullptr;
-		if (cgltf_parse(&options, inData, inSize, &data) != cgltf_result_success)
+		if (cgltf_parse(&options, document->mBytes.data(), document->mBytes.size(), &document->mData) != cgltf_result_success)
 		{
 			outError = "not a valid glTF/GLB file";
 			return false;
 		}
-		std::unique_ptr<cgltf_data, decltype(&cgltf_free)> owned(data, &cgltf_free);
+		cgltf_data *data = document->mData;
+		outScene.mGltf = document;
 		if (cgltf_load_buffers(&options, data, nullptr) != cgltf_result_success)
 		{
 			outError = "glTF buffers must be embedded (GLB or data URIs)";
@@ -270,6 +318,8 @@ namespace
 
 		for (cgltf_size i = 0; i < data->materials_count; ++i)
 			outScene.mMaterials.emplace_back(data->materials[i].name != nullptr ? data->materials[i].name : "material" + std::to_string(i));
+		for (cgltf_size i = 0; i < data->animations_count; ++i)
+			outScene.mAnimations.emplace_back(data->animations[i].name != nullptr ? data->animations[i].name : "animation" + std::to_string(i));
 
 		// 节点按深度优先排：从没有父节点的节点开始
 		std::vector<uint32_t> index_of(data->nodes_count, 0);
@@ -277,6 +327,7 @@ namespace
 		{
 			uint32_t index = uint32_t(outScene.mNodes.size());
 			index_of[size_t(&inNode - data->nodes)] = index;
+			outScene.mGltfNodes.push_back(&inNode);
 			ImportedNode &node = outScene.mNodes.emplace_back();
 			node.mName = inNode.name != nullptr ? inNode.name : "node" + std::to_string(&inNode - data->nodes);
 			node.mParent = inParent;
@@ -291,7 +342,7 @@ namespace
 			if (data->nodes[n].parent == nullptr)
 				add_node(add_node, data->nodes[n], -1);
 
-		auto import_mesh = [&](const cgltf_mesh &inMesh, const NodeTransform &inTransform, uint32_t inNode, const cgltf_skin *inSkin)
+		auto import_mesh = [&](const cgltf_mesh &inMesh, const NodeTransform &inTransform, uint32_t inNode, int32_t inGltfNode, const cgltf_skin *inSkin)
 		{
 			for (cgltf_size p = 0; p < inMesh.primitives_count; ++p)
 			{
@@ -337,6 +388,37 @@ namespace
 				{
 					mesh.mUvs.resize(uvs->count * 2);
 					cgltf_accessor_unpack_floats(uvs, mesh.mUvs.data(), mesh.mUvs.size());
+				}
+				if (primitive.targets_count > 0)
+				{
+					const size_t targets = primitive.targets_count;
+					mesh.mGltfNode = inGltfNode;
+					mesh.mMorphPositions.assign(positions->count * targets * 3, 0.0f);
+					for (size_t t = 0; t < targets; ++t)
+					{
+						mesh.mMorphNames.emplace_back(t < inMesh.target_names_count && inMesh.target_names[t] != nullptr ? inMesh.target_names[t] : "target" + std::to_string(t));
+						const cgltf_morph_target &target = primitive.targets[t];
+						for (cgltf_size a = 0; a < target.attributes_count; ++a)
+						{
+							const cgltf_attribute &attribute = target.attributes[a];
+							bool is_normal = attribute.type == cgltf_attribute_type_normal;
+							if ((attribute.type != cgltf_attribute_type_position && !is_normal) || attribute.data->count != positions->count)
+								continue;
+							if (is_normal && mesh.mMorphNormals.empty())
+								mesh.mMorphNormals.assign(positions->count * targets * 3, 0.0f);
+							local.resize(attribute.data->count * 3);
+							cgltf_accessor_unpack_floats(attribute.data, local.data(), local.size());
+							std::vector<float> &deltas = is_normal ? mesh.mMorphNormals : mesh.mMorphPositions;
+							for (size_t v = 0; v < positions->count; ++v)
+							{
+								float *out = &deltas[(v * targets + t) * 3];
+								if (is_normal)
+									inTransform.NormalDelta(&local[v * 3], out);
+								else
+									inTransform.Vector(&local[v * 3], out);
+							}
+						}
+					}
 				}
 				if (inSkin != nullptr && joints != nullptr && weights != nullptr)
 				{
@@ -398,11 +480,11 @@ namespace
 			any_node = true;
 			float world[16];
 			cgltf_node_transform_world(&node, world);
-			import_mesh(*node.mesh, NodeTransform(node.skin != nullptr ? identity : world), index_of[n], node.skin);
+			import_mesh(*node.mesh, NodeTransform(node.skin != nullptr ? identity : world), index_of[n], int32_t(n), node.skin);
 		}
 		if (!any_node)
 			for (cgltf_size m = 0; m < data->meshes_count; ++m)
-				import_mesh(data->meshes[m], NodeTransform(identity), 0, nullptr);
+				import_mesh(data->meshes[m], NodeTransform(identity), 0, -1, nullptr);
 		return true;
 	}
 
@@ -414,6 +496,39 @@ namespace
 			outMatrix[c * 4 + 1] = float(inMatrix.cols[c].y);
 			outMatrix[c * 4 + 2] = float(inMatrix.cols[c].z);
 			outMatrix[c * 4 + 3] = c == 3 ? 1.0f : 0.0f;
+		}
+	}
+
+	/// 每个焊接后的顶点按它的控制点取各个目标形状的偏移，变到模型空间
+	void AddFbxMorphTargets(const std::vector<const ufbx_blend_channel *> &inChannels, const std::vector<uint32_t> &inControlPoints, const ufbx_matrix &inToWorld,
+		const ufbx_matrix &inToWorldNormals, ImportedMesh &ioMesh)
+	{
+		const size_t targets = inChannels.size();
+		const size_t vertex_count = inControlPoints.size();
+		ioMesh.mFbxChannels = inChannels;
+		bool has_normals = std::any_of(inChannels.begin(), inChannels.end(), [](const ufbx_blend_channel *inChannel) { return inChannel->target_shape->normal_offsets.count > 0; });
+		ioMesh.mMorphPositions.assign(vertex_count * targets * 3, 0.0f);
+		if (has_normals)
+			ioMesh.mMorphNormals.assign(vertex_count * targets * 3, 0.0f);
+		for (size_t t = 0; t < targets; ++t)
+		{
+			const ufbx_blend_channel &channel = *inChannels[t];
+			const ufbx_blend_shape &shape = *channel.target_shape;
+			ioMesh.mMorphNames.emplace_back(channel.name.length > 0 ? channel.name.data : shape.name.data);
+			for (size_t v = 0; v < vertex_count; ++v)
+			{
+				uint32_t offset = ufbx_get_blend_shape_offset_index(&shape, inControlPoints[v]);
+				if (offset == UFBX_NO_INDEX)
+					continue;
+				auto store = [&](const ufbx_vec3 &inValue, std::vector<float> &outDeltas)
+				{
+					float *out = &outDeltas[(v * targets + t) * 3];
+					out[0] = float(inValue.x); out[1] = float(inValue.y); out[2] = float(inValue.z);
+				};
+				store(ufbx_transform_direction(&inToWorld, shape.position_offsets.data[offset]), ioMesh.mMorphPositions);
+				if (has_normals && offset < shape.normal_offsets.count)
+					store(ufbx_transform_direction(&inToWorldNormals, shape.normal_offsets.data[offset]), ioMesh.mMorphNormals);
+			}
 		}
 	}
 
@@ -474,6 +589,12 @@ namespace
 			// 蒙皮网格按绑定时的变换烘焙（第一个簇记着绑定时几何到世界的矩阵），其余按节点现在的变换
 			const ufbx_skin_deformer *skin = mesh.skin_deformers.count > 0 && mesh.skin_deformers.data[0]->clusters.count > 0 ? mesh.skin_deformers.data[0] : nullptr;
 			const ufbx_matrix to_world = skin != nullptr ? skin->clusters.data[0]->geometry_to_world : node.geometry_to_world;
+			// 形变目标：每个有目标形状的 blend channel 一个（同 Assimp，Stride 的导入用它）
+			std::vector<const ufbx_blend_channel *> channels;
+			for (size_t d = 0; d < mesh.blend_deformers.count; ++d)
+				for (size_t c = 0; c < mesh.blend_deformers.data[d]->channels.count; ++c)
+					if (const ufbx_blend_channel *channel = mesh.blend_deformers.data[d]->channels.data[c]; channel->target_shape != nullptr)
+						channels.push_back(channel);
 			ufbx_matrix to_world_normals = ufbx_matrix_for_normals(&to_world);
 			bool mirrored = ufbx_matrix_determinant(&to_world) < 0;
 			std::vector<uint32_t> triangle(mesh.max_face_triangles * 3);
@@ -516,6 +637,8 @@ namespace
 						uint32_t corner = mirrored && c % 3 != 0 ? (c % 3 == 1 ? c + 1 : c - 1) : c;
 						uint32_t index = triangle[corner];
 						Vertex vertex {};
+						if (!channels.empty())
+							vertex.mControlPoint = mesh.vertex_indices.data[index];
 						ufbx_vec3 position = ufbx_transform_position(&to_world, ufbx_get_vertex_vec3(&mesh.vertex_position, index));
 						vertex.mPosition[0] = float(position.x); vertex.mPosition[1] = float(position.y); vertex.mPosition[2] = float(position.z);
 						if (mesh.vertex_normal.exists)
@@ -551,7 +674,10 @@ namespace
 					}
 				}
 				uint32_t material_index = material != nullptr ? material->typed_id : ST_NO_MATERIAL;
-				ImportedMesh imported = WeldCorners(corners, mesh.vertex_normal.exists, mesh.vertex_uv.exists, skin != nullptr, material_index);
+				std::vector<uint32_t> control_points;
+				ImportedMesh imported = WeldCorners(corners, mesh.vertex_normal.exists, mesh.vertex_uv.exists, skin != nullptr, material_index, &control_points);
+				if (!channels.empty())
+					AddFbxMorphTargets(channels, control_points, to_world, to_world_normals, imported);
 				if (!mesh.vertex_normal.exists)
 					AddFlatNormals(imported);
 				imported.mNode = index_of[node.typed_id];
@@ -616,6 +742,233 @@ namespace
 		}
 		return count;
 	}
+
+	/// 任务的一块输出：空的不写（AddOutput(0) 没有内存）
+	template <class T>
+	void PutOutput(Task &ioTask, const std::vector<T> &inValues)
+	{
+		void *out = ioTask.AddOutput(uint32_t(inValues.size() * sizeof(T)));
+		if (!inValues.empty())
+			std::memcpy(out, inValues.data(), inValues.size() * sizeof(T));
+	}
+
+	/// 两个单位四元数（xyzw）的球面插值，走短的那边
+	void Slerp(const float *inA, const float *inB, float inT, float *outQ)
+	{
+		float b[4] = { inB[0], inB[1], inB[2], inB[3] };
+		float cosine = inA[0] * b[0] + inA[1] * b[1] + inA[2] * b[2] + inA[3] * b[3];
+		if (cosine < 0)
+		{
+			cosine = -cosine;
+			for (float &c : b)
+				c = -c;
+		}
+		float wa = 1 - inT, wb = inT;
+		if (cosine < 0.9995f)
+		{
+			float angle = std::acos(cosine), sine = std::sin(angle);
+			wa = std::sin((1 - inT) * angle) / sine;
+			wb = std::sin(inT * angle) / sine;
+		}
+		float length = 0;
+		for (int i = 0; i < 4; ++i)
+		{
+			outQ[i] = wa * inA[i] + wb * b[i];
+			length += outQ[i] * outQ[i];
+		}
+		length = std::sqrt(length);
+		if (length > 0)
+			for (int i = 0; i < 4; ++i)
+				outQ[i] /= length;
+	}
+
+	/// glTF 动画的一个采样器：输入时间、输出值读出来，按插值方式（STEP、LINEAR、CUBICSPLINE）求任意时间的值。
+	/// mWidth 是一个值几个数（平移 3、旋转 4、权重是目标数）；三次样条每个键存入切线、值、出切线三组。
+	struct GltfSampler
+	{
+		std::vector<float>			mTimes;
+		std::vector<float>			mValues;
+		int							mWidth;
+		cgltf_interpolation_type	mInterpolation;
+		bool						mRotation;
+
+		GltfSampler(const cgltf_animation_sampler &inSampler, int inWidth, bool inRotation) :
+			mWidth(inWidth), mInterpolation(inSampler.interpolation), mRotation(inRotation)
+		{
+			mTimes.resize(inSampler.input->count);
+			cgltf_accessor_unpack_floats(inSampler.input, mTimes.data(), mTimes.size());
+			mValues.resize(cgltf_accessor_unpack_floats(inSampler.output, nullptr, 0));
+			cgltf_accessor_unpack_floats(inSampler.output, mValues.data(), mValues.size());
+		}
+
+		float Duration() const
+		{
+			return mTimes.empty() ? 0.0f : mTimes.back();
+		}
+
+		void Evaluate(float inTime, float *outValue) const
+		{
+			const bool cubic = mInterpolation == cgltf_interpolation_type_cubic_spline;
+			const size_t stride = size_t(cubic ? 3 * mWidth : mWidth), value_offset = size_t(cubic ? mWidth : 0);
+			const size_t count = std::min(mTimes.size(), mValues.size() / stride);
+			auto value = [&](size_t inKey) { return &mValues[inKey * stride + value_offset]; };
+			if (count == 0)
+				return;
+			if (count == 1 || inTime <= mTimes[0] || inTime >= mTimes[count - 1])
+			{
+				std::memcpy(outValue, value(inTime <= mTimes[0] ? 0 : count - 1), sizeof(float) * mWidth);
+				return;
+			}
+			size_t k = size_t(std::upper_bound(mTimes.begin(), mTimes.begin() + count, inTime) - mTimes.begin()) - 1;
+			const float dt = mTimes[k + 1] - mTimes[k], u = dt > 0 ? (inTime - mTimes[k]) / dt : 0.0f;
+			if (mInterpolation == cgltf_interpolation_type_step)
+				std::memcpy(outValue, value(k), sizeof(float) * mWidth);
+			else if (!cubic && mRotation)
+				Slerp(value(k), value(k + 1), u, outValue);
+			else if (!cubic)
+				for (int i = 0; i < mWidth; ++i)
+					outValue[i] = value(k)[i] + (value(k + 1)[i] - value(k)[i]) * u;
+			else
+			{
+				// Hermite：值 p、切线 m（切线乘键间隔）
+				const float u2 = u * u, u3 = u2 * u;
+				const float h00 = 2 * u3 - 3 * u2 + 1, h10 = u3 - 2 * u2 + u, h01 = -2 * u3 + 3 * u2, h11 = u3 - u2;
+				const float *out_tangent = &mValues[k * stride + 2 * mWidth], *in_tangent = &mValues[(k + 1) * stride];
+				for (int i = 0; i < mWidth; ++i)
+					outValue[i] = h00 * value(k)[i] + h10 * out_tangent[i] * dt + h01 * value(k + 1)[i] + h11 * in_tangent[i] * dt;
+				if (mRotation)
+				{
+					float length = std::sqrt(outValue[0] * outValue[0] + outValue[1] * outValue[1] + outValue[2] * outValue[2] + outValue[3] * outValue[3]);
+					if (length > 0)
+						for (int i = 0; i < 4; ++i)
+							outValue[i] /= length;
+				}
+			}
+		}
+	};
+
+	/// 形变网格的动画来源：glTF 是挂着它的节点，FBX 是每个目标的 blend channel
+	struct MorphSource
+	{
+		uint32_t								mTargets;
+		int32_t									mGltfNode;
+		std::vector<const ufbx_blend_channel *>	mFbxChannels;
+	};
+
+	std::vector<MorphSource> MorphSources(const ImportedScene &inScene)
+	{
+		std::vector<MorphSource> sources;
+		for (const ImportedMesh &mesh : inScene.mMeshes)
+			if (!mesh.mMorphNames.empty())
+				sources.push_back({ uint32_t(mesh.mMorphNames.size()), mesh.mGltfNode, mesh.mFbxChannels });
+		return sources;
+	}
+
+	/**
+	 * 烘焙 glTF 的动画：按 inSampleRate 重采样（最后补一个正好在结尾的键），输出和 FBX 的一样。动画没碰的节点一个静止的键；
+	 * 旋转相邻的键取同一半球（ozz 按分量插值）。
+	 */
+	void BakeGltfAnimation(const cgltf_animation &inAnimation, const cgltf_data &inData, const std::vector<const cgltf_node *> &inNodes,
+		const std::vector<ImportedNode> &inRest, const std::vector<MorphSource> &inMorphs, float inSampleRate, Task &ioTask)
+	{
+		// 每个节点、每种通道（0 平移、1 旋转、2 缩放、3 权重）的采样器
+		std::unordered_map<size_t, GltfSampler> samplers;
+		float duration = 0;
+		for (cgltf_size c = 0; c < inAnimation.channels_count; ++c)
+		{
+			const cgltf_animation_channel &channel = inAnimation.channels[c];
+			if (channel.target_node == nullptr || channel.sampler == nullptr)
+				continue;
+			int path = channel.target_path == cgltf_animation_path_type_translation ? 0 : channel.target_path == cgltf_animation_path_type_rotation ? 1
+				: channel.target_path == cgltf_animation_path_type_scale ? 2 : channel.target_path == cgltf_animation_path_type_weights ? 3 : -1;
+			if (path < 0)
+				continue;
+			const cgltf_node &node = *channel.target_node;
+			int width = path == 1 ? 4 : path == 3 ? int(node.mesh != nullptr ? std::max<cgltf_size>(node.mesh->weights_count, node.mesh->primitives_count > 0 ? node.mesh->primitives[0].targets_count : 0) : 0) : 3;
+			if (width == 0)
+				continue;
+			GltfSampler &sampler = samplers.try_emplace(size_t(&node - inData.nodes) * 4 + size_t(path), *channel.sampler, width, path == 1).first->second;
+			duration = std::max(duration, sampler.Duration());
+		}
+
+		std::vector<float> times;
+		for (uint32_t i = 0; float(i) / inSampleRate < duration; ++i)
+			times.push_back(float(i) / inSampleRate);
+		times.push_back(duration);
+
+		auto find = [&](size_t inNode, int inPath) -> const GltfSampler *
+		{
+			auto found = samplers.find(inNode * 4 + size_t(inPath));
+			return found != samplers.end() ? &found->second : nullptr;
+		};
+		std::vector<uint32_t> counts;
+		std::vector<float> keys;
+		std::vector<float> value(16);
+		for (size_t n = 0; n < inNodes.size(); ++n)
+		{
+			const size_t gltf_node = size_t(inNodes[n] - inData.nodes);
+			const ImportedNode &rest = inRest[n];
+			const float *rest_values[3] = { rest.mTranslation, rest.mRotation, rest.mScale };
+			for (int path = 0; path < 3; ++path)
+			{
+				const int width = path == 1 ? 4 : 3;
+				const GltfSampler *sampler = find(gltf_node, path);
+				if (sampler == nullptr)
+				{
+					counts.push_back(1);
+					keys.push_back(0);
+					keys.insert(keys.end(), rest_values[path], rest_values[path] + width);
+					continue;
+				}
+				counts.push_back(uint32_t(times.size()));
+				const size_t first = keys.size();
+				for (size_t i = 0; i < times.size(); ++i)
+				{
+					sampler->Evaluate(times[i], value.data());
+					if (path == 1 && i > 0)
+					{
+						const float *previous = &keys[first + (i - 1) * 5 + 1];
+						if (previous[0] * value[0] + previous[1] * value[1] + previous[2] * value[2] + previous[3] * value[3] < 0)
+							for (int c = 0; c < 4; ++c)
+								value[c] = -value[c];
+					}
+					keys.push_back(times[i]);
+					keys.insert(keys.end(), value.begin(), value.begin() + width);
+				}
+			}
+		}
+
+		std::vector<uint32_t> weight_counts;
+		std::vector<float> weight_keys;
+		for (const MorphSource &morph : inMorphs)
+		{
+			const GltfSampler *sampler = morph.mGltfNode >= 0 ? find(size_t(morph.mGltfNode), 3) : nullptr;
+			if (sampler == nullptr || uint32_t(sampler->mWidth) < morph.mTargets)
+			{
+				weight_counts.insert(weight_counts.end(), morph.mTargets, 0);
+				continue;
+			}
+			value.resize(std::max<size_t>(value.size(), size_t(sampler->mWidth)));
+			std::vector<std::vector<float>> per_target(morph.mTargets);
+			for (float time : times)
+			{
+				sampler->Evaluate(time, value.data());
+				for (uint32_t t = 0; t < morph.mTargets; ++t)
+					per_target[t].insert(per_target[t].end(), { time, value[t] });
+			}
+			for (const std::vector<float> &target : per_target)
+			{
+				weight_counts.push_back(uint32_t(times.size()));
+				weight_keys.insert(weight_keys.end(), target.begin(), target.end());
+			}
+		}
+
+		PutOutput(ioTask, counts);
+		PutOutput(ioTask, keys);
+		PutOutput(ioTask, std::vector<float> { duration });
+		PutOutput(ioTask, weight_counts);
+		PutOutput(ioTask, weight_keys);
+	}
 }
 
 SN_API int32_t st_scene_load(const void *data, uint32_t size, int32_t format)
@@ -668,6 +1021,8 @@ SN_API int32_t st_scene_mesh_info(int32_t scene, uint32_t mesh, st_mesh_info *ou
 	out_info->material = m.mMaterial;
 	out_info->node = m.mNode;
 	out_info->joint_count = uint32_t(m.mJointNodes.size());
+	out_info->morph_target_count = uint32_t(m.mMorphNames.size());
+	out_info->morph_has_normals = !m.mMorphNormals.empty();
 	return SN_OK;
 }
 
@@ -758,6 +1113,41 @@ SN_API int32_t st_scene_mesh_skin(int32_t scene, uint32_t mesh, uint32_t *joint_
 	return SN_OK;
 }
 
+SN_API const char *st_scene_mesh_morph_name(int32_t scene, uint32_t mesh, uint32_t target)
+{
+	ImportedScene *s = Lookup<ImportedScene>(scene, "scene");
+	if (s == nullptr)
+		return nullptr;
+	if (mesh >= s->mMeshes.size() || target >= s->mMeshes[mesh].mMorphNames.size())
+	{
+		SetLastError(SN_ERROR_INVALID_ARGUMENT, "mesh or morph target index out of range");
+		return nullptr;
+	}
+	return s->mMeshes[mesh].mMorphNames[target].c_str();
+}
+
+SN_API int32_t st_scene_mesh_morph(int32_t scene, uint32_t mesh, uint32_t target, float *position_deltas, float *normal_deltas)
+{
+	ImportedScene *s = Lookup<ImportedScene>(scene, "scene");
+	if (s == nullptr)
+		return SN_ERROR_INVALID_HANDLE;
+	if (mesh >= s->mMeshes.size() || target >= s->mMeshes[mesh].mMorphNames.size())
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "mesh or morph target index out of range");
+
+	const ImportedMesh &m = s->mMeshes[mesh];
+	const size_t targets = m.mMorphNames.size(), vertex_count = m.mPositions.size() / 3;
+	auto copy = [&](float *outDeltas, const std::vector<float> &inDeltas)
+	{
+		if (outDeltas == nullptr || inDeltas.empty())
+			return;
+		for (size_t v = 0; v < vertex_count; ++v)
+			std::memcpy(&outDeltas[v * 3], &inDeltas[(v * targets + target) * 3], 3 * sizeof(float));
+	};
+	copy(position_deltas, m.mMorphPositions);
+	copy(normal_deltas, m.mMorphNormals);
+	return SN_OK;
+}
+
 SN_API const char *st_scene_animation_name(int32_t scene, uint32_t animation)
 {
 	ImportedScene *s = Lookup<ImportedScene>(scene, "scene");
@@ -779,15 +1169,25 @@ SN_API int32_t st_scene_animation_bake(int32_t scene, uint32_t animation, float 
 		return SN_ERROR_INVALID_HANDLE;
 	if (animation >= s->mAnimations.size())
 		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "animation index out of range");
-	if (s->mFbx == nullptr)
-		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "baking animations is only supported for FBX scenes");
 	if (!(sample_rate > 0))
 		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "sample_rate must be positive");
+	std::vector<MorphSource> morphs = MorphSources(*s);
+	if (s->mGltf != nullptr)
+	{
+		std::shared_ptr<GltfDocument> gltf = s->mGltf;
+		std::vector<const cgltf_node *> nodes = s->mGltfNodes;
+		std::vector<ImportedNode> rest = s->mNodes;
+		return RunTask("SceneAnimationBake", [gltf, nodes, rest, morphs, animation, sample_rate](Task &ioTask)
+		{
+			BakeGltfAnimation(gltf->mData->animations[animation], *gltf->mData, nodes, rest, morphs, sample_rate, ioTask);
+			return true;
+		});
+	}
 
 	// 任务里拿着场景的共享指针：场景在任务跑完之前被销毁也没关系
 	std::shared_ptr<ufbx_scene> fbx = s->mFbx;
 	std::vector<const ufbx_node *> nodes = s->mFbxNodes;
-	return RunTask("SceneAnimationBake", [fbx, nodes, animation, sample_rate](Task &ioTask)
+	return RunTask("SceneAnimationBake", [fbx, nodes, morphs, animation, sample_rate](Task &ioTask)
 	{
 		ufbx_bake_opts options {};
 		options.resample_rate = sample_rate;
@@ -827,10 +1227,34 @@ SN_API int32_t st_scene_animation_bake(int32_t scene, uint32_t animation, float 
 			counts.push_back(AppendKeys(track.rotation_keys, duration, 4, ufbx_evaluate_baked_quat, keys));
 			counts.push_back(AppendKeys(track.scale_keys, duration, 3, ufbx_evaluate_baked_vec3, keys));
 		}
-		std::memcpy(ioTask.AddOutput(counts.size() * sizeof(uint32_t)), counts.data(), counts.size() * sizeof(uint32_t));
-		std::memcpy(ioTask.AddOutput(keys.size() * sizeof(float)), keys.data(), keys.size() * sizeof(float));
-		float stored_duration = float(duration);
-		std::memcpy(ioTask.AddOutput(sizeof(float)), &stored_duration, sizeof(float));
+
+		// 形变权重：blend channel 的 DeformPercent（0 到 100）
+		std::vector<uint32_t> weight_counts;
+		std::vector<float> weight_keys;
+		for (const MorphSource &morph : morphs)
+			for (const ufbx_blend_channel *channel : morph.mFbxChannels)
+			{
+				const ufbx_baked_element *element = ufbx_find_baked_element_by_element_id(baked, channel->element_id);
+				const ufbx_baked_prop *percent = nullptr;
+				for (size_t p = 0; element != nullptr && p < element->props.count; ++p)
+					if (std::strcmp(element->props.data[p].name.data, "DeformPercent") == 0)
+						percent = &element->props.data[p];
+				if (percent == nullptr)
+				{
+					weight_counts.push_back(0);
+					continue;
+				}
+				const size_t first = weight_keys.size();
+				weight_counts.push_back(AppendKeys(percent->keys, duration, 1, ufbx_evaluate_baked_vec3, weight_keys));
+				for (size_t k = first + 1; k < weight_keys.size(); k += 2)
+					weight_keys[k] /= 100.0f;
+			}
+
+		PutOutput(ioTask, counts);
+		PutOutput(ioTask, keys);
+		PutOutput(ioTask, std::vector<float> { float(duration) });
+		PutOutput(ioTask, weight_counts);
+		PutOutput(ioTask, weight_keys);
 		return true;
 	});
 }

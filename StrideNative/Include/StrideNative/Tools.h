@@ -33,6 +33,8 @@ typedef struct st_mesh_info
 	uint32_t material;				///< index into the scene's materials, or ST_NO_MATERIAL
 	uint32_t node;					///< the node instancing the mesh (index into the scene's nodes)
 	uint32_t joint_count;			///< skinned meshes: joints influencing it (st_scene_mesh_skin); 0 otherwise
+	uint32_t morph_target_count;	///< morph targets (glTF targets, FBX blend channels; st_scene_mesh_morph); 0 if none
+	int32_t morph_has_normals;		///< whether the morph targets have normal deltas
 } st_mesh_info;
 
 /// A node of the scene hierarchy at rest (the file's default pose).
@@ -66,12 +68,21 @@ SN_API const char *st_scene_node_name(int32_t scene, uint32_t node);
 /// joint_nodes sorted by decreasing weight, weights normalized (unused slots have weight 0).
 SN_API int32_t st_scene_mesh_skin(int32_t scene, uint32_t mesh, uint32_t *joint_nodes, float *inverse_binds, uint16_t *joints, float *weights);
 
-/// Name of an animation (FBX animation stack), valid until the scene is destroyed; null for a bad index.
+/// Name of a morph target of a mesh (UTF-8: glTF's extras.targetNames, FBX's blend channel), valid until the scene
+/// is destroyed; null for a bad index.
+SN_API const char *st_scene_mesh_morph_name(int32_t scene, uint32_t mesh, uint32_t target);
+/// Deltas of a morph target, xyz per vertex in the mesh's (baked, model) space; any output may be null. normal_deltas
+/// stays untouched when the targets have no normals (st_mesh_info.morph_has_normals).
+SN_API int32_t st_scene_mesh_morph(int32_t scene, uint32_t mesh, uint32_t target, float *position_deltas, float *normal_deltas);
+
+/// Name of an animation (glTF animation, FBX animation stack), valid until the scene is destroyed; null for a bad index.
 SN_API const char *st_scene_animation_name(int32_t scene, uint32_t animation);
-/// Bakes an animation (FBX only) into linearly interpolated local-transform keys for every node, resampled
-/// at sample_rate keys per second, times starting at 0. Returns a task; outputs: [0] key counts (uint32,
-/// translation, rotation, scale per node), [1] keys in st_anim_build_animation's layout, [2] the duration
-/// in seconds (one float). Nodes the animation leaves alone get one key of their rest transform.
+/// Bakes an animation into linearly interpolated local-transform keys for every node, resampled at sample_rate
+/// keys per second, times starting at 0 (FBX: from the start of playback; glTF: from 0, ending at the last key).
+/// Returns a task; outputs: [0] key counts (uint32, translation, rotation, scale per node), [1] keys in
+/// st_anim_build_animation's layout, [2] the duration in seconds (one float), [3] morph weight key counts (uint32,
+/// one per target of every mesh with morph targets, in mesh then target order; 0 when the animation leaves the
+/// weight alone), [4] morph weight keys (time, weight). Nodes the animation leaves alone get one key of their rest transform.
 SN_API int32_t st_scene_animation_bake(int32_t scene, uint32_t animation, float sample_rate);
 
 // ---------------------------------------------------------------------------------------------

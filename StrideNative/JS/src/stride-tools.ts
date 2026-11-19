@@ -28,6 +28,16 @@ export interface MeshData {
 	node: number;
 	/** 蒙皮网格的蒙皮；别的网格是 null。 */
 	skin: MeshSkin | null;
+	/** 形变目标（glTF 的 targets、FBX 的 blend channel），没有时是空数组。 */
+	morphTargets: MorphTarget[];
+}
+
+export interface MorphTarget {
+	name: string;
+	/** 每个顶点 xyz 的位置增量，和 positions 同一个空间。 */
+	positions: Float32Array;
+	/** 每个顶点 xyz 的法线增量；文件里没有时是 null。 */
+	normals: Float32Array | null;
 }
 
 export interface MeshSkin {
@@ -58,6 +68,11 @@ export interface SceneNode {
 export interface BakedAnimation {
 	duration: number;
 	tracks: JointTrack[];
+	/**
+	 * 形变权重的曲线：按网格（有形变目标的，按 Scene.mesh 的下标从小到大）再按目标排，每个目标一组 [时间, 权重] 的线性关键帧；
+	 * 动画没碰的目标是空数组。
+	 */
+	morphWeights: { mesh: number; target: number; keys: [number, number][] }[];
 }
 
 export interface UvUnwrap {
@@ -449,7 +464,7 @@ export class Scene extends NativeObject<StrideTools> {
 	/** 材质名，MeshData.material 是这里的下标。 */
 	readonly materials: readonly string[];
 	readonly nodes: readonly SceneNode[];
-	/** 动画名（FBX 的动画栈），bakeAnimation 的下标。 */
+	/** 动画名（glTF 的动画、FBX 的动画栈），bakeAnimation 的下标。 */
 	readonly animations: readonly string[];
 
 	/** @internal */
@@ -476,12 +491,12 @@ export class Scene extends NativeObject<StrideTools> {
 
 	mesh(index: number): MeshData {
 		const t = this.native;
-		return t.withScratch(28, (infoPtr) => {
+		return t.withScratch(36, (infoPtr) => {
 			t.check(t.module._st_scene_mesh_info(this[HANDLE], index, infoPtr), 'st_scene_mesh_info');
-			const info = t.u32(infoPtr, 7);
+			const info = t.u32(infoPtr, 9);
 			const vertexCount = info[0]!, indexCount = info[1]!, hasNormals = !!info[2], hasUvs = !!info[3];
 			const material = info[4] === NO_MATERIAL ? null : info[4]!;
-			const node = info[5]!, jointCount = info[6]!;
+			const node = info[5]!, jointCount = info[6]!, morphTargetCount = info[7]!, morphHasNormals = !!info[8];
 			const positions = t.alloc(vertexCount * 12);
 			const normals = hasNormals ? t.alloc(vertexCount * 12) : 0;
 			const uvs = hasUvs ? t.alloc(vertexCount * 8) : 0;
@@ -496,6 +511,7 @@ export class Scene extends NativeObject<StrideTools> {
 					material,
 					node,
 					skin: jointCount > 0 ? this.#skin(index, vertexCount, jointCount) : null,
+					morphTargets: Array.from({ length: morphTargetCount }, (_, target) => this.#morphTarget(index, target, vertexCount, morphHasNormals)),
 				};
 			} finally {
 				for (const ptr of [positions, normals, uvs, indices]) if (ptr) t.free(ptr);
@@ -520,13 +536,37 @@ export class Scene extends NativeObject<StrideTools> {
 		}
 	}
 
-	/** 把一个动画（只支持 FBX）按 sampleRate 重采样烘焙成每个节点的线性关键帧，时间从 0 起。 */
+	#morphTarget(index: number, target: number, vertexCount: number, hasNormals: boolean): MorphTarget {
+		const t = this.native;
+		const positions = t.alloc(vertexCount * 12);
+		const normals = hasNormals ? t.alloc(vertexCount * 12) : 0;
+		try {
+			t.check(t.module._st_scene_mesh_morph(this[HANDLE], index, target, positions, normals), 'st_scene_mesh_morph');
+			return {
+				name: t.module.UTF8ToString(t.module._st_scene_mesh_morph_name(this[HANDLE], index, target)),
+				positions: t.copyOut(Float32Array, positions, vertexCount * 3),
+				normals: hasNormals ? t.copyOut(Float32Array, normals, vertexCount * 3) : null,
+			};
+		} finally {
+			t.free(positions);
+			if (normals) t.free(normals);
+		}
+	}
+
+	/** 把一个动画按 sampleRate 重采样烘焙成每个节点的线性关键帧和形变权重的曲线，时间从 0 起。 */
 	bakeAnimation(index: number, sampleRate = 30): Promise<BakedAnimation> {
 		const t = this.native;
+		// 有形变目标的网格和它们的目标数，对上烘焙结果里权重曲线的顺序
+		const morphMeshes = Array.from({ length: this.meshCount }, (_, mesh) => t.withScratch(36, (infoPtr) => {
+			t.check(t.module._st_scene_mesh_info(this[HANDLE], mesh, infoPtr), 'st_scene_mesh_info');
+			return { mesh, targets: t.u32(infoPtr, 9)[7]! };
+		})).filter((m) => m.targets > 0);
 		return t.awaitTask(t.module._st_scene_animation_bake(this[HANDLE], index, sampleRate), 'st_scene_animation_bake', (task) => {
 			const counts = task.output(Uint32Array, 0);
 			const keys = task.output(Float32Array, 1);
 			const duration = task.output(Float32Array, 2)[0]!;
+			const weightCounts = task.output(Uint32Array, 3);
+			const weightKeys = task.output(Float32Array, 4);
 			let at = 0;
 			const take = (count: number, width: number) => Array.from({ length: count }, () => {
 				const key = Array.from(keys.subarray(at, at + width));
@@ -538,7 +578,17 @@ export class Scene extends NativeObject<StrideTools> {
 				rotations: take(counts[n * 3 + 1]!, 5),
 				scales: take(counts[n * 3 + 2]!, 4),
 			}));
-			return { duration, tracks };
+			let weightAt = 0;
+			let curve = 0;
+			const morphWeights = morphMeshes.flatMap(({ mesh, targets }) => Array.from({ length: targets }, (_, target) => {
+				const keys = Array.from({ length: weightCounts[curve++]! }, () => {
+					const key: [number, number] = [weightKeys[weightAt]!, weightKeys[weightAt + 1]!];
+					weightAt += 2;
+					return key;
+				});
+				return { mesh, target, keys };
+			}));
+			return { duration, tracks, morphWeights };
 		});
 	}
 

@@ -197,7 +197,71 @@ TEST_CASE("场景导入：节点按深度优先排，蒙皮网格带关节、逆
 	// 第一个顶点：tip 0.75、root 0.25，按权重从大到小
 	CHECK((joints[0] == 1 && joints[1] == 0));
 	CHECK((weights[0] == 0.75f && weights[1] == 0.25f && weights[2] == 0.0f));
-	CHECK(st_scene_animation_bake(scene, 0, 30) < 0);	// glTF 的动画还不支持
+	CHECK(st_scene_animation_bake(scene, 0, 30) < 0);	// 没有这个动画
+	st_scene_destroy(scene);
+}
+
+TEST_CASE("场景导入：glTF 的形变目标（增量烘焙进模型空间、名字取 extras.targetNames），动画烘焙出节点的键和形变权重")
+{
+	ModuleScope module;
+	// 一个三角形，两个目标（第一个带法线增量）；节点平移 (2, 0, 0)、缩放 2。动画：权重线性从 (0, 0) 到 (1, 0.5)，平移按 STEP 跳
+	const std::string gltf = R"({"asset":{"version":"2.0"},
+		"buffers":[{"byteLength":192,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD8AAAA/AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAA"}],
+		"bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36},{"buffer":0,"byteOffset":36,"byteLength":36},{"buffer":0,"byteOffset":72,"byteLength":36},
+			{"buffer":0,"byteOffset":108,"byteLength":36},{"buffer":0,"byteOffset":144,"byteLength":8},{"buffer":0,"byteOffset":152,"byteLength":16},{"buffer":0,"byteOffset":168,"byteLength":24}],
+		"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]},
+			{"bufferView":1,"componentType":5126,"count":3,"type":"VEC3"},{"bufferView":2,"componentType":5126,"count":3,"type":"VEC3"},
+			{"bufferView":3,"componentType":5126,"count":3,"type":"VEC3"},{"bufferView":4,"componentType":5126,"count":2,"type":"SCALAR","min":[0],"max":[1]},
+			{"bufferView":5,"componentType":5126,"count":4,"type":"SCALAR"},{"bufferView":6,"componentType":5126,"count":2,"type":"VEC3"}],
+		"meshes":[{"primitives":[{"attributes":{"POSITION":0},"targets":[{"POSITION":1,"NORMAL":3},{"POSITION":2}]}],"weights":[0,0],"extras":{"targetNames":["up","lift"]}}],
+		"nodes":[{"name":"body","mesh":0,"translation":[2,0,0],"scale":[2,2,2]}],
+		"animations":[{"name":"Morph","channels":[{"sampler":0,"target":{"node":0,"path":"weights"}},{"sampler":1,"target":{"node":0,"path":"translation"}}],
+			"samplers":[{"input":4,"output":5,"interpolation":"LINEAR"},{"input":4,"output":6,"interpolation":"STEP"}]}],
+		"scenes":[{"nodes":[0]}]})";
+	int32_t task = st_scene_load(gltf.data(), uint32_t(gltf.size()), ST_FORMAT_GLTF);
+	REQUIRE(WaitForTask(task) == SN_TASK_DONE);
+	int32_t scene = sn_task_result(task, 0);
+	CHECK(sn_task_result(task, 4) == 1);
+	sn_task_release(task);
+	CHECK(std::string(st_scene_animation_name(scene, 0)) == "Morph");
+
+	st_mesh_info info;
+	REQUIRE(st_scene_mesh_info(scene, 0, &info) == SN_OK);
+	REQUIRE(info.morph_target_count == 2);
+	CHECK(info.morph_has_normals != 0);
+	CHECK(std::string(st_scene_mesh_morph_name(scene, 0, 0)) == "up");
+	CHECK(std::string(st_scene_mesh_morph_name(scene, 0, 1)) == "lift");
+	CHECK(st_scene_mesh_morph_name(scene, 0, 2) == nullptr);
+	std::vector<float> positions(9), normals(9);
+	REQUIRE(st_scene_mesh_morph(scene, 0, 0, positions.data(), normals.data()) == SN_OK);
+	CHECK(positions[2] == 2.0f);	// 增量只乘线性部分：(0, 0, 1) 缩放 2，不加平移
+	CHECK(positions[0] == 0.0f);
+	CHECK(normals[0] == 0.5f);		// 法线增量乘法线矩阵（缩放的逆）
+	REQUIRE(st_scene_mesh_morph(scene, 0, 1, positions.data(), nullptr) == SN_OK);
+	CHECK(positions[1] == 2.0f);
+
+	int32_t bake = st_scene_animation_bake(scene, 0, 30);
+	REQUIRE(WaitForTask(bake) == SN_TASK_DONE);
+	const uint32_t *counts = static_cast<const uint32_t *>(sn_task_output_data(bake, 0));
+	const float *keys = static_cast<const float *>(sn_task_output_data(bake, 1));
+	CHECK(*static_cast<const float *>(sn_task_output_data(bake, 2)) == 1.0f);
+	// 平移按 1/30 秒重采样，最后一个键正好在结尾：31 个；旋转、缩放没动画，一个静止的键
+	REQUIRE(counts[0] == 31);
+	CHECK((counts[1] == 1 && counts[2] == 1));
+	CHECK(keys[15 * 4 + 1] == 0.0f);	// STEP：一半时还是第一个值
+	CHECK(keys[30 * 4] == 1.0f);
+	CHECK(keys[30 * 4 + 1] == 1.0f);
+	const float *rest = keys + 31 * 4;
+	CHECK(rest[4] == 1.0f);			// 旋转的静止键是单位四元数
+	CHECK(rest[5 + 1] == 2.0f);		// 缩放的静止键
+	REQUIRE(sn_task_output_size(bake, 3) == 2 * sizeof(uint32_t));
+	const uint32_t *weight_counts = static_cast<const uint32_t *>(sn_task_output_data(bake, 3));
+	const float *weight_keys = static_cast<const float *>(sn_task_output_data(bake, 4));
+	REQUIRE((weight_counts[0] == 31 && weight_counts[1] == 31));
+	CHECK(std::abs(weight_keys[15 * 2 + 1] - 0.5f) < 1.0e-5f);			// 第一个目标 t = 0.5：0.5
+	CHECK(std::abs(weight_keys[(31 + 15) * 2 + 1] - 0.25f) < 1.0e-5f);	// 第二个目标：0.25
+	CHECK(weight_keys[(31 + 30) * 2 + 1] == 0.5f);
+	sn_task_release(bake);
 	st_scene_destroy(scene);
 }
 
@@ -213,7 +277,15 @@ TEST_CASE("场景导入：STRIDE_TEST_SCENE 指定的文件（排查用，没设
 	REQUIRE(WaitForTask(task) == SN_TASK_DONE);
 	int32_t scene = sn_task_result(task, 0);
 	MESSAGE("meshes " << sn_task_result(task, 1) << ", nodes " << sn_task_result(task, 3) << ", animations " << sn_task_result(task, 4));
+	const int32_t mesh_count = sn_task_result(task, 1);
 	sn_task_release(task);
+	for (int32_t m = 0; m < mesh_count; ++m)
+	{
+		st_mesh_info info;
+		REQUIRE(st_scene_mesh_info(scene, uint32_t(m), &info) == SN_OK);
+		for (uint32_t t = 0; t < info.morph_target_count; ++t)
+			MESSAGE("mesh " << m << " morph target '" << std::string(st_scene_mesh_morph_name(scene, uint32_t(m), t)) << "'" << std::string(info.morph_has_normals ? " (normals)" : ""));
+	}
 	if (st_scene_animation_name(scene, 0) != nullptr)
 	{
 		int32_t bake = st_scene_animation_bake(scene, 0, 30);
@@ -236,6 +308,14 @@ TEST_CASE("场景导入：STRIDE_TEST_SCENE 指定的文件（排查用，没设
 			}
 		}
 		MESSAGE("duration " << duration);
+		if (sn_task_output_size(bake, 3) > 0)
+		{
+			const uint32_t *weight_counts = static_cast<const uint32_t *>(sn_task_output_data(bake, 3));
+			std::string text;
+			for (uint32_t i = 0; i < sn_task_output_size(bake, 3) / sizeof(uint32_t); ++i)
+				text += std::to_string(weight_counts[i]) + " ";
+			MESSAGE("morph weight keys per target: " << text);
+		}
 		sn_task_release(bake);
 	}
 	st_scene_destroy(scene);
