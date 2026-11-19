@@ -124,6 +124,15 @@ export interface ModuleWasm {
 }
 
 /**
+ * Emscripten 的错误输出：调试版（ASSERTIONS）在主线程上等线程结束时（shutdown 关任务系统）提示一次
+ * "Blocking on the main thread is very dangerous"。关的时候等工作线程退出只要一瞬间，是预期的，降成警告；别的照常是错误。
+ */
+function printErr(text: string): void {
+	if (text.startsWith('Blocking on the main thread is very dangerous')) console.warn(text);
+	else console.error(text);
+}
+
+/**
  * 实例化 Emscripten 模块并启动任务系统。浏览器里只有跨源隔离的页面（COOP + COEP 响应头）才能用共享内存。
  * 要加载侧模块时必须给出 wasm：给了 locateFile，Emscripten 就不再用它自己的 new URL(..., import.meta.url)，
  * 打包器给模块 wasm 改的（带哈希的）地址只能由调用方的 new URL 提供。
@@ -152,6 +161,7 @@ export async function instantiate<E extends string>(factory: CoreFactory<E>, { w
 		// Worker 池必须装得下任务系统的所有线程：Jolt 是同步创建它们的
 		module = await factory({
 			workerPoolSize: workerThreads,
+			printErr,
 			...(features.length > 0 ? { dynamicLibraries: [...libraries.keys()], locateFile: locate } : locateFile ? { locateFile } : {}),
 		});
 	} catch (error) {
