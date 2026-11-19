@@ -857,4 +857,26 @@ describe('stride-native and stride-tools', () => {
 		assert.ok(letter.width > 10 && letter.pixels.length === letter.width * letter.height * 3);
 		assert.equal(glyphs[6].pixels.length, 0); // space
 	});
+
+	it('describes fonts and reads codepoints, kerning and quadratic outlines', async (t) => {
+		let font;
+		try {
+			font = await readFile(fontPath);
+		} catch {
+			t.skip(`no font at ${fontPath}`);
+			return;
+		}
+		const description = tools.describeFont(font);
+		assert.equal(description.fontCount, 1);
+		assert.ok(description.unitsPerEm > 0 && description.ascent > 0 && description.descent < 0);
+		assert.ok(description.family.length > 0);
+		const { codepoints, glyphs, kerning } = await tools.fontCodepoints(font);
+		assert.equal(codepoints.length, glyphs.length);
+		assert.equal(kerning.length % 3, 0);
+		const glyphOf = (c) => glyphs[codepoints.indexOf(c.codePointAt(0))];
+		const [o, space] = await tools.glyphOutlines(font, [glyphOf('o'), glyphOf(' ')]);
+		assert.ok(o.curves.length >= 8 * 6 && o.advance > 0);
+		assert.equal(o.curves.length % 6, 0);
+		assert.equal(space.curves.length, 0);
+	});
 });

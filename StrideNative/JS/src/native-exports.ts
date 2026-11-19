@@ -497,12 +497,32 @@ export interface NativeExports {
 	 */
 	_st_cubemap_sh_lambert(faces: number, size: number): number;
 	/**
+	 * Every codepoint the font maps (U+0000 to U+10FFFF) and the legacy kern table. font must stay alive until the task
+	 * finishes. Outputs: [0] uint32 codepoints ascending, [1] uint32 glyph index per codepoint, [2] kern pairs as int32
+	 * (glyph1, glyph2, advance in font units), sorted by glyph1 then glyph2.
+	 * C: Tools.h
+	 */
+	_st_font_codepoints(font: number, fontSize: number, index: number): number;
+	/**
+	 * Describes the font at index of a font file or collection (synchronous).
+	 * C: Tools.h
+	 */
+	_st_font_describe(font: number, fontSize: number, index: number, outDescription: number): number;
+	/**
 	 * Multi-channel signed distance field glyphs (stb_truetype outlines, msdfgen), in parallel.
 	 * font and codepoints must stay alive until the task finishes. Outputs: [0] st_glyph_metrics per
 	 * codepoint, then one RGB8 bitmap per codepoint (empty for glyphs without outline).
 	 * C: Tools.h
 	 */
 	_st_font_msdf(font: number, fontSize: number, codepoints: number, codepointCount: number, pixelSize: number, distanceRange: number): number;
+	/**
+	 * Glyph outlines as quadratic Bezier curves for the vector text renderer, in parallel. Cubic (CFF) segments are split
+	 * into quadratics within tolerance font units; a line is a quadratic whose control point equals its end point.
+	 * font and glyphs must stay alive until the task finishes. Outputs: [0] st_glyph_outline per glyph, [1] float curves
+	 * (x1 y1 x2 y2 x3 y3, font units, y up), each glyph's contours closed.
+	 * C: Tools.h
+	 */
+	_st_font_outlines(font: number, fontSize: number, index: number, glyphs: number, glyphCount: number, tolerance: number): number;
 	/**
 	 * MikkTSpace tangents, one xyzw per index (corner); weld afterwards if needed.
 	 * C: Tools.h
@@ -740,6 +760,9 @@ export type ToolsExport =
 	| 'st_cubemap_prefilter_ggx'
 	| 'st_cubemap_sh_lambert'
 	| 'st_basis_encode'
+	| 'st_font_describe'
+	| 'st_font_codepoints'
+	| 'st_font_outlines'
 	| 'st_font_msdf'
 	| 'st_anim_build_skeleton'
 	| 'st_anim_build_animation'

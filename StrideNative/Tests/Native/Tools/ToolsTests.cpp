@@ -1,6 +1,7 @@
 #include <TestSupport.h>
 #include <StrideNative/Tools.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -379,6 +380,68 @@ TEST_CASE("MSDF glyphs are generated in parallel")
 	CHECK(sn_task_output_size(task, 1) == metrics[0].width * metrics[0].height * 3);
 	CHECK(metrics[2].width == 0);	// Space has no outline
 	CHECK(metrics[2].advance > 0);
+	sn_task_release(task);
+}
+
+TEST_CASE("Font descriptions, codepoints and quadratic outlines")
+{
+	const char *font_path = std::getenv("STRIDE_TEST_FONT") != nullptr ? std::getenv("STRIDE_TEST_FONT") : "C:/Windows/Fonts/arial.ttf";
+	std::vector<char> font = ReadFile(font_path);
+	if (font.empty())
+	{
+		MESSAGE("skipped: no font at " << font_path);
+		return;
+	}
+
+	ModuleScope module;
+	st_font_description description;
+	REQUIRE(st_font_describe(font.data(), uint32_t(font.size()), 0, &description) == SN_OK);
+	CHECK(description.font_count == 1);
+	CHECK(description.units_per_em > 0);
+	CHECK(description.ascent > 0);
+	CHECK(description.descent < 0);
+	CHECK(std::strlen(description.family) > 0);
+	CHECK(st_font_describe(font.data(), uint32_t(font.size()), 1, &description) != SN_OK);
+
+	int32_t task = st_font_codepoints(font.data(), uint32_t(font.size()), 0);
+	REQUIRE(WaitForTask(task) == SN_TASK_DONE);
+	const uint32_t count = sn_task_output_size(task, 0) / 4;
+	const uint32_t *codepoints = static_cast<const uint32_t *>(sn_task_output_data(task, 0));
+	const uint32_t *glyphs = static_cast<const uint32_t *>(sn_task_output_data(task, 1));
+	REQUIRE(count > 200);
+	CHECK(std::is_sorted(codepoints, codepoints + count));
+	const uint32_t *letter = std::find(codepoints, codepoints + count, uint32_t('o'));
+	REQUIRE(letter != codepoints + count);
+	const uint32_t space = glyphs[std::find(codepoints, codepoints + count, uint32_t(' ')) - codepoints];
+	const uint32_t wanted[] = { glyphs[letter - codepoints], space };
+	sn_task_release(task);
+
+	task = st_font_outlines(font.data(), uint32_t(font.size()), 0, wanted, 2, 0.5f);
+	REQUIRE(WaitForTask(task) == SN_TASK_DONE);
+	const st_glyph_outline *outlines = static_cast<const st_glyph_outline *>(sn_task_output_data(task, 0));
+	const float *curves = static_cast<const float *>(sn_task_output_data(task, 1));
+	// 'o' has two closed contours: every curve starts where the previous one ended, except at contour starts,
+	// and the contours end where they began
+	CHECK(outlines[0].curve_count >= 8);
+	CHECK(outlines[0].advance > 0);
+	CHECK(outlines[0].bounds[2] > outlines[0].bounds[0]);
+	int contours = 1;
+	float start_x = curves[0], start_y = curves[1];
+	for (uint32_t i = 1; i < outlines[0].curve_count; ++i)
+	{
+		const float *previous = curves + (i - 1) * 6, *current = curves + i * 6;
+		if (previous[4] != current[0] || previous[5] != current[1])
+		{
+			CHECK(previous[4] == start_x);
+			CHECK(previous[5] == start_y);
+			start_x = current[0];
+			start_y = current[1];
+			++contours;
+		}
+	}
+	CHECK(contours == 2);
+	CHECK(outlines[1].curve_count == 0);	// Space has no outline
+	CHECK(outlines[1].advance > 0);
 	sn_task_release(task);
 }
 

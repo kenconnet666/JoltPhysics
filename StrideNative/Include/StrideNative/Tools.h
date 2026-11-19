@@ -155,6 +155,56 @@ typedef struct st_glyph_metrics
 	float advance;					///< Pixels
 } st_glyph_metrics;
 
+/// A font's vertical metrics and names (font units). font_count is the number of fonts in a collection (1 for a
+/// plain .ttf/.otf); index picks one. The hhea, OS/2 typo and OS/2 win metrics are all given: renderers differ in
+/// which they use (FreeType takes hhea unless use_typo_metrics). descent and typo_descent are negative, win_descent positive.
+typedef struct st_font_description
+{
+	int32_t font_count;
+	int32_t glyph_count;
+	int32_t units_per_em;
+	int32_t bounds[4];				///< head xMin yMin xMax yMax
+	int32_t ascent;					///< hhea
+	int32_t descent;
+	int32_t line_gap;
+	int32_t use_typo_metrics;		///< OS/2 fsSelection bit 7
+	int32_t typo_ascent;
+	int32_t typo_descent;
+	int32_t typo_line_gap;
+	int32_t win_ascent;
+	int32_t win_descent;
+	int32_t x_height;				///< OS/2 version 2+, else 0
+	int32_t cap_height;
+	char family[128];				///< name ID 1, UTF-8 ("Arial")
+	char subfamily[128];			///< name ID 2 ("Bold Italic")
+	char typographic_family[128];	///< name IDs 16 and 17, empty when absent
+	char typographic_subfamily[128];
+} st_font_description;
+
+/// Describes the font at index of a font file or collection (synchronous).
+SN_API int32_t st_font_describe(const void *font, uint32_t font_size, int32_t index, st_font_description *out_description);
+
+/// Every codepoint the font maps (U+0000 to U+10FFFF) and the legacy kern table. font must stay alive until the task
+/// finishes. Outputs: [0] uint32 codepoints ascending, [1] uint32 glyph index per codepoint, [2] kern pairs as int32
+/// (glyph1, glyph2, advance in font units), sorted by glyph1 then glyph2.
+SN_API int32_t st_font_codepoints(const void *font, uint32_t font_size, int32_t index);
+
+typedef struct st_glyph_outline
+{
+	uint32_t glyph;
+	int32_t advance;				///< Font units
+	int32_t left_bearing;
+	int32_t bounds[4];				///< x0 y0 x1 y1 of the outline, font units, y up; zero without outline
+	uint32_t curve_offset;			///< First curve in output [1]
+	uint32_t curve_count;
+} st_glyph_outline;
+
+/// Glyph outlines as quadratic Bezier curves for the vector text renderer, in parallel. Cubic (CFF) segments are split
+/// into quadratics within tolerance font units; a line is a quadratic whose control point equals its end point.
+/// font and glyphs must stay alive until the task finishes. Outputs: [0] st_glyph_outline per glyph, [1] float curves
+/// (x1 y1 x2 y2 x3 y3, font units, y up), each glyph's contours closed.
+SN_API int32_t st_font_outlines(const void *font, uint32_t font_size, int32_t index, const uint32_t *glyphs, uint32_t glyph_count, float tolerance);
+
 /// Multi-channel signed distance field glyphs (stb_truetype outlines, msdfgen), in parallel.
 /// font and codepoints must stay alive until the task finishes. Outputs: [0] st_glyph_metrics per
 /// codepoint, then one RGB8 bitmap per codepoint (empty for glyphs without outline).

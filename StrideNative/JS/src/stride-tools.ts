@@ -124,6 +124,57 @@ export interface Glyph {
 	pixels: Uint8Array;
 }
 
+/** 字体的度量（字体单位）和名字，见 Tools.h 的 st_font_description。 */
+export interface FontDescription {
+	/** 字体集合（.ttc）里的字体数，普通的 .ttf/.otf 是 1。 */
+	readonly fontCount: number;
+	readonly glyphCount: number;
+	readonly unitsPerEm: number;
+	/** head 表的 xMin、yMin、xMax、yMax。 */
+	readonly bounds: readonly [number, number, number, number];
+	/** hhea 的（descent 是负数）。 */
+	readonly ascent: number;
+	readonly descent: number;
+	readonly lineGap: number;
+	/** OS/2 的 fsSelection 第 7 位：排版时该用 typo 那一组。 */
+	readonly useTypoMetrics: boolean;
+	readonly typoAscent: number;
+	readonly typoDescent: number;
+	readonly typoLineGap: number;
+	/** OS/2 的（winDescent 是正数）。 */
+	readonly winAscent: number;
+	readonly winDescent: number;
+	/** OS/2 版本 2 起才有，没有时是 0。 */
+	readonly xHeight: number;
+	readonly capHeight: number;
+	/** 名字表的 1、2 号（"Arial"、"Bold Italic"）。 */
+	readonly family: string;
+	readonly subfamily: string;
+	/** 名字表的 16、17 号，没有时是空串。 */
+	readonly typographicFamily: string;
+	readonly typographicSubfamily: string;
+}
+
+/** 字体映射的码位和 kern 表。 */
+export interface FontCodepoints {
+	/** 升序。 */
+	readonly codepoints: Uint32Array;
+	/** 每个码位的字形下标。 */
+	readonly glyphs: Uint32Array;
+	/** kern 表的字距，每三个一组：glyph1、glyph2、调整量（字体单位），按 glyph1、glyph2 排序。 */
+	readonly kerning: Int32Array;
+}
+
+/** 一个字形的轮廓：二次贝塞尔曲线（x1 y1 x2 y2 x3 y3，字体单位，y 向上），直线是控制点等于终点的二次曲线。 */
+export interface GlyphOutline {
+	readonly glyph: number;
+	readonly advance: number;
+	readonly leftBearing: number;
+	/** 轮廓的 x0、y0、x1、y1；没有轮廓（空格）时都是 0。 */
+	readonly bounds: readonly [number, number, number, number];
+	readonly curves: Float32Array;
+}
+
 export interface JointDescription {
 	/** 根是 -1；父关节必须排在前面。 */
 	parent?: number;
@@ -284,6 +335,54 @@ export class StrideTools extends NativeModule<ToolsExport> {
 		return this.withArraysAsync([rgba], (pixels) =>
 			this.awaitTask(this.module._st_basis_encode(pixels, width, height, code, flags, quality, effort), 'st_basis_encode',
 				(task) => task.output(Uint8Array, 0)));
+	}
+
+	/** 字体文件（或集合里第 index 个字体）的度量和名字。 */
+	describeFont(font: Uint8Array, index = 0): FontDescription {
+		const SIZE = 19 * 4 + 4 * 128;
+		return this.withArrays([font], (f) => this.withScratch(SIZE, (out) => {
+			this.check(this.module._st_font_describe(f, font.byteLength, index, out), 'st_font_describe');
+			const i = this.i32(out, 19);
+			const text = (at: number) => this.module.UTF8ToString(out + 19 * 4 + at * 128);
+			return {
+				fontCount: i[0]!, glyphCount: i[1]!, unitsPerEm: i[2]!, bounds: [i[3]!, i[4]!, i[5]!, i[6]!],
+				ascent: i[7]!, descent: i[8]!, lineGap: i[9]!, useTypoMetrics: i[10] !== 0,
+				typoAscent: i[11]!, typoDescent: i[12]!, typoLineGap: i[13]!, winAscent: i[14]!, winDescent: i[15]!,
+				xHeight: i[16]!, capHeight: i[17]!,
+				family: text(0), subfamily: text(1), typographicFamily: text(2), typographicSubfamily: text(3),
+			};
+		}));
+	}
+
+	/** 字体映射的所有码位、对应的字形和 kern 表。 */
+	fontCodepoints(font: Uint8Array, index = 0): Promise<FontCodepoints> {
+		return this.withArraysAsync([font], (f) =>
+			this.awaitTask(this.module._st_font_codepoints(f, font.byteLength, index), 'st_font_codepoints', (task) => ({
+				codepoints: task.output(Uint32Array, 0),
+				glyphs: task.output(Uint32Array, 1),
+				kerning: task.output(Int32Array, 2),
+			})));
+	}
+
+	/** 字形的轮廓（并行）；三次曲线（CFF）按 tolerance（字体单位）拆成二次。 */
+	glyphOutlines(font: Uint8Array, glyphs: Iterable<number>, { index = 0, tolerance = 0.5 }: { index?: number; tolerance?: number } = {}): Promise<GlyphOutline[]> {
+		const list = new Uint32Array([...glyphs]);
+		return this.withArraysAsync([font, list], (f, g) =>
+			this.awaitTask(this.module._st_font_outlines(f, font.byteLength, index, g, list.length, tolerance), 'st_font_outlines', (task) => {
+				// st_glyph_outline：glyph、advance、left_bearing、bounds[4]、curve_offset、curve_count
+				const records = task.output(Int32Array, 0);
+				const curves = task.output(Float32Array, 1);
+				return Array.from(list, (glyph, n) => {
+					const r = records.subarray(n * 9, n * 9 + 9);
+					return {
+						glyph,
+						advance: r[1]!,
+						leftBearing: r[2]!,
+						bounds: [r[3]!, r[4]!, r[5]!, r[6]!],
+						curves: curves.slice(r[7]! * 6, (r[7]! + r[8]!) * 6),
+					} satisfies GlyphOutline;
+				});
+			}));
 	}
 
 	/** 并行生成 MSDF 字形。 */
