@@ -293,9 +293,12 @@ namespace StrideNative
 	{
 		Vec3 position = inPosition;
 		Quat rotation = inRotation;
-		if (EffectiveParent(inSlot) != 0)
+		if (int32_t parent = EffectiveParent(inSlot); parent != 0)
 		{
-			Mat44 parent_world = ParentWorld(inSlot);
+			// 父节点的世界矩阵现算，不用缓存：这一帧脚本可能刚改过父节点（还没 Update），物理写回时父物体也可能刚写过
+			Mat44 parent_world = ComputeWorldMatrix(parent);
+			if (int32_t link = mLinkSlot[inSlot]; link != 0)
+				parent_world = parent_world * Mat44::sLoadFloat4x4(reinterpret_cast<const Float4 *>(&mLinkMatrix[inSlot * 16]));
 			Vec3 parent_scale;
 			position = parent_world.Inversed() * inPosition;
 			rotation = (parent_world.Decompose(parent_scale).GetQuaternion().Conjugated() * inRotation).Normalized();

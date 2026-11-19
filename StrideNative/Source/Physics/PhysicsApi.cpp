@@ -139,6 +139,8 @@ namespace
 		int32_t mCharacter = -1;			///< mCharacters 里的下标
 		RVec3 mPreviousPosition, mPosition;	///< 插值用：上一步和这一步的位姿
 		Quat mPreviousRotation = Quat::sIdentity(), mRotation = Quat::sIdentity();
+		RVec3 mWrittenPosition;				///< 最后写进槽位的世界位姿：运动学物体靠它看出变换被物理以外的代码改过
+		Quat mWrittenRotation = Quat::sIdentity();
 	};
 
 	/**
@@ -353,6 +355,44 @@ namespace
 		}
 	}
 
+	/// 把世界位姿写进物体绑定的槽位，并记下写了什么
+	void WritePose(StrideNative::TransformStore &ioStore, BodyRecord &ioRecord, RVec3Arg inPosition, QuatArg inRotation)
+	{
+		ioStore.SetWorldPose(ioRecord.mSlot, Vec3(inPosition), inRotation);
+		ioRecord.mWrittenPosition = inPosition;
+		ioRecord.mWrittenRotation = inRotation;
+	}
+
+	/**
+	 * 运动学物体跟着变换走：槽位现在的世界位姿和上次写进去的不一样（脚本移动了它或它的父实体），步进前把物体移过去。
+	 * 和 Stride 不同：Bepu 只让 Static 跟着变换（CollidableProcessor），运动学刚体醒着时由仿真写回变换，睡下后变换和物体
+	 * 就分开了。场景的本意是运动学刚体跟着实体走（JumpyJet 移动管子组的根，TopDownRPG 掉落的金币带着子实体上的触发器）。
+	 * 按速度走的运动学物体每步写回，变换和写进去的一样，不受影响。
+	 */
+	void FollowMovedKinematics(World &ioWorld, const StrideNative::TransformStore &inStore)
+	{
+		BodyInterface &bodies = ioWorld.mSystem.GetBodyInterface();
+		for (BodyRecord &record : ioWorld.mBodies)
+		{
+			if (record.mMotion != SN_MOTION_KINEMATIC || record.mSlot == 0 || record.mRemoved)
+				continue;
+			Vec3 scale;
+			Mat44 world = inStore.ComputeWorldMatrix(record.mSlot);
+			RVec3 position(world.GetTranslation());
+			Quat rotation = world.Decompose(scale).GetQuaternion().Normalized();
+			// 写进去再算出来的世界矩阵有舍入误差：位置按大小放宽，旋转差不到约 0.2 度算没动（没动的部分会累积，超过就跟上）
+			float tolerance = 1.0e-5f * (1.0f + Vec3(position).Length());
+			bool moved = Vec3(position - record.mWrittenPosition).LengthSq() > tolerance * tolerance
+				|| abs(rotation.Dot(record.mWrittenRotation)) < 1.0f - 1.0e-6f;
+			// 世界矩阵不是旋转时分解出 NaN（见 sn_physics_add_bodies），不跟
+			if (!moved || !rotation.IsNormalized() || Vec3(position).IsNaN())
+				continue;
+			record.mPosition = record.mPreviousPosition = record.mWrittenPosition = position;
+			record.mRotation = record.mPreviousRotation = record.mWrittenRotation = rotation;
+			bodies.SetPositionAndRotation(record.mID, position, rotation, EActivation::Activate);
+		}
+	}
+
 	/// 会动的物体记下这一步的位姿，写回绑定的槽位（插值的物体由 sn_physics_interpolate 再写一次）
 	void RecordPoses(World &ioWorld, StrideNative::TransformStore *ioStore)
 	{
@@ -365,7 +405,7 @@ namespace
 			record.mPreviousRotation = record.mRotation;
 			bodies.GetPositionAndRotation(record.mID, record.mPosition, record.mRotation);
 			if (ioStore != nullptr && record.mSlot != 0)
-				ioStore->SetWorldPose(record.mSlot, Vec3(record.mPosition), record.mRotation);
+				WritePose(*ioStore, record, record.mPosition, record.mRotation);
 		}
 	}
 
@@ -927,8 +967,8 @@ SN_API int32_t sn_physics_add_bodies(int32_t world, const sn_body *bodies, uint3
 		record.mMotion = body.motion;
 		record.mFlags = body.flags;
 		record.mSlot = body.transform;
-		record.mPosition = record.mPreviousPosition = poses[i].GetTranslation();
-		record.mRotation = record.mPreviousRotation = poses[i].GetQuaternion();
+		record.mPosition = record.mPreviousPosition = record.mWrittenPosition = poses[i].GetTranslation();
+		record.mRotation = record.mPreviousRotation = record.mWrittenRotation = poses[i].GetQuaternion();
 		ObjectLayer layer = ToObjectLayer(body.layer, Moves(body.motion) || body.motion == SN_MOTION_KINEMATIC);
 		if (body.motion == SN_MOTION_CHARACTER)
 		{
@@ -1029,6 +1069,8 @@ SN_API int32_t sn_physics_step(int32_t world, float delta_time, int32_t collisio
 	if (w->mTransforms != 0 && (store = BoundStore(*w)) == nullptr)
 		return SN_ERROR_INVALID_HANDLE;
 	SN_DEBUG_SCOPE("physics.step");
+	if (store != nullptr)
+		FollowMovedKinematics(*w, *store);
 	for (CharacterRecord &character : w->mCharacters)
 		if (character.mCharacter != nullptr)
 			UpdateCharacter(*w, character, delta_time);
@@ -1076,13 +1118,13 @@ SN_API int32_t sn_physics_interpolate(int32_t world, float alpha)
 	if (store == nullptr)
 		return SN_ERROR_INVALID_HANDLE;
 	float t = std::clamp(alpha, 0.0f, 1.0f);
-	for (const BodyRecord &record : w->mBodies)
+	for (BodyRecord &record : w->mBodies)
 	{
 		if ((record.mFlags & SN_BODY_INTERPOLATED) == 0 || record.mSlot == 0 || !Integrates(record.mMotion) || record.mRemoved)
 			continue;
 		RVec3 position = record.mPreviousPosition + (record.mPosition - record.mPreviousPosition) * t;
 		Quat rotation = record.mPreviousRotation.SLERP(record.mRotation, t);
-		store->SetWorldPose(record.mSlot, Vec3(position), rotation);
+		WritePose(*store, record, position, rotation);
 	}
 	return SN_OK;
 }
@@ -1530,7 +1572,7 @@ SN_API int32_t sn_physics_body_teleport(int32_t world, int32_t body, const float
 		TransformStore *store = BoundStore(*w);
 		if (store == nullptr)
 			return SN_ERROR_INVALID_HANDLE;
-		store->SetWorldPose(record->mSlot, Vec3(record->mPosition), record->mRotation);
+		WritePose(*store, *record, record->mPosition, record->mRotation);
 	}
 	return SN_OK;
 }

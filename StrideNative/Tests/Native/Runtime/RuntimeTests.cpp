@@ -972,6 +972,72 @@ TEST_CASE("物理：绑定变换的物体从槽位出发，步进后把位姿写
 	sn_physics_destroy(world);
 }
 
+TEST_CASE("物理：运动学物体跟着被改过的变换走（自己或父节点被移动），按速度走的照常写回")
+{
+	ModuleScope module;
+	int32_t store = sn_transforms_create(8);
+	REQUIRE(store > 0);
+	sn_transform_columns c {};
+	REQUIRE(sn_transforms_columns(store, &c) == SN_OK);
+	int32_t slots[4] = {};
+	REQUIRE(sn_transforms_alloc(store, slots, 4) == 4);
+	const int32_t parent = slots[0], child = slots[1], root = slots[2], moving = slots[3];
+	REQUIRE(sn_transforms_set_parent(store, child, parent) == SN_OK);
+	c.position[child * 3 + 1] = 2;
+	c.position[root * 3] = 5;
+	c.position[moving * 3] = -10;
+	REQUIRE(sn_transforms_update(store) == SN_OK);
+
+	int32_t world = sn_physics_create(8, store, nullptr);
+	REQUIRE(world > 0);
+	TestBox child_box { { 0, 0, 0 }, { 0.5f, 0.5f, 0.5f }, SN_MOTION_KINEMATIC, child };
+	TestBox root_box { { 0, 0, 0 }, { 0.5f, 0.5f, 0.5f }, SN_MOTION_KINEMATIC, root };
+	TestBox moving_box { { 0, 0, 0 }, { 0.5f, 0.5f, 0.5f }, SN_MOTION_KINEMATIC, moving };
+	const TestBox boxes[] = { child_box, root_box, moving_box };
+	REQUIRE(AddBoxes(world, boxes, 3) == 0);
+	const float velocity[3] = { 1, 0, 0 }, still[3] = { 0, 0, 0 };
+	REQUIRE(sn_physics_body_set_velocity(world, 2, velocity, still) == SN_OK);
+
+	// 一秒：静止的两个睡下，按速度走的走了 1
+	auto run = [&](int inSteps)
+	{
+		for (int i = 0; i < inSteps; ++i)
+		{
+			REQUIRE(sn_physics_step(world, 1.0f / 60.0f, 1) == SN_OK);
+			REQUIRE(sn_transforms_update(store) == SN_OK);
+		}
+	};
+	run(60);
+	CHECK(sn_physics_body_awake(world, 0) == 0);
+	CheckTranslation(&c.world[moving * 16], -9, 0, 0, 1e-3);
+
+	// 脚本移动父节点和根上的物体：下一步物体移过去，子节点的本地位姿不变
+	c.position[parent * 3] = -3;
+	c.position[root * 3 + 1] = 6;
+	SetQuarterTurnAroundY(&c.rotation[root * 4]);
+	run(1);
+	const float *positions = sn_physics_positions(world);
+	CHECK(positions[0] == doctest::Approx(-3.0f));
+	CHECK(positions[1] == doctest::Approx(2.0f));
+	CHECK(positions[3] == doctest::Approx(5.0f));
+	CHECK(positions[4] == doctest::Approx(6.0f));
+	CHECK(c.position[child * 3] == doctest::Approx(0.0f).epsilon(1e-4));
+	CHECK(c.position[child * 3 + 1] == doctest::Approx(2.0f));
+	CHECK(c.world[root * 16 + 8] == doctest::Approx(1.0f).epsilon(1e-3));		// z 轴转到 x
+	CheckTranslation(&c.world[moving * 16], -9 + 1.0f / 60.0f, 0, 0, 1e-3);
+
+	// 物理里也在新位置：查重叠找得到
+	sn_shape probe = BoxShape(0.2f, 0.2f, 0.2f);
+	probe.position[0] = -3;
+	probe.position[1] = 2;
+	int32_t found[4] = {};
+	CHECK(sn_physics_overlap(world, &probe, 0xffffffffu, found, 4) == 1);
+	CHECK(found[0] == 0);
+
+	sn_physics_destroy(world);
+	sn_transforms_destroy(store);
+}
+
 TEST_CASE("Meshopt batch decodes vertex and index buffers in parallel")
 {
 	ModuleScope module;
