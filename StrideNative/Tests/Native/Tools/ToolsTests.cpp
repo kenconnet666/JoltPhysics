@@ -352,6 +352,48 @@ TEST_CASE("Tangents, meshopt, UV unwrap and convex decomposition")
 	sn_task_release(task);
 }
 
+TEST_CASE("Brush CSG combines brushes in order and tells whose surface each triangle is")
+{
+	ModuleScope module;
+	auto brush = [](std::vector<float> &out, int kind, int operation, float x, float y, float z, std::initializer_list<float> params)
+	{
+		out.insert(out.end(), { float(kind), float(operation), 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, y, z, 1 });
+		out.insert(out.end(), params);
+	};
+	// 2 m 的方块减去从上面挖进去的 1 m 方块：一个开口朝上的坑，坑壁、坑底是第二个笔刷的面
+	std::vector<float> stream;
+	brush(stream, ST_BRUSH_BOX, ST_BRUSH_ADD, 0, 0, 0, { 2, 2, 2 });
+	brush(stream, ST_BRUSH_BOX, ST_BRUSH_SUBTRACT, 0, 1, 0, { 1, 1, 1 });
+	int32_t task = st_brush_csg(stream.data(), uint32_t(stream.size()));
+	REQUIRE(WaitForTask(task) == SN_TASK_DONE);
+	const int32_t triangles = sn_task_result(task, 0);
+	CHECK(triangles > 12);
+	REQUIRE(sn_task_output_size(task, 2) == uint32_t(triangles) * 4);
+	const uint32_t *owner = static_cast<const uint32_t *>(sn_task_output_data(task, 2));
+	int fromCut = 0;
+	for (int32_t t = 0; t < triangles; ++t)
+		fromCut += owner[t] == 1;
+	// 坑底一个面、四个坑壁，各两个三角形
+	CHECK(fromCut == 10);
+	sn_task_release(task);
+
+	// 挤出的 L 形（凹多边形）、圆柱、球都能建；参数不对时报错
+	stream.clear();
+	brush(stream, ST_BRUSH_PRISM, ST_BRUSH_ADD, 0, 0, 0, { 1, 6, 0, 0, 2, 0, 2, 1, 1, 1, 1, 2, 0, 2 });
+	brush(stream, ST_BRUSH_CYLINDER, ST_BRUSH_ADD, 3, 0, 0, { 1, 0.5f, 0.5f, 16 });
+	brush(stream, ST_BRUSH_SPHERE, ST_BRUSH_SUBTRACT, 0, 1, 0, { 0.5f, 16 });
+	task = st_brush_csg(stream.data(), uint32_t(stream.size()));
+	REQUIRE(WaitForTask(task) == SN_TASK_DONE);
+	CHECK(sn_task_result(task, 0) > 30);
+	sn_task_release(task);
+
+	stream.clear();
+	brush(stream, ST_BRUSH_PRISM, ST_BRUSH_ADD, 0, 0, 0, { 1, 2, 0, 0, 1, 1 });
+	task = st_brush_csg(stream.data(), uint32_t(stream.size()));
+	CHECK(WaitForTask(task) == SN_TASK_FAILED);
+	sn_task_release(task);
+}
+
 TEST_CASE("Basis encodes a KTX2 file")
 {
 	ModuleScope module;

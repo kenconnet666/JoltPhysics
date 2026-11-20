@@ -500,6 +500,15 @@ export interface NativeExports {
 	 */
 	_st_basis_encode(rgba: number, width: number, height: number, mode: number, flags: number, quality: number, effort: number): number;
 	/**
+	 * Constructive solid geometry for level greyboxing (Manifold): brushes are combined in order, each with its operation, starting
+	 * from nothing (the first brush's operation should be add). brushes is a float stream, per brush: kind, operation, a column-major
+	 * 4x4 transform (16 floats), then the kind's params (see ST_BRUSH_*). Inputs must stay alive until the task finishes.
+	 * Outputs: [0] float3 positions, [1] uint32 triangle indices, [2] uint32 brush index per triangle (whose surface it is).
+	 * Result [0]: triangle count.
+	 * C: Tools.h
+	 */
+	_st_brush_csg(brushes: number, floatCount: number): number;
+	/**
 	 * Convex decomposition (V-HACD) for physics. Inputs must stay alive until the task finishes.
 	 * Outputs: [0] int32 pairs (vertex count, triangle count) per hull, [1] float3 vertices of all
 	 * hulls, [2] uint32 triangle indices, local to their hull. Result [0]: hull count.
@@ -820,6 +829,7 @@ export type ToolsExport =
 	| 'st_meshopt_encode_vertices'
 	| 'st_meshopt_encode_indices'
 	| 'st_uv_unwrap'
+	| 'st_brush_csg'
 	| 'st_convex_decompose'
 	| 'st_image_decode'
 	| 'st_image_resize'

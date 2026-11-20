@@ -124,6 +124,10 @@ stride_third_party_library(sn_ufbx SOURCES ${THIRD_PARTY}/ufbx/ufbx.c INCLUDES $
 stride_third_party_library(sn_mikktspace SOURCES ${THIRD_PARTY}/MikkTSpace/mikktspace.c INCLUDES ${THIRD_PARTY}/MikkTSpace)
 # Single-threaded: unwrap runs inside a task, the job system provides the parallelism.
 stride_third_party_library(sn_xatlas SOURCES ${THIRD_PARTY}/xatlas/xatlas.cpp INCLUDES ${THIRD_PARTY}/xatlas DEFINES XA_MULTITHREADED=0)
+# Manifold（关卡白盒的布尔运算）：单线程（MANIFOLD_PAR=-1，并行交给任务系统），不带 iostream。
+file(GLOB MANIFOLD_SOURCES ${THIRD_PARTY}/manifold/src/*.cpp)
+stride_third_party_library(sn_manifold SOURCES ${MANIFOLD_SOURCES} INCLUDES ${THIRD_PARTY}/manifold/include
+	DEFINES MANIFOLD_PAR=-1 MANIFOLD_NO_IOSTREAM MANIFOLD_NO_FILESYSTEM)
 file(GLOB MSDFGEN_SOURCES ${THIRD_PARTY}/msdfgen/core/*.cpp)
 # Defining MSDFGEN_PUBLIC replaces the msdfgen-config.h that upstream generates at configure time.
 stride_third_party_library(sn_msdfgen SOURCES ${MSDFGEN_SOURCES} INCLUDES ${THIRD_PARTY}/msdfgen DEFINES MSDFGEN_PUBLIC=)
@@ -180,7 +184,7 @@ target_link_libraries(StrideNativeNavigation PUBLIC StrideNativeShared)
 file(GLOB_RECURSE TOOLS_SOURCES ${STRIDE_NATIVE_ROOT}/Source/Tools/*.cpp)
 stride_native_library(StrideNativeTools ${TOOLS_SOURCES})
 target_link_libraries(StrideNativeTools PUBLIC StrideNativeCore StrideNativeShared sn_meshoptimizer sn_ozz_offline sn_basis_encoder
-	sn_ufbx sn_mikktspace sn_xatlas sn_msdfgen sn_header_only)
+	sn_ufbx sn_mikktspace sn_xatlas sn_msdfgen sn_manifold sn_header_only)
 
 # Objects of an OBJECT library only reach its direct consumers, so each module lists all of its own.
 # 本机的运行时测试把所有功能链接进一个程序；wasm 的运行时只有核心，功能在各自的侧模块里。

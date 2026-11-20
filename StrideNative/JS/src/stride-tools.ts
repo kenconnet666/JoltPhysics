@@ -122,6 +122,28 @@ export interface UvUnwrap {
 	height: number;
 }
 
+/** 关卡白盒的一个笔刷（st_brush_csg）：形状、运算、放在哪（列主序的 4x4 矩阵）。 */
+export type Brush = {
+	readonly operation: 'add' | 'subtract' | 'intersect';
+	/** 列主序的 4x4 变换。 */
+	readonly transform: ArrayLike<number>;
+} & (
+	| { readonly kind: 'box'; readonly size: readonly [number, number, number] }
+	/** XZ 平面上的简单多边形（可以是凹的），从 y = 0 往上挤出 height。 */
+	| { readonly kind: 'prism'; readonly points: readonly (readonly [number, number])[]; readonly height: number }
+	/** 轴是 Y，中心在原点。 */
+	| { readonly kind: 'cylinder'; readonly height: number; readonly bottomRadius: number; readonly topRadius: number; readonly segments: number }
+	| { readonly kind: 'sphere'; readonly radius: number; readonly segments: number }
+);
+
+/** 笔刷合成的结果：合并过的顶点、三角形，每个三角形是哪个笔刷的面。 */
+export interface BrushSolid {
+	positions: Float32Array;
+	indices: Uint32Array;
+	/** 每个三角形一个，brushes 的下标。 */
+	brushOfTriangle: Uint32Array;
+}
+
 export interface ConvexHull {
 	vertices: Float32Array;
 	triangles: Uint32Array;
@@ -317,6 +339,30 @@ export class StrideTools extends NativeModule<ToolsExport> {
 				indices: task.output(Uint32Array, 2),
 				width: task.result(0),
 				height: task.result(1),
+			})));
+	}
+
+	/** 关卡白盒：按顺序把笔刷加上、减掉、求交（Manifold），得到一个封闭的网格。 */
+	brushCsg(brushes: readonly Brush[]): Promise<BrushSolid> {
+		const KINDS = { box: 0, prism: 1, cylinder: 2, sphere: 3 } as const;
+		const OPERATIONS = { add: 0, subtract: 1, intersect: 2 } as const;
+		const stream: number[] = [];
+		for (const brush of brushes) {
+			if (brush.transform.length !== 16) throw new Error('brushCsg: a brush transform needs 16 numbers');
+			stream.push(KINDS[brush.kind], OPERATIONS[brush.operation], ...Array.from(brush.transform));
+			switch (brush.kind) {
+				case 'box': stream.push(...brush.size); break;
+				case 'prism': stream.push(brush.height, brush.points.length, ...brush.points.flat()); break;
+				case 'cylinder': stream.push(brush.height, brush.bottomRadius, brush.topRadius, brush.segments); break;
+				case 'sphere': stream.push(brush.radius, brush.segments); break;
+			}
+		}
+		const floats = Float32Array.from(stream);
+		return this.withArraysAsync([floats], (f) =>
+			this.awaitTask(this.module._st_brush_csg(f, floats.length), 'st_brush_csg', (task) => ({
+				positions: task.output(Float32Array, 0),
+				indices: task.output(Uint32Array, 1),
+				brushOfTriangle: task.output(Uint32Array, 2),
 			})));
 	}
 

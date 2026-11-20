@@ -6,12 +6,17 @@
 #include <StrideNative/Tools.h>
 
 #include <VHACD.h>
+#include <manifold/manifold.h>
 #include <meshoptimizer.h>
 #include <mikktspace.h>
 #include <xatlas.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <memory>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace
@@ -177,6 +182,143 @@ SN_API int32_t st_uv_unwrap(const float *positions, const float *normals, uint32
 		ioTask.SetResult(0, int32_t(atlas->width));
 		ioTask.SetResult(1, int32_t(atlas->height));
 		ioTask.SetResult(2, int32_t(result.vertexCount));
+		return true;
+	});
+}
+
+namespace
+{
+	/// One brush of st_brush_csg, built and placed; Fail() on bad input.
+	bool BuildBrush(const float *&ioCursor, const float *inEnd, uint32_t inIndex, manifold::Manifold &outShape, int &outOperation, std::string &outError)
+	{
+		auto need = [&](size_t inCount) { return size_t(inEnd - ioCursor) >= inCount; };
+		if (!need(18))
+		{
+			outError = "brush " + std::to_string(inIndex) + ": the stream ends before its kind, operation and transform";
+			return false;
+		}
+		const int kind = int(ioCursor[0]);
+		outOperation = int(ioCursor[1]);
+		const float *m = ioCursor + 2;
+		ioCursor += 18;
+		manifold::Manifold shape;
+		switch (kind)
+		{
+		case ST_BRUSH_BOX:
+			if (!need(3)) break;
+			shape = manifold::Manifold::Cube(manifold::vec3(ioCursor[0], ioCursor[1], ioCursor[2]), true);
+			ioCursor += 3;
+			break;
+		case ST_BRUSH_PRISM:
+		{
+			if (!need(2)) break;
+			const double height = ioCursor[0];
+			const uint32_t count = uint32_t(ioCursor[1]);
+			ioCursor += 2;
+			if (count < 3 || !need(size_t(count) * 2))
+			{
+				outError = "brush " + std::to_string(inIndex) + ": a prism needs at least 3 points";
+				return false;
+			}
+			// Manifold extrudes an XY polygon along +Z; ours is an XZ polygon extruded along +Y. (x, z) -> (x, -z), then rotate -90 degrees
+			// about X so Manifold's Z becomes our Y.
+			manifold::SimplePolygon polygon(count);
+			double area = 0;
+			for (uint32_t i = 0; i < count; ++i)
+				polygon[i] = manifold::vec2(ioCursor[i * 2], -ioCursor[i * 2 + 1]);
+			for (uint32_t i = 0; i < count; ++i)
+			{
+				const manifold::vec2 &a = polygon[i], &b = polygon[(i + 1) % count];
+				area += a.x * b.y - b.x * a.y;
+			}
+			if (area < 0)
+				std::reverse(polygon.begin(), polygon.end());
+			ioCursor += size_t(count) * 2;
+			shape = manifold::Manifold::Extrude({ polygon }, height).Rotate(-90, 0, 0);
+			break;
+		}
+		case ST_BRUSH_CYLINDER:
+			if (!need(4)) break;
+			shape = manifold::Manifold::Cylinder(ioCursor[0], ioCursor[1], ioCursor[2], int(ioCursor[3]), true).Rotate(-90, 0, 0);
+			ioCursor += 4;
+			break;
+		case ST_BRUSH_SPHERE:
+			if (!need(2)) break;
+			shape = manifold::Manifold::Sphere(ioCursor[0], int(ioCursor[1]));
+			ioCursor += 2;
+			break;
+		default:
+			outError = "brush " + std::to_string(inIndex) + ": unknown kind " + std::to_string(kind);
+			return false;
+		}
+		if (shape.Status() != manifold::Manifold::Error::NoError || shape.IsEmpty())
+		{
+			outError = "brush " + std::to_string(inIndex) + ": its parameters make no solid (kind " + std::to_string(kind) + ")";
+			return false;
+		}
+		manifold::mat3x4 transform;
+		for (int column = 0; column < 4; ++column)
+			for (int row = 0; row < 3; ++row)
+				transform[column][row] = m[column * 4 + row];
+		outShape = shape.Transform(transform).AsOriginal();
+		return true;
+	}
+}
+
+SN_API int32_t st_brush_csg(const float *brushes, uint32_t float_count)
+{
+	SN_REQUIRE_INIT(SN_ERROR_NOT_INITIALIZED);
+	if (brushes == nullptr && float_count > 0)
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "brushes is null");
+
+	return RunTask("BrushCsg", [=](Task &ioTask)
+	{
+		manifold::Manifold result;
+		std::unordered_map<uint32_t, uint32_t> brush_of_original;
+		const float *cursor = brushes, *end = brushes + float_count;
+		for (uint32_t index = 0; cursor < end; ++index)
+		{
+			manifold::Manifold shape;
+			int operation = ST_BRUSH_ADD;
+			std::string error;
+			if (!BuildBrush(cursor, end, index, shape, operation, error))
+			{
+				ioTask.Fail(error.empty() ? "brush " + std::to_string(index) + ": the stream ends inside its params" : error);
+				return false;
+			}
+			brush_of_original[uint32_t(shape.OriginalID())] = index;
+			switch (operation)
+			{
+			case ST_BRUSH_ADD: result += shape; break;
+			case ST_BRUSH_SUBTRACT: result -= shape; break;
+			case ST_BRUSH_INTERSECT: result ^= shape; break;
+			default:
+				ioTask.Fail("brush " + std::to_string(index) + ": unknown operation " + std::to_string(operation));
+				return false;
+			}
+		}
+		if (result.Status() != manifold::Manifold::Error::NoError)
+		{
+			ioTask.Fail("the brushes do not combine into a valid solid (Manifold error " + std::to_string(int(result.Status())) + ")");
+			return false;
+		}
+
+		const manifold::MeshGL mesh = result.GetMeshGL();
+		const uint32_t vertex_count = uint32_t(mesh.NumVert()), triangle_count = uint32_t(mesh.NumTri());
+		float *positions = static_cast<float *>(ioTask.AddOutput(size_t(vertex_count) * 3 * sizeof(float)));
+		for (uint32_t v = 0; v < vertex_count; ++v)
+			for (int k = 0; k < 3; ++k)
+				positions[v * 3 + k] = mesh.vertProperties[size_t(v) * mesh.numProp + k];
+		std::memcpy(ioTask.AddOutput(size_t(triangle_count) * 3 * sizeof(uint32_t)), mesh.triVerts.data(), size_t(triangle_count) * 3 * sizeof(uint32_t));
+		uint32_t *owner = static_cast<uint32_t *>(ioTask.AddOutput(size_t(triangle_count) * sizeof(uint32_t)));
+		for (size_t run = 0; run < mesh.runOriginalID.size(); ++run)
+		{
+			auto found = brush_of_original.find(mesh.runOriginalID[run]);
+			const uint32_t brush = found != brush_of_original.end() ? found->second : 0;
+			for (uint32_t t = mesh.runIndex[run] / 3; t < mesh.runIndex[run + 1] / 3; ++t)
+				owner[t] = brush;
+		}
+		ioTask.SetResult(0, int32_t(triangle_count));
 		return true;
 	});
 }

@@ -141,6 +141,28 @@ SN_API uint32_t st_meshopt_encode_indices(void *dst, uint32_t dst_capacity, cons
 /// vertex, [2] uint32 new indices. Results: [0] atlas width, [1] atlas height, [2] new vertex count.
 SN_API int32_t st_uv_unwrap(const float *positions, const float *normals, uint32_t vertex_count, const uint32_t *indices, uint32_t index_count, float texels_per_unit);
 
+enum
+{
+	ST_BRUSH_BOX = 0,				///< params: size x, y, z (centered on the origin)
+	ST_BRUSH_PRISM = 1,				///< params: height, point count n, then n (x, z) pairs: a simple polygon in the XZ plane extruded from y = 0 up
+	ST_BRUSH_CYLINDER = 2,			///< params: height, bottom radius, top radius, segments (centered on the origin, axis Y)
+	ST_BRUSH_SPHERE = 3,			///< params: radius, segments
+};
+
+enum
+{
+	ST_BRUSH_ADD = 0,
+	ST_BRUSH_SUBTRACT = 1,
+	ST_BRUSH_INTERSECT = 2,
+};
+
+/// Constructive solid geometry for level greyboxing (Manifold): brushes are combined in order, each with its operation, starting
+/// from nothing (the first brush's operation should be add). brushes is a float stream, per brush: kind, operation, a column-major
+/// 4x4 transform (16 floats), then the kind's params (see ST_BRUSH_*). Inputs must stay alive until the task finishes.
+/// Outputs: [0] float3 positions, [1] uint32 triangle indices, [2] uint32 brush index per triangle (whose surface it is).
+/// Result [0]: triangle count.
+SN_API int32_t st_brush_csg(const float *brushes, uint32_t float_count);
+
 /// Convex decomposition (V-HACD) for physics. Inputs must stay alive until the task finishes.
 /// Outputs: [0] int32 pairs (vertex count, triangle count) per hull, [1] float3 vertices of all
 /// hulls, [2] uint32 triangle indices, local to their hull. Result [0]: hull count.

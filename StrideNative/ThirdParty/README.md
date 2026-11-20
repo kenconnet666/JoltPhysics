@@ -18,6 +18,7 @@ When upstream ships a security or serious bug fix, compare against the commit be
 | [xatlas](https://github.com/jpcy/xatlas) | master, `f700c7790aaa` | MIT | `source/xatlas/xatlas.cpp/h` | tools |
 | [V-HACD](https://github.com/kmammou/v-hacd) | v4.1.0, `22ec20a7f8ea` | BSD-3-Clause | `include/VHACD.h` | tools |
 | [msdfgen](https://github.com/Chlumsky/msdfgen) | v1.13.1, `ec84cd53590b` | MIT | `core/`, `msdfgen.h` (no `ext/`: fonts are read with stb_truetype) | tools |
+| [manifold](https://github.com/elalish/manifold) | v3.5.2, `11235e6b8ebe` | Apache-2.0 | `src/*.cpp`, `src/*.h`, `include/manifold/` (no `cross_section`: it needs Clipper2; no build files) | tools (brush CSG for level greyboxing) |
 | [stb](https://github.com/nothings/stb) | master, `9600522de539` | MIT or public domain | `stb_truetype.h`, `stb_image.h` | tools |
 
 Local changes to these sources: none. If one becomes necessary, list it here with the reason.

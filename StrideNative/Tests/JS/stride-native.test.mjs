@@ -1021,6 +1021,23 @@ describe('stride-native and stride-tools', () => {
 		}
 	});
 
+	it('combines greybox brushes (Manifold) and reports whose surface each triangle is', async () => {
+		const at = (x, y, z) => [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, y, z, 1];
+		const solid = await tools.brushCsg([
+			{ kind: 'box', operation: 'add', transform: at(0, 0, 0), size: [4, 1, 4] },
+			{ kind: 'prism', operation: 'add', transform: at(-2, 0.5, -2), points: [[0, 0], [2, 0], [2, 1], [1, 1], [1, 2], [0, 2]], height: 2 },
+			{ kind: 'cylinder', operation: 'subtract', transform: at(1, 0, 1), height: 2, bottomRadius: 0.5, topRadius: 0.5, segments: 24 },
+		]);
+		assert.equal(solid.indices.length % 3, 0);
+		assert.equal(solid.brushOfTriangle.length, solid.indices.length / 3);
+		assert.deepEqual(new Set(solid.brushOfTriangle), new Set([0, 1, 2]));
+		// 圆柱挖穿了板子：板子在圆柱里的那块没了，留下的是圆柱的内壁
+		const y = [];
+		for (let v = 0; v < solid.positions.length; v += 3) y.push(solid.positions[v + 1]);
+		assert.ok(Math.max(...y) > 2.4 && Math.min(...y) > -0.6);
+		await assert.rejects(tools.brushCsg([{ kind: 'prism', operation: 'add', transform: at(0, 0, 0), points: [[0, 0], [1, 1]], height: 1 }]), /prism needs at least 3 points/);
+	});
+
 	it('generates MSDF glyphs in parallel', async (t) => {
 		let font;
 		try {
