@@ -146,7 +146,8 @@ namespace
 	/**
 	 * 接触事件：Jolt 在步进的工作线程上回调，按子形状对记下接触，一对物体的第一个子形状对出现时报开始、最后一个消失时报结束。
 	 * 和 Bepu 一样，物体睡着时接触还在：Jolt 在物体睡下时也回调 OnContactRemoved，这时先挂起（还算接触），醒来后 Jolt 重新加入的
-	 * 同一对不再计数；醒来以后（比如被瞬移到别处）不再接触的，醒着满两步还没被重新加入就报结束（ExpireSuspended）。
+	 * 同一对不再计数；醒来以后（比如被瞬移到别处）不再接触的，有一个醒着满两步还没被重新加入就报结束（ExpireSuspended）。
+	 * 一个醒着、一个睡着时 Jolt 照样查这一对，这时的移除是真的分开了，照常报结束。
 	 * 只看打开了接触事件的物体；回调里只读 mWanted（步进期间主线程不改它）。
 	 */
 	class ContactCollector final : public ContactListener
@@ -186,8 +187,9 @@ namespace
 			int32_t a = IndexOf(inPair.GetBody1ID()), b = IndexOf(inPair.GetBody2ID());
 			if (a < 0 || b < 0)
 				return;
-			// 睡下引起的移除：接触还算在（同 Bepu），先挂起。静态物体从来不"醒着"，只看会动的那个
-			if (Sleeping(inPair.GetBody1ID()) || Sleeping(inPair.GetBody2ID()))
+			// 睡下引起的移除：接触还算在（同 Bepu），先挂起。只有两个都不醒着（睡着或静态）时才是睡下引起的：有一个醒着的话
+			// Jolt 照样在查这一对，移除就是真的分开了（醒着的角色走开了睡着的金币的触发器）
+			if (!Active(inPair.GetBody1ID()) && !Active(inPair.GetBody2ID()))
 			{
 				Suspend(a, b, inPair.GetBody1ID(), inPair.GetBody2ID(), SubShapes(inPair.GetSubShapeID1(), inPair.GetSubShapeID2()));
 				return;
@@ -195,7 +197,7 @@ namespace
 			Update(a, b, SubShapes(inPair.GetSubShapeID1(), inPair.GetSubShapeID2()), false);
 		}
 
-		/// 步进结束后（主线程）：挂起的接触，两个物体都醒着满两步还没被 Jolt 重新加入的，已经不接触了，报结束。
+		/// 步进结束后（主线程）：挂起的接触，有一个物体醒着满两步还没被 Jolt 重新加入的，已经不接触了，报结束。
 		/// 等两步：物体在一步的中间被撞醒时，这一步的碰撞检测可能还没看它，下一步才重新加入。
 		void ExpireSuspended()
 		{
@@ -203,7 +205,7 @@ namespace
 			for (auto it = mSuspended.begin(); it != mSuspended.end();)
 			{
 				Suspended &suspended = it->second;
-				if (Sleeping(suspended.mBody1) || Sleeping(suspended.mBody2))
+				if (!Active(suspended.mBody1) && !Active(suspended.mBody2))
 				{
 					suspended.mAwakeSteps = 0;
 					++it;
@@ -296,10 +298,10 @@ namespace
 			return inBody >= 0 && size_t(inBody) < mWanted.size() && mWanted[inBody] == 2;
 		}
 
-		bool Sleeping(BodyID inID) const
+		/// 醒着（在仿真里）：静态物体和睡着的都不算
+		bool Active(BodyID inID) const
 		{
-			const BodyInterface &bodies = mSystem->GetBodyInterfaceNoLock();
-			return bodies.GetMotionType(inID) != EMotionType::Static && !bodies.IsActive(inID);
+			return mSystem->GetBodyInterfaceNoLock().IsActive(inID);
 		}
 
 		static uint64_t SubShapes(const SubShapeID &inA, const SubShapeID &inB)

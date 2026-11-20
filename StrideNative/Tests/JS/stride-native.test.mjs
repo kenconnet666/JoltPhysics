@@ -400,6 +400,37 @@ describe('stride-native and stride-tools', () => {
 		}
 	});
 
+	it('ends the contact when a sensor leaves a sleeping body (a coin flying past a player standing still)', () => {
+		const world = native.createPhysicsWorld(8);
+		try {
+			// 玩家：地上的箱子，站着不动就睡下；金币的触发器：运动学的（TopDownRPG 的金币上就是这样）。Jolt 的触发器从不睡
+			const [, player, coin] = world.addBodies([
+				{ shapes: [{ type: 'box', size: [20, 1, 20] }], position: [0, -0.5, 0] },
+				{ motion: 'dynamic', shapes: [{ type: 'box', size: [0.5, 0.5, 0.5] }], position: [0, 0.25, 0] },
+				{ motion: 'kinematic', shapes: [{ type: 'sphere', radius: 0.5 }], position: [5, 0.5, 0], sensor: true, contactEvents: true },
+			]);
+			const run = (steps) => {
+				const seen = [];
+				for (let i = 0; i < steps; i++) {
+					world.step(1 / 60);
+					seen.push(...world.contactEvents().filter((e) => e.other === player || e.self === player).map((e) => e.type));
+				}
+				return seen;
+			};
+			run(240);
+			assert.equal(world.isAwake(player), false, 'the player sleeps');
+			// 金币飞过睡着的玩家：进来、出去都报（以前出去时玩家睡着，当成"睡下引起的"挂起，之后再碰到不报开始）
+			world.teleport(coin, [0, 0.5, 0], [0, 0, 0, 1]);
+			assert.deepEqual(run(3), ['started']);
+			world.teleport(coin, [5, 0.5, 0], [0, 0, 0, 1]);
+			assert.deepEqual(run(3), ['stopped']);
+			world.teleport(coin, [0, 0.5, 0], [0, 0, 0, 1]);
+			assert.deepEqual(run(3), ['started']);
+		} finally {
+			world.destroy();
+		}
+	});
+
 	it('reports trigger and contact events per body pair, and removes bodies', () => {
 		const world = native.createPhysicsWorld(8);
 		try {
