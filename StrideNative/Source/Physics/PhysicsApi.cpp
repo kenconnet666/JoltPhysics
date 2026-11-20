@@ -145,7 +145,8 @@ namespace
 
 	/**
 	 * 接触事件：Jolt 在步进的工作线程上回调，按子形状对记下接触，一对物体的第一个子形状对出现时报开始、最后一个消失时报结束。
-	 * 和 Bepu 一样，物体睡着时接触还在：Jolt 在物体睡下时也回调 OnContactRemoved，这时忽略，醒来后重新加入的同一对不再计数。
+	 * 和 Bepu 一样，物体睡着时接触还在：Jolt 在物体睡下时也回调 OnContactRemoved，这时先挂起（还算接触），醒来后 Jolt 重新加入的
+	 * 同一对不再计数；醒来以后（比如被瞬移到别处）不再接触的，醒着满两步还没被重新加入就报结束（ExpireSuspended）。
 	 * 只看打开了接触事件的物体；回调里只读 mWanted（步进期间主线程不改它）。
 	 */
 	class ContactCollector final : public ContactListener
@@ -185,18 +186,59 @@ namespace
 			int32_t a = IndexOf(inPair.GetBody1ID()), b = IndexOf(inPair.GetBody2ID());
 			if (a < 0 || b < 0)
 				return;
-			// 睡下引起的移除：接触还算在（同 Bepu）。静态物体从来不"醒着"，只看会动的那个
+			// 睡下引起的移除：接触还算在（同 Bepu），先挂起。静态物体从来不"醒着"，只看会动的那个
 			if (Sleeping(inPair.GetBody1ID()) || Sleeping(inPair.GetBody2ID()))
+			{
+				Suspend(a, b, inPair.GetBody1ID(), inPair.GetBody2ID(), SubShapes(inPair.GetSubShapeID1(), inPair.GetSubShapeID2()));
 				return;
+			}
 			Update(a, b, SubShapes(inPair.GetSubShapeID1(), inPair.GetSubShapeID2()), false);
+		}
+
+		/// 步进结束后（主线程）：挂起的接触，两个物体都醒着满两步还没被 Jolt 重新加入的，已经不接触了，报结束。
+		/// 等两步：物体在一步的中间被撞醒时，这一步的碰撞检测可能还没看它，下一步才重新加入。
+		void ExpireSuspended()
+		{
+			std::lock_guard lock(mMutex);
+			for (auto it = mSuspended.begin(); it != mSuspended.end();)
+			{
+				Suspended &suspended = it->second;
+				if (Sleeping(suspended.mBody1) || Sleeping(suspended.mBody2))
+				{
+					suspended.mAwakeSteps = 0;
+					++it;
+					continue;
+				}
+				if (++suspended.mAwakeSteps < 2)
+				{
+					++it;
+					continue;
+				}
+				uint64_t key = it->first;
+				auto pair = mPairs.find(key);
+				if (pair != mPairs.end())
+				{
+					for (uint64_t sub_shapes : suspended.mSubShapes)
+						pair->second.erase(sub_shapes);
+					if (pair->second.empty())
+					{
+						mEvents.push_back({ SN_CONTACT_STOPPED, int32_t(key >> 32), int32_t(key & 0xffffffffu), 0.0f });
+						mPairs.erase(pair);
+					}
+				}
+				it = mSuspended.erase(it);
+			}
 		}
 
 		/// 物体被移除：和它有关的接触直接忘掉（不报结束，Stride 移除时也不发）
 		void Forget(int32_t inBody)
 		{
 			std::lock_guard lock(mMutex);
+			auto involves = [inBody](uint64_t inKey) { return int32_t(inKey >> 32) == inBody || int32_t(inKey & 0xffffffffu) == inBody; };
 			for (auto it = mPairs.begin(); it != mPairs.end();)
-				it = (int32_t(it->first >> 32) == inBody || int32_t(it->first & 0xffffffffu) == inBody) ? mPairs.erase(it) : std::next(it);
+				it = involves(it->first) ? mPairs.erase(it) : std::next(it);
+			for (auto it = mSuspended.begin(); it != mSuspended.end();)
+				it = involves(it->first) ? mSuspended.erase(it) : std::next(it);
 		}
 
 	private:
@@ -205,6 +247,30 @@ namespace
 		std::unordered_map<uint64_t, std::unordered_set<uint64_t>> mPairs;
 		/// 这一步要报深度的物体对 → 最深的穿透深度
 		std::unordered_map<uint64_t, float> mDepths;
+		/// 睡下时被 Jolt 移除、我们还算着接触的子形状对（键同 mPairs）
+		struct Suspended
+		{
+			BodyID							mBody1, mBody2;
+			std::unordered_set<uint64_t>	mSubShapes;
+			int								mAwakeSteps = 0;
+		};
+		std::unordered_map<uint64_t, Suspended> mSuspended;
+
+		void Suspend(int32_t inA, int32_t inB, BodyID inBody1, BodyID inBody2, uint64_t inSubShapes)
+		{
+			if (!Wanted(inA) && !Wanted(inB))
+				return;
+			int32_t a = inA;
+			uint64_t key = PairKey(inA, inB);
+			if (inA != a)
+				inSubShapes = inSubShapes << 32 | inSubShapes >> 32;
+			std::lock_guard lock(mMutex);
+			Suspended &suspended = mSuspended[key];
+			suspended.mBody1 = inBody1;
+			suspended.mBody2 = inBody2;
+			suspended.mSubShapes.insert(inSubShapes);
+			suspended.mAwakeSteps = 0;
+		}
 
 		/// 报告的一方在前（打开事件的那个，都打开时编号小的），拼成物体对的键
 		uint64_t PairKey(int32_t &ioA, int32_t &ioB) const
@@ -268,6 +334,13 @@ namespace
 				touching.insert(inSubShapes);
 			else
 				touching.erase(inSubShapes);
+			// 重新加入或真的分开了：不再是挂起的
+			if (auto suspended = mSuspended.find(key); suspended != mSuspended.end())
+			{
+				suspended->second.mSubShapes.erase(inSubShapes);
+				if (suspended->second.mSubShapes.empty())
+					mSuspended.erase(suspended);
+			}
 			if (!before && !touching.empty())
 				mEvents.push_back({ SN_CONTACT_STARTED, inA, inB, 0.0f });
 			else if (before && touching.empty())
@@ -1090,6 +1163,7 @@ SN_API int32_t sn_physics_step(int32_t world, float delta_time, int32_t collisio
 		}
 	EPhysicsUpdateError errors = w->mSystem.Update(delta_time, collision_steps > 0 ? collision_steps : 1, &GetTempAllocator(), &GetJobSystem());
 	w->mContacts.EmitTouching();
+	w->mContacts.ExpireSuspended();
 	if (DebugEnabled())
 	{
 		sn_debug_set_counter("physics.bodies", w->mSystem.GetNumBodies());

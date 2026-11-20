@@ -365,6 +365,41 @@ describe('stride-native and stride-tools', () => {
 		}
 	});
 
+	it('keeps contacts of sleeping bodies, and ends them when the body wakes up somewhere else', () => {
+		const world = native.createPhysicsWorld(8);
+		try {
+			const [, trigger, box] = world.addBodies([
+				{ shapes: [{ type: 'box', size: [20, 1, 20] }], position: [0, -0.5, 0] },
+				{ shapes: [{ type: 'box', size: [4, 2, 4] }], position: [0, 1, 0], sensor: true, contactEvents: true },
+				{ motion: 'dynamic', shapes: [{ type: 'box', size: [1, 1, 1] }], position: [0, 0.6, 0] },
+			]);
+			const run = (steps) => {
+				const seen = [];
+				for (let i = 0; i < steps; i++) {
+					world.step(1 / 60);
+					seen.push(...world.contactEvents().map((e) => e.type));
+				}
+				return seen;
+			};
+			// 在触发器里停下、睡着：接触还算着，不报结束（同 Bepu）
+			assert.deepEqual(run(240), ['started']);
+			assert.equal(world.isAwake(box), false);
+			// 睡着时被瞬移出去（瞬移会叫醒它）：醒着两步后报结束；再瞬移回来又报开始
+			world.teleport(box, [10, 0.5, 0], [0, 0, 0, 1]);
+			assert.deepEqual(run(5), ['stopped']);
+			world.teleport(box, [0, 0.5, 0], [0, 0, 0, 1]);
+			assert.deepEqual(run(5), ['started']);
+			// 睡着以后被叫醒、还在原地：Jolt 重新加入同一对，不重复报开始
+			run(240);
+			assert.equal(world.isAwake(box), false);
+			world.setAwake(box, true);
+			assert.deepEqual(run(5), []);
+			assert.equal(trigger, 1);
+		} finally {
+			world.destroy();
+		}
+	});
+
 	it('reports trigger and contact events per body pair, and removes bodies', () => {
 		const world = native.createPhysicsWorld(8);
 		try {
