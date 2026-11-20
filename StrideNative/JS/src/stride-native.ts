@@ -610,7 +610,7 @@ export class PhysicsWorld extends NativeObject<StrideNative> {
 		this.#pair(linear, angular, (l, a) => this.native.module._sn_physics_body_set_velocity(this[HANDLE], body, l, a), 'sn_physics_body_set_velocity');
 	}
 
-	/** 在质心加冲量（Stride 的 ApplyLinearImpulse、ApplyAngularImpulse）；运动学物体忽略。 */
+	/** 在质心加冲量（Stride 的 ApplyLinearImpulse、ApplyAngularImpulse）；运动学物体忽略，角色受（击退）。 */
 	applyImpulse(body: BodyId, linear?: Vec3, angular?: Vec3): void {
 		this.#pair(linear, angular, (l, a) => this.native.module._sn_physics_body_apply_impulse(this[HANDLE], body, l, a), 'sn_physics_body_apply_impulse');
 	}

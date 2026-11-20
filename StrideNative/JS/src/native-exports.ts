@@ -198,7 +198,7 @@ export interface NativeExports {
 	 */
 	_sn_physics_add_constraint(world: number, constraint: number): number;
 	/**
-	 * 在质心加冲量（Stride 的 ApplyLinearImpulse、ApplyAngularImpulse）；传 null 的不加。运动学物体忽略。
+	 * 在质心加冲量（Stride 的 ApplyLinearImpulse、ApplyAngularImpulse）；传 null 的不加。运动学物体忽略；角色受（击退），水平速度之后由角色逻辑拉回移动目标。
 	 * C: Physics.h
 	 */
 	_sn_physics_body_apply_impulse(world: number, body: number, linear: number, angular: number): number;
@@ -245,7 +245,7 @@ export interface NativeExports {
 	 */
 	_sn_physics_body_set_sensor(world: number, body: number, sensor: number): number;
 	/**
-	 * 设线速度和角速度；传 null 的不变。
+	 * 设线速度和角速度；传 null 的不变。角色也可以设（比如瞬移后清零），之后每步的角色逻辑从这个速度出发追移动目标。
 	 * C: Physics.h
 	 */
 	_sn_physics_body_set_velocity(world: number, body: number, linear: number, angular: number): number;
@@ -256,7 +256,7 @@ export interface NativeExports {
 	 */
 	_sn_physics_body_teleport(world: number, body: number, position: number, rotation: number): number;
 	/**
-	 * 读线速度和角速度（世界空间，各 xyz）；不要的传 null。角色也可以读（它的速度由移动目标每步设，不能直接设）。
+	 * 读线速度和角速度（世界空间，各 xyz）；不要的传 null。角色也可以读。
 	 * C: Physics.h
 	 */
 	_sn_physics_body_velocity(world: number, body: number, linear: number, angular: number): number;

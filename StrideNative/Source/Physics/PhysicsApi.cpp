@@ -1621,7 +1621,8 @@ SN_API int32_t sn_physics_body_velocity(int32_t world, int32_t body, float *line
 SN_API int32_t sn_physics_body_set_velocity(int32_t world, int32_t body, const float *linear, const float *angular)
 {
 	World *w = GetWorld(world);
-	BodyRecord *record = GetMovableBody(w, body, "sn_physics_body_set_velocity");
+	// 角色的物体（JPH::Character）也是动态物体：设速度（比如回到出生点时清零）照常生效，之后角色逻辑按移动输入接着加力
+	BodyRecord *record = GetMovableBody(w, body, "sn_physics_body_set_velocity", true);
 	if (record == nullptr)
 		return w == nullptr ? SN_ERROR_INVALID_HANDLE : SN_ERROR_INVALID_ARGUMENT;
 	BodyInterface &bodies = w->mSystem.GetBodyInterface();
@@ -1635,10 +1636,11 @@ SN_API int32_t sn_physics_body_set_velocity(int32_t world, int32_t body, const f
 SN_API int32_t sn_physics_body_apply_impulse(int32_t world, int32_t body, const float *linear, const float *angular)
 {
 	World *w = GetWorld(world);
-	BodyRecord *record = GetMovableBody(w, body, "sn_physics_body_apply_impulse");
+	BodyRecord *record = GetMovableBody(w, body, "sn_physics_body_apply_impulse", true);
 	if (record == nullptr)
 		return w == nullptr ? SN_ERROR_INVALID_HANDLE : SN_ERROR_INVALID_ARGUMENT;
-	if (record->mMotion != SN_MOTION_DYNAMIC)
+	// 运动学物体不受冲量；角色受（击退），水平速度之后由角色逻辑按移动输入拉回去
+	if (record->mMotion == SN_MOTION_KINEMATIC)
 		return SN_OK;
 	BodyInterface &bodies = w->mSystem.GetBodyInterface();
 	if (linear != nullptr)

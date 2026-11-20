@@ -260,6 +260,13 @@ describe('stride-native and stride-tools', () => {
 			const velocity = [0, 0, 0];
 			world.velocity(player, velocity, [0, 0, 0]);
 			assert.ok(velocity[1] > 6 && velocity[1] < 9, `still rising at ${velocity[1]}`);
+			// 速度也能设（回到出生点时清零）、能加冲量（击退）：角色逻辑从这个速度接着算
+			world.setVelocity(player, [0, 0, 0], [0, 0, 0]);
+			world.velocity(player, velocity, [0, 0, 0]);
+			assert.deepEqual(velocity, [0, 0, 0]);
+			world.applyImpulse(player, [0, 5, 0], [0, 0, 0]);
+			world.velocity(player, velocity, [0, 0, 0]);
+			assert.ok(velocity[1] > 0.5, `the impulse pushes the character up: ${velocity[1]}`);
 
 			// 射线：层 0 的墙在 4.5，只看层 1 时打到柱子的 7.75，角色在层 2
 			const hit = world.rayCast([0, 2, -6], [1, 0, 0], 20, { mask: 1 << 0 });

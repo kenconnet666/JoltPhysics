@@ -134,11 +134,11 @@ SN_API int32_t sn_physics_body_teleport(int32_t world, int32_t body, const float
 /// 只改朝向（Stride 的 SetTargetPose(Quaternion)、CharacterComponent.Orientation），并唤醒：位置和它的插值不动，所以可以每帧调
 /// （鼠标转视角带着角色转）。绑定了变换的立即写回旋转。角色之后的 MoveVector 按新的朝向换到世界。
 SN_API int32_t sn_physics_body_set_rotation(int32_t world, int32_t body, const float *rotation);
-/// 读线速度和角速度（世界空间，各 xyz）；不要的传 null。角色也可以读（它的速度由移动目标每步设，不能直接设）。
+/// 读线速度和角速度（世界空间，各 xyz）；不要的传 null。角色也可以读。
 SN_API int32_t sn_physics_body_velocity(int32_t world, int32_t body, float *linear, float *angular);
-/// 设线速度和角速度；传 null 的不变。
+/// 设线速度和角速度；传 null 的不变。角色也可以设（比如瞬移后清零），之后每步的角色逻辑从这个速度出发追移动目标。
 SN_API int32_t sn_physics_body_set_velocity(int32_t world, int32_t body, const float *linear, const float *angular);
-/// 在质心加冲量（Stride 的 ApplyLinearImpulse、ApplyAngularImpulse）；传 null 的不加。运动学物体忽略。
+/// 在质心加冲量（Stride 的 ApplyLinearImpulse、ApplyAngularImpulse）；传 null 的不加。运动学物体忽略；角色受（击退），水平速度之后由角色逻辑拉回移动目标。
 SN_API int32_t sn_physics_body_apply_impulse(int32_t world, int32_t body, const float *linear, const float *angular);
 /// 受不受重力（Stride 的 Gravity）。
 SN_API int32_t sn_physics_body_set_gravity(int32_t world, int32_t body, int32_t enabled);
