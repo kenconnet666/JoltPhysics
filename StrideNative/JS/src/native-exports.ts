@@ -439,6 +439,7 @@ export interface NativeExports {
 	 * 包围盒，bounds 每批 6 个 float（中心 xyz、半长 xyz）。包围盒用槽位的世界矩阵变换（中心按点变换，半长按矩阵分量的绝对值
 	 * 变换，同 Stride 的 BoundingBoxExt.Transform），半长为 0 的包围盒总是可见、不参与量距离。第 v 个视图的结果写进
 	 * out_slots 的第 v * slot_count 段：每批可见的槽位按原顺序紧凑地放在这批原来的起点，个数写进 out_counts[v * batch_count + b]。
+	 * 视图数不设上限。
 	 * C: Runtime.h
 	 */
 	_sn_transforms_cull(transforms: number, slots: number, slotCount: number, batchEnds: number, bounds: number, batchCount: number, views: number, viewCount: number, outSlots: number, outCounts: number): number;

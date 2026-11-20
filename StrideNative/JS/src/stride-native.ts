@@ -1014,7 +1014,6 @@ export class TransformStore extends NativeObject<StrideNative> {
 
 /** sn_cull_view：6 个平面（24 个 float）、plane_count、measure_distance、distance_plane（4 个 float）、min、max。 */
 const CULL_VIEW_WORDS = 32;
-const MAX_CULL_VIEWS = 8;
 
 /**
  * 视锥剔除（sn_transforms_cull）的工作区：输入和输出都在原生内存里，属性是常驻的视图，每帧直接写、直接读，不分配。
@@ -1026,6 +1025,7 @@ export class FrustumCuller implements Disposable {
 	readonly #transforms: TransformStore;
 	#slotCapacity = 0;
 	#batchCapacity = 0;
+	#viewCapacity = 0;
 	// 一次分配：slots、batchEnds、bounds、views、visibleSlots、counts
 	#block = 0;
 	#slots: Int32Array = new Int32Array(0);
@@ -1056,17 +1056,22 @@ export class FrustumCuller implements Disposable {
 	get counts(): Uint32Array { return this.#counts; }
 	get slotCapacity(): number { return this.#slotCapacity; }
 	get batchCapacity(): number { return this.#batchCapacity; }
+	get viewCapacity(): number { return this.#viewCapacity; }
 
-	/** 保证能放这么多实例和批次；容量变了就重新分配，之前取到的属性数组不能再用（内容不保留）。 */
-	reserve(slotCount: number, batchCount: number): void {
+	/**
+	 * 保证能放这么多实例、批次和视图（视图数不设上限：阴影多的帧一次几十个）；容量变了就重新分配，之前取到的属性数组不能再用
+	 * （内容不保留，视图要重新 setView）。
+	 */
+	reserve(slotCount: number, batchCount: number, viewCount: number): void {
 		if (this.#destroyed) throw new NativeError('FrustumCuller was destroyed', -2);
-		if (slotCount <= this.#slotCapacity && batchCount <= this.#batchCapacity) return;
+		if (slotCount <= this.#slotCapacity && batchCount <= this.#batchCapacity && viewCount <= this.#viewCapacity) return;
 		const slots = Math.max(slotCount, this.#slotCapacity * 2, 64);
 		const batches = Math.max(batchCount, this.#batchCapacity * 2, 16);
+		const views = Math.max(viewCount, this.#viewCapacity, 4);
 		const n = this.#native;
 		if (this.#block) n.free(this.#block);
 		// 各段按 4 字节对齐，sn_cull_view 只有 4 字节的成员
-		const words = slots + batches + batches * 6 + MAX_CULL_VIEWS * CULL_VIEW_WORDS + MAX_CULL_VIEWS * slots + MAX_CULL_VIEWS * batches;
+		const words = slots + batches + batches * 6 + views * CULL_VIEW_WORDS + views * slots + views * batches;
 		const block = (this.#block = n.alloc(words * 4));
 		let offset = block;
 		const take = <A extends Int32Array | Uint32Array | Float32Array>(type: { new (buffer: ArrayBufferLike, byteOffset: number, length: number): A }, length: number): A => {
@@ -1078,20 +1083,21 @@ export class FrustumCuller implements Disposable {
 		this.#batchEnds = take(Uint32Array, batches);
 		this.#bounds = take(Float32Array, batches * 6);
 		this.#viewsAddress = offset;
-		this.#views = take(Float32Array, MAX_CULL_VIEWS * CULL_VIEW_WORDS);
-		this.#viewWords = new Int32Array(n.buffer, this.#viewsAddress, MAX_CULL_VIEWS * CULL_VIEW_WORDS);
-		this.#visibleSlots = take(Int32Array, MAX_CULL_VIEWS * slots);
-		this.#counts = take(Uint32Array, MAX_CULL_VIEWS * batches);
+		this.#views = take(Float32Array, views * CULL_VIEW_WORDS);
+		this.#viewWords = new Int32Array(n.buffer, this.#viewsAddress, views * CULL_VIEW_WORDS);
+		this.#visibleSlots = take(Int32Array, views * slots);
+		this.#counts = take(Uint32Array, views * batches);
 		this.#slotCapacity = slots;
 		this.#batchCapacity = batches;
+		this.#viewCapacity = views;
 	}
 
 	/**
-	 * 写第 index 个视图（最多 8 个）：planes 是 6 个朝内的平面（xyzw，dot(n, p) + w > 0 在内侧，近、远平面在最后），
+	 * 写第 index 个视图（小于 reserve 的视图数）：planes 是 6 个朝内的平面（xyzw，dot(n, p) + w > 0 在内侧，近、远平面在最后），
 	 * planeCount 是 6 或 4（4 忽略近、远平面）；给了 distancePlane（xyz 法线、w，距离 = dot(n, p) - w）就量出可见物体的距离范围。
 	 */
 	setView(index: number, planes: ArrayLike<number>, planeCount: 4 | 6, distancePlane?: ArrayLike<number>): void {
-		if (!Number.isInteger(index) || index < 0 || index >= MAX_CULL_VIEWS) throw new RangeError(`view index must be 0..${MAX_CULL_VIEWS - 1}, got ${index}`);
+		if (!Number.isInteger(index) || index < 0 || index >= this.#viewCapacity) throw new RangeError(`view index must be 0..${this.#viewCapacity - 1} (reserve more views), got ${index}`);
 		if (planes.length < planeCount * 4) throw new RangeError(`planes must hold ${planeCount * 4} numbers, got ${planes.length}`);
 		const o = index * CULL_VIEW_WORDS;
 		for (let i = 0; i < 24; i++) this.#views[o + i] = i < planeCount * 4 ? planes[i]! : 0;
@@ -1104,7 +1110,7 @@ export class FrustumCuller implements Disposable {
 	cull(slotCount: number, batchCount: number, viewCount: number): void {
 		const n = this.#native;
 		if (slotCount > this.#slotCapacity || batchCount > this.#batchCapacity) throw new RangeError('FrustumCuller: reserve before writing more slots or batches');
-		if (viewCount > MAX_CULL_VIEWS) throw new RangeError(`FrustumCuller: at most ${MAX_CULL_VIEWS} views, got ${viewCount}`);
+		if (viewCount > this.#viewCapacity) throw new RangeError(`FrustumCuller: reserve ${viewCount} views before culling them, have ${this.#viewCapacity}`);
 		n.check(n.module._sn_transforms_cull(n.handleOf(this.#transforms), this.#slots.byteOffset, slotCount, this.#batchEnds.byteOffset, this.#bounds.byteOffset, batchCount,
 			this.#viewsAddress, viewCount, this.#visibleSlots.byteOffset, this.#counts.byteOffset), 'sn_transforms_cull');
 	}

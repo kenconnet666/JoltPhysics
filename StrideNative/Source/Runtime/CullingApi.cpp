@@ -9,6 +9,7 @@
 #include <cmath>
 #include <limits>
 #include <mutex>
+#include <vector>
 
 using namespace JPH;
 using namespace StrideNative;
@@ -43,11 +44,19 @@ namespace
 		return true;
 	}
 
-	/// 一段批次的剔除结果，和这段里可见物体的距离范围（每个视图一对）。
+	/// 一段批次里可见物体的距离范围（每个视图一对），和这段用的每批可见个数的工作区。
 	struct Range
 	{
-		float mMin[8];
-		float mMax[8];
+		explicit Range(uint32_t inViewCount) :
+			mMin(inViewCount, std::numeric_limits<float>::infinity()),
+			mMax(inViewCount, -std::numeric_limits<float>::infinity()),
+			mCounts(inViewCount, 0)
+		{
+		}
+
+		std::vector<float> mMin;
+		std::vector<float> mMax;
+		std::vector<uint32_t> mCounts;
 	};
 
 	void CullBatches(const TransformStore &inStore, const int32_t *inSlots, uint32_t inSlotCount, const uint32_t *inBatchEnds, const float *inBounds, uint32_t inBatchCount,
@@ -60,7 +69,8 @@ namespace
 			Vec3 center(inBounds[b * 6], inBounds[b * 6 + 1], inBounds[b * 6 + 2]);
 			Vec3 extent(inBounds[b * 6 + 3], inBounds[b * 6 + 4], inBounds[b * 6 + 5]);
 			bool always_visible = extent.IsNearZero(0.0f);
-			uint32_t counts[8] = {};
+			std::vector<uint32_t> &counts = ioRange.mCounts;
+			std::fill(counts.begin(), counts.end(), 0u);
 			for (uint32_t i = begin; i < end; ++i)
 			{
 				int32_t slot = inSlots[i];
@@ -95,8 +105,6 @@ SN_API int32_t sn_transforms_cull(int32_t transforms, const int32_t *slots, uint
 	TransformStore *store = LookupTransformStore(transforms);
 	if (store == nullptr)
 		return SN_ERROR_INVALID_HANDLE;
-	if (view_count > 8)
-		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "sn_transforms_cull: at most 8 views per call, got " + std::to_string(view_count));
 	SN_DEBUG_SCOPE("transforms.cull");
 	if (batch_count > 0 && batch_ends[batch_count - 1] != slot_count)
 		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "sn_transforms_cull: the last batch must end at slot_count");
@@ -107,9 +115,8 @@ SN_API int32_t sn_transforms_cull(int32_t transforms, const int32_t *slots, uint
 		if (views[v].plane_count > 6)
 			return SetLastError(SN_ERROR_INVALID_ARGUMENT, "sn_transforms_cull: a view has at most 6 planes");
 
-	Range total;
-	std::fill(std::begin(total.mMin), std::end(total.mMin), std::numeric_limits<float>::infinity());
-	std::fill(std::begin(total.mMax), std::end(total.mMax), -std::numeric_limits<float>::infinity());
+	// 视图数不设上限（阴影多的帧一次几十个：级联、点光的六个面、聚光）
+	Range total(view_count);
 	if (uint64_t(slot_count) * view_count < cParallelThreshold)
 	{
 		CullBatches(*store, slots, slot_count, batch_ends, bounds, batch_count, views, view_count, 0, batch_count, out_slots, out_counts, total);
@@ -120,7 +127,7 @@ SN_API int32_t sn_transforms_cull(int32_t transforms, const int32_t *slots, uint
 		std::mutex merge;
 		ParallelFor(batch_count, [&](uint32_t inBegin, uint32_t inEnd)
 		{
-			Range range = total;
+			Range range(view_count);
 			CullBatches(*store, slots, slot_count, batch_ends, bounds, batch_count, views, view_count, inBegin, inEnd, out_slots, out_counts, range);
 			std::lock_guard lock(merge);
 			for (uint32_t v = 0; v < view_count; ++v)

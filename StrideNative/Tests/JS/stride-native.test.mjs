@@ -546,7 +546,7 @@ describe('stride-native and stride-tools', () => {
 		slots.forEach((slot, i) => transforms.position.set(at[i], slot * 3));
 		transforms.update();
 		using culler = transforms.createCuller();
-		culler.reserve(4, 2);
+		culler.reserve(4, 2, 2);
 		culler.slots.set(slots);
 		culler.batchEnds.set([3, 4]);
 		culler.bounds.set([0, 0, 0, 0.5, 0.5, 0.5, 0, 0, 0, 0, 0, 0]);
@@ -560,10 +560,18 @@ describe('stride-native and stride-tools', () => {
 		assert.deepEqual(Array.from(culler.visibleSlots.subarray(4, 6)), [slots[1], slots[2]]);
 		assert.ok(Math.abs(culler.minDistance(0) - 9.5) < 1e-5 && Math.abs(culler.maxDistance(0) - 10.5) < 1e-5);
 		assert.equal(culler.minDistance(1), Infinity, 'the second view does not measure distances');
-		assert.throws(() => culler.setView(8, planes, 6), /view index must be 0..7/);
-		// 容量不够时重新分配
-		culler.reserve(100, 40);
-		assert.ok(culler.slotCapacity >= 100 && culler.batchCapacity >= 40);
+		assert.throws(() => culler.setView(4, planes, 6), /view index must be 0..3 \(reserve more views\)/);
+		// 容量不够时重新分配；视图数不设上限（阴影多的帧一次几十个）
+		culler.reserve(100, 40, 20);
+		assert.ok(culler.slotCapacity >= 100 && culler.batchCapacity >= 40 && culler.viewCapacity >= 20);
+		culler.slots.set(slots);
+		culler.batchEnds.set([3, 4]);
+		culler.bounds.set([0, 0, 0, 0.5, 0.5, 0.5, 0, 0, 0, 0, 0, 0]);
+		for (let v = 0; v < 20; v++) culler.setView(v, planes, 4);
+		culler.cull(4, 2, 20);
+		// 只看四个侧面（同上面的第 1 个视图）
+		assert.deepEqual(Array.from(culler.counts.subarray(19 * 2, 20 * 2)), [2, 1]);
+		assert.deepEqual(Array.from(culler.visibleSlots.subarray(19 * 4, 19 * 4 + 2)), [slots[1], slots[2]]);
 	});
 
 	it('propagates transforms parent-first and writes physics poses back into slots', () => {
