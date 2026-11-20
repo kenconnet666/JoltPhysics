@@ -685,6 +685,17 @@ export interface NativeExports {
 	 */
 	_st_scene_node_name(scene: number, node: number): number;
 	/**
+	 * Signed-distance modelling (Womp-style blobs): shapes are combined in order with smooth union / difference / intersection (the
+	 * ST_BRUSH_* operations), each blending into what came before over its smoothness radius; the first shape's operation should be
+	 * add. shapes is a float stream, per shape: kind, operation, smoothness (metres, 0 is a sharp blend), a column-major 4x4 transform
+	 * (16 floats, rotation and translation; a uniform scale scales the shape), then the kind's params (see ST_SDF_*). The surface is
+	 * meshed with Manifold's level set at about edge_length. Inputs must stay alive until the task finishes.
+	 * Outputs: [0] float3 positions, [1] float3 normals (the distance gradient, smooth across blends), [2] uint32 triangle indices,
+	 * [3] uint32 shape index per triangle (the shape whose surface is nearest its centre). Result [0]: triangle count.
+	 * C: Tools.h
+	 */
+	_st_sdf_mesh(shapes: number, floatCount: number, edgeLength: number): number;
+	/**
 	 * Lightmap UV unwrap (xatlas). Inputs must stay alive until the task finishes.
 	 * Outputs: [0] uint32 original-vertex index per new vertex, [1] float2 uv in [0,1] per new
 	 * vertex, [2] uint32 new indices. Results: [0] atlas width, [1] atlas height, [2] new vertex count.
@@ -830,6 +841,7 @@ export type ToolsExport =
 	| 'st_meshopt_encode_indices'
 	| 'st_uv_unwrap'
 	| 'st_brush_csg'
+	| 'st_sdf_mesh'
 	| 'st_convex_decompose'
 	| 'st_image_decode'
 	| 'st_image_resize'

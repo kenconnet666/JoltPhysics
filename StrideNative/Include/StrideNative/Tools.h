@@ -163,6 +163,25 @@ enum
 /// Result [0]: triangle count.
 SN_API int32_t st_brush_csg(const float *brushes, uint32_t float_count);
 
+enum
+{
+	ST_SDF_SPHERE = 0,				///< params: radius
+	ST_SDF_BOX = 1,					///< params: half size x, y, z, corner radius (the rounding is inside the size)
+	ST_SDF_CAPSULE = 2,				///< params: half height of the segment along Y, radius
+	ST_SDF_CYLINDER = 3,			///< params: half height (along Y), radius, edge radius (the rounding is inside the size)
+	ST_SDF_TORUS = 4,				///< params: ring radius (in the XZ plane), tube radius
+	ST_SDF_ELLIPSOID = 5,			///< params: radii x, y, z (approximate distance)
+};
+
+/// Signed-distance modelling (Womp-style blobs): shapes are combined in order with smooth union / difference / intersection (the
+/// ST_BRUSH_* operations), each blending into what came before over its smoothness radius; the first shape's operation should be
+/// add. shapes is a float stream, per shape: kind, operation, smoothness (metres, 0 is a sharp blend), a column-major 4x4 transform
+/// (16 floats, rotation and translation; a uniform scale scales the shape), then the kind's params (see ST_SDF_*). The surface is
+/// meshed with Manifold's level set at about edge_length. Inputs must stay alive until the task finishes.
+/// Outputs: [0] float3 positions, [1] float3 normals (the distance gradient, smooth across blends), [2] uint32 triangle indices,
+/// [3] uint32 shape index per triangle (the shape whose surface is nearest its centre). Result [0]: triangle count.
+SN_API int32_t st_sdf_mesh(const float *shapes, uint32_t float_count, float edge_length);
+
 /// Convex decomposition (V-HACD) for physics. Inputs must stay alive until the task finishes.
 /// Outputs: [0] int32 pairs (vertex count, triangle count) per hull, [1] float3 vertices of all
 /// hulls, [2] uint32 triangle indices, local to their hull. Result [0]: hull count.

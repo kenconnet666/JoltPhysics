@@ -1038,6 +1038,22 @@ describe('stride-native and stride-tools', () => {
 		await assert.rejects(tools.brushCsg([{ kind: 'prism', operation: 'add', transform: at(0, 0, 0), points: [[0, 0], [1, 1]], height: 1 }]), /prism needs at least 3 points/);
 	});
 
+	it('meshes smoothly blended SDF shapes (Manifold level set) with smooth normals', async () => {
+		const at = (x, y, z) => [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, y, z, 1];
+		const solid = await tools.sdfMesh([
+			{ kind: 'ellipsoid', operation: 'add', smoothness: 0, transform: at(0, 0, 0), radii: [0.6, 0.8, 0.6] },
+			{ kind: 'sphere', operation: 'add', smoothness: 0.3, transform: at(0, 1, 0), radius: 0.4 },
+			{ kind: 'capsule', operation: 'subtract', smoothness: 0.05, transform: at(0, 1.1, 0.4), halfHeight: 0.05, radius: 0.1 },
+		], 0.05);
+		assert.equal(solid.indices.length % 3, 0);
+		assert.equal(solid.normals.length, solid.positions.length);
+		assert.equal(solid.shapeOfTriangle.length, solid.indices.length / 3);
+		assert.deepEqual(new Set(solid.shapeOfTriangle), new Set([0, 1, 2]));
+		// 法线是单位长度
+		for (let v = 0; v < solid.normals.length; v += 3) assert.ok(Math.abs(Math.hypot(solid.normals[v], solid.normals[v + 1], solid.normals[v + 2]) - 1) < 1e-3);
+		await assert.rejects(tools.sdfMesh([{ kind: 'sphere', operation: 'subtract', smoothness: 0, transform: at(0, 0, 0), radius: 1 }], 0.05), /no shape adds anything/);
+	});
+
 	it('generates MSDF glyphs in parallel', async (t) => {
 		let font;
 		try {

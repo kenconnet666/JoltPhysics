@@ -144,6 +144,35 @@ export interface BrushSolid {
 	brushOfTriangle: Uint32Array;
 }
 
+/**
+ * SDF 建模的一个形状（st_sdf_mesh）：按顺序和前面的合成（平滑的并、差、交），smoothness 是融合带的宽度（米，0 是硬接）。
+ * transform 是列主序的 4x4（旋转、平移，可以带统一缩放）；形状在本地空间里以原点为中心。
+ */
+export type SdfShape = {
+	readonly operation: 'add' | 'subtract' | 'intersect';
+	readonly smoothness: number;
+	readonly transform: ArrayLike<number>;
+} & (
+	| { readonly kind: 'sphere'; readonly radius: number }
+	/** halfSize 是半边长，圆角在尺寸以内。 */
+	| { readonly kind: 'box'; readonly halfSize: readonly [number, number, number]; readonly cornerRadius: number }
+	/** 线段沿 Y，从 -halfHeight 到 halfHeight。 */
+	| { readonly kind: 'capsule'; readonly halfHeight: number; readonly radius: number }
+	| { readonly kind: 'cylinder'; readonly halfHeight: number; readonly radius: number; readonly edgeRadius: number }
+	/** 环在 XZ 平面上。 */
+	| { readonly kind: 'torus'; readonly ringRadius: number; readonly tubeRadius: number }
+	| { readonly kind: 'ellipsoid'; readonly radii: readonly [number, number, number] }
+);
+
+/** SDF 建模的结果：光滑的法线（距离场的梯度），每个三角形离哪个形状的表面最近。 */
+export interface SdfSolid {
+	positions: Float32Array;
+	normals: Float32Array;
+	indices: Uint32Array;
+	/** 每个三角形一个，shapes 的下标。 */
+	shapeOfTriangle: Uint32Array;
+}
+
 export interface ConvexHull {
 	vertices: Float32Array;
 	triangles: Uint32Array;
@@ -363,6 +392,33 @@ export class StrideTools extends NativeModule<ToolsExport> {
 				positions: task.output(Float32Array, 0),
 				indices: task.output(Uint32Array, 1),
 				brushOfTriangle: task.output(Uint32Array, 2),
+			})));
+	}
+
+	/** SDF 建模：形状按顺序平滑合成，按大约 edgeLength 的边长网格化（Manifold 的等值面）。 */
+	sdfMesh(shapes: readonly SdfShape[], edgeLength: number): Promise<SdfSolid> {
+		const KINDS = { sphere: 0, box: 1, capsule: 2, cylinder: 3, torus: 4, ellipsoid: 5 } as const;
+		const OPERATIONS = { add: 0, subtract: 1, intersect: 2 } as const;
+		const stream: number[] = [];
+		for (const shape of shapes) {
+			if (shape.transform.length !== 16) throw new Error('sdfMesh: a shape transform needs 16 numbers');
+			stream.push(KINDS[shape.kind], OPERATIONS[shape.operation], shape.smoothness, ...Array.from(shape.transform));
+			switch (shape.kind) {
+				case 'sphere': stream.push(shape.radius); break;
+				case 'box': stream.push(...shape.halfSize, shape.cornerRadius); break;
+				case 'capsule': stream.push(shape.halfHeight, shape.radius); break;
+				case 'cylinder': stream.push(shape.halfHeight, shape.radius, shape.edgeRadius); break;
+				case 'torus': stream.push(shape.ringRadius, shape.tubeRadius); break;
+				case 'ellipsoid': stream.push(...shape.radii); break;
+			}
+		}
+		const floats = Float32Array.from(stream);
+		return this.withArraysAsync([floats], (f) =>
+			this.awaitTask(this.module._st_sdf_mesh(f, floats.length, edgeLength), 'st_sdf_mesh', (task) => ({
+				positions: task.output(Float32Array, 0),
+				normals: task.output(Float32Array, 1),
+				indices: task.output(Uint32Array, 2),
+				shapeOfTriangle: task.output(Uint32Array, 3),
 			})));
 	}
 

@@ -394,6 +394,93 @@ TEST_CASE("Brush CSG combines brushes in order and tells whose surface each tria
 	sn_task_release(task);
 }
 
+TEST_CASE("SDF modelling blends shapes smoothly and meshes the surface")
+{
+	ModuleScope module;
+	auto shape = [](std::vector<float> &out, int kind, int operation, float smoothness, float x, float y, float z, std::initializer_list<float> params)
+	{
+		out.insert(out.end(), { float(kind), float(operation), smoothness, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, y, z, 1 });
+		out.insert(out.end(), params);
+	};
+	// 体积：网格的有向体积（三角形和原点组成的四面体加起来）
+	auto volume = [](int32_t task)
+	{
+		const float *p = static_cast<const float *>(sn_task_output_data(task, 0));
+		const uint32_t *t = static_cast<const uint32_t *>(sn_task_output_data(task, 2));
+		const uint32_t triangles = uint32_t(sn_task_result(task, 0));
+		double sum = 0;
+		for (uint32_t i = 0; i < triangles; ++i)
+		{
+			const float *a = p + t[i * 3] * 3, *b = p + t[i * 3 + 1] * 3, *c = p + t[i * 3 + 2] * 3;
+			sum += (a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0]) + a[2] * (b[0] * c[1] - b[1] * c[0])) / 6.0;
+		}
+		return sum;
+	};
+
+	// 一个半径 1 的球：体积接近 4/3 π，法线朝外
+	std::vector<float> stream;
+	shape(stream, ST_SDF_SPHERE, ST_BRUSH_ADD, 0, 0, 0, 0, { 1 });
+	int32_t task = st_sdf_mesh(stream.data(), uint32_t(stream.size()), 0.05f);
+	REQUIRE(WaitForTask(task) == SN_TASK_DONE);
+	CHECK(volume(task) == doctest::Approx(4.0 / 3.0 * 3.14159265).epsilon(0.03));
+	const float *positions = static_cast<const float *>(sn_task_output_data(task, 0));
+	const float *normals = static_cast<const float *>(sn_task_output_data(task, 1));
+	CHECK(positions[0] * normals[0] + positions[1] * normals[1] + positions[2] * normals[2] > 0.95f);
+	sn_task_release(task);
+
+	// 两个挨着的球（中间空 0.2 米）：平滑并起来中间连上，比硬并起来多出一截
+	auto pair = [&](float smoothness)
+	{
+		stream.clear();
+		shape(stream, ST_SDF_SPHERE, ST_BRUSH_ADD, 0, -0.6f, 0, 0, { 0.5f });
+		shape(stream, ST_SDF_SPHERE, ST_BRUSH_ADD, smoothness, 0.6f, 0, 0, { 0.5f });
+		const int32_t t = st_sdf_mesh(stream.data(), uint32_t(stream.size()), 0.04f);
+		REQUIRE(WaitForTask(t) == SN_TASK_DONE);
+		const double v = volume(t);
+		// 每个三角形归到离得最近的那个球
+		const uint32_t triangles = uint32_t(sn_task_result(t, 0));
+		const uint32_t *owner = static_cast<const uint32_t *>(sn_task_output_data(t, 3));
+		uint32_t second = 0;
+		for (uint32_t i = 0; i < triangles; ++i)
+			second += owner[i] == 1;
+		CHECK(second > triangles / 3);
+		CHECK(second < triangles * 2 / 3);
+		sn_task_release(t);
+		return v;
+	};
+	CHECK(pair(0.8f) > pair(0) * 1.05);
+
+	// 圆角盒子减掉一个球、平滑交一个胶囊、圆环、圆柱、椭球都能建
+	stream.clear();
+	shape(stream, ST_SDF_BOX, ST_BRUSH_ADD, 0, 0, 0, 0, { 1, 0.5f, 0.5f, 0.1f });
+	shape(stream, ST_SDF_SPHERE, ST_BRUSH_SUBTRACT, 0.1f, 1, 0.5f, 0, { 0.4f });
+	shape(stream, ST_SDF_TORUS, ST_BRUSH_ADD, 0.1f, 0, 1, 0, { 0.6f, 0.15f });
+	shape(stream, ST_SDF_CYLINDER, ST_BRUSH_ADD, 0, -2, 0, 0, { 0.5f, 0.3f, 0.05f });
+	shape(stream, ST_SDF_ELLIPSOID, ST_BRUSH_ADD, 0.2f, 2, 0, 0, { 0.6f, 0.3f, 0.3f });
+	shape(stream, ST_SDF_CAPSULE, ST_BRUSH_INTERSECT, 0.05f, 0, 0, 0, { 2, 2 });
+	task = st_sdf_mesh(stream.data(), uint32_t(stream.size()), 0.05f);
+	REQUIRE(WaitForTask(task) == SN_TASK_DONE);
+	CHECK(sn_task_result(task, 0) > 500);
+	sn_task_release(task);
+
+	// 不对的输入报错：大小是 0、没有加的形状、格子太多
+	stream.clear();
+	shape(stream, ST_SDF_SPHERE, ST_BRUSH_ADD, 0, 0, 0, 0, { 0 });
+	task = st_sdf_mesh(stream.data(), uint32_t(stream.size()), 0.05f);
+	CHECK(WaitForTask(task) == SN_TASK_FAILED);
+	sn_task_release(task);
+	stream.clear();
+	shape(stream, ST_SDF_SPHERE, ST_BRUSH_SUBTRACT, 0, 0, 0, 0, { 1 });
+	task = st_sdf_mesh(stream.data(), uint32_t(stream.size()), 0.05f);
+	CHECK(WaitForTask(task) == SN_TASK_FAILED);
+	sn_task_release(task);
+	stream.clear();
+	shape(stream, ST_SDF_SPHERE, ST_BRUSH_ADD, 0, 0, 0, 0, { 100 });
+	task = st_sdf_mesh(stream.data(), uint32_t(stream.size()), 0.01f);
+	CHECK(WaitForTask(task) == SN_TASK_FAILED);
+	sn_task_release(task);
+}
+
 TEST_CASE("Basis encodes a KTX2 file")
 {
 	ModuleScope module;

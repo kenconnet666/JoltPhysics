@@ -323,6 +323,263 @@ SN_API int32_t st_brush_csg(const float *brushes, uint32_t float_count)
 	});
 }
 
+namespace
+{
+	/// One shape of st_sdf_mesh: where it is (world -> local) and its distance function in local space.
+	struct SdfShape
+	{
+		int kind = 0;
+		int operation = ST_BRUSH_ADD;
+		double smoothness = 0;
+		manifold::mat3x4 toLocal;		///< world -> local (inverse of the given transform)
+		double scale = 1;				///< distances in local space times this are world distances
+		manifold::vec3 center;			///< world position of the local origin
+		double params[4] = {};
+		double bound = 0;				///< radius of a sphere around the local origin holding the shape (local units)
+	};
+
+	double Length2(double inX, double inY) { return std::sqrt(inX * inX + inY * inY); }
+
+	/// Signed distance of a local point to the shape (negative inside), in local units.
+	double LocalDistance(const SdfShape &inShape, const manifold::vec3 &p)
+	{
+		const double *a = inShape.params;
+		switch (inShape.kind)
+		{
+		case ST_SDF_SPHERE:
+			return manifold::la::length(p) - a[0];
+		case ST_SDF_BOX:
+		{
+			const double r = std::min(a[3], std::min(a[0], std::min(a[1], a[2])));
+			const manifold::vec3 q = manifold::la::abs(p) - manifold::vec3(a[0] - r, a[1] - r, a[2] - r);
+			return manifold::la::length(manifold::la::max(q, manifold::vec3(0.0))) + std::min(std::max(q.x, std::max(q.y, q.z)), 0.0) - r;
+		}
+		case ST_SDF_CAPSULE:
+		{
+			const double y = std::clamp(p.y, -a[0], a[0]);
+			return manifold::la::length(manifold::vec3(p.x, p.y - y, p.z)) - a[1];
+		}
+		case ST_SDF_CYLINDER:
+		{
+			const double r = std::min(a[2], std::min(a[0], a[1]));
+			const double dx = Length2(p.x, p.z) - (a[1] - r), dy = std::abs(p.y) - (a[0] - r);
+			return std::min(std::max(dx, dy), 0.0) + Length2(std::max(dx, 0.0), std::max(dy, 0.0)) - r;
+		}
+		case ST_SDF_TORUS:
+			return Length2(Length2(p.x, p.z) - a[0], p.y) - a[1];
+		case ST_SDF_ELLIPSOID:
+		{
+			// Inigo Quilez's bound for ellipsoids: exact on the axes, close elsewhere
+			const manifold::vec3 r(a[0], a[1], a[2]);
+			const double k0 = manifold::la::length(p / r), k1 = manifold::la::length(p / (r * r));
+			return k1 > 0 ? k0 * (k0 - 1.0) / k1 : -std::min(a[0], std::min(a[1], a[2]));
+		}
+		}
+		return 1e9;
+	}
+
+	double ShapeDistance(const SdfShape &inShape, const manifold::vec3 &inWorld)
+	{
+		return LocalDistance(inShape, inShape.toLocal * manifold::vec4(inWorld, 1.0)) * inShape.scale;
+	}
+
+	/// Polynomial smooth minimum (Inigo Quilez): blends over a band of width k.
+	double SmoothMin(double inA, double inB, double inK)
+	{
+		if (inK <= 0)
+			return std::min(inA, inB);
+		const double h = std::max(inK - std::abs(inA - inB), 0.0) / inK;
+		return std::min(inA, inB) - h * h * inK * 0.25;
+	}
+
+	double SceneDistance(const std::vector<SdfShape> &inShapes, const manifold::vec3 &inWorld)
+	{
+		double d = 1e9;
+		for (const SdfShape &shape : inShapes)
+		{
+			const double s = ShapeDistance(shape, inWorld);
+			switch (shape.operation)
+			{
+			case ST_BRUSH_ADD: d = SmoothMin(d, s, shape.smoothness); break;
+			case ST_BRUSH_SUBTRACT: d = -SmoothMin(-d, s, shape.smoothness); break;
+			case ST_BRUSH_INTERSECT: d = -SmoothMin(-d, -s, shape.smoothness); break;
+			}
+		}
+		return d;
+	}
+
+	/// Reads one shape of st_sdf_mesh's stream; false with outError on bad input.
+	bool ReadSdfShape(const float *&ioCursor, const float *inEnd, uint32_t inIndex, SdfShape &outShape, std::string &outError)
+	{
+		const std::string name = "shape " + std::to_string(inIndex);
+		if (size_t(inEnd - ioCursor) < 19)
+		{
+			outError = name + ": the stream ends before its kind, operation, smoothness and transform";
+			return false;
+		}
+		outShape.kind = int(ioCursor[0]);
+		outShape.operation = int(ioCursor[1]);
+		outShape.smoothness = std::max(0.0, double(ioCursor[2]));
+		const float *m = ioCursor + 3;
+		ioCursor += 19;
+		static constexpr int PARAM_COUNTS[] = { 1, 4, 2, 3, 2, 3 };
+		if (outShape.kind < 0 || outShape.kind > ST_SDF_ELLIPSOID)
+		{
+			outError = name + ": unknown kind " + std::to_string(outShape.kind);
+			return false;
+		}
+		if (outShape.operation < ST_BRUSH_ADD || outShape.operation > ST_BRUSH_INTERSECT)
+		{
+			outError = name + ": unknown operation " + std::to_string(outShape.operation);
+			return false;
+		}
+		const int count = PARAM_COUNTS[outShape.kind];
+		if (inEnd - ioCursor < count)
+		{
+			outError = name + ": the stream ends inside its params";
+			return false;
+		}
+		for (int i = 0; i < count; ++i)
+			outShape.params[i] = ioCursor[i];
+		ioCursor += count;
+		const double *a = outShape.params;
+		switch (outShape.kind)
+		{
+		case ST_SDF_SPHERE: outShape.bound = a[0]; break;
+		case ST_SDF_BOX: outShape.bound = std::sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]); break;
+		case ST_SDF_CAPSULE: outShape.bound = a[0] + a[1]; break;
+		case ST_SDF_CYLINDER: outShape.bound = Length2(a[0], a[1]); break;
+		case ST_SDF_TORUS: outShape.bound = a[0] + a[1]; break;
+		case ST_SDF_ELLIPSOID: outShape.bound = std::max(a[0], std::max(a[1], a[2])); break;
+		}
+		for (int i = 0; i < count; ++i)
+			if (!(a[i] >= 0) || (i == 0 && a[i] <= 0))
+			{
+				outError = name + ": its sizes must be positive";
+				return false;
+			}
+		manifold::mat3x4 transform;
+		for (int column = 0; column < 4; ++column)
+			for (int row = 0; row < 3; ++row)
+				transform[column][row] = m[column * 4 + row];
+		// A rigid transform with a uniform scale: the scale is the length of a basis column
+		const double scale = manifold::la::length(transform[0]);
+		if (!(scale > 1e-9))
+		{
+			outError = name + ": its transform has no scale";
+			return false;
+		}
+		outShape.scale = scale;
+		outShape.center = transform[3];
+		const manifold::mat3 linear(transform[0], transform[1], transform[2]);
+		const manifold::mat3 inverse = manifold::la::inverse(linear);
+		outShape.toLocal = manifold::mat3x4(inverse[0], inverse[1], inverse[2], -(inverse * outShape.center));
+		return true;
+	}
+}
+
+SN_API int32_t st_sdf_mesh(const float *shapes, uint32_t float_count, float edge_length)
+{
+	SN_REQUIRE_INIT(SN_ERROR_NOT_INITIALIZED);
+	if (shapes == nullptr || float_count == 0)
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "shapes are required");
+	if (!(edge_length > 0))
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "edge_length must be positive");
+
+	return RunTask("SdfMesh", [=](Task &ioTask)
+	{
+		std::vector<SdfShape> list;
+		const float *cursor = shapes, *end = shapes + float_count;
+		for (uint32_t index = 0; cursor < end; ++index)
+		{
+			SdfShape shape;
+			std::string error;
+			if (!ReadSdfShape(cursor, end, index, shape, error))
+			{
+				ioTask.Fail(error);
+				return false;
+			}
+			list.push_back(shape);
+		}
+
+		// The surface lies inside the added shapes, grown by their blends; subtractions and intersections only take away
+		manifold::Box bounds;
+		bool any = false;
+		for (const SdfShape &shape : list)
+		{
+			if (shape.operation != ST_BRUSH_ADD)
+				continue;
+			const double radius = shape.bound * shape.scale + shape.smoothness;
+			bounds.Union(shape.center - manifold::vec3(radius));
+			bounds.Union(shape.center + manifold::vec3(radius));
+			any = true;
+		}
+		if (!any)
+		{
+			ioTask.Fail("no shape adds anything (the first shape's operation should be add)");
+			return false;
+		}
+		const double edge = edge_length;
+		const manifold::vec3 margin(edge * 2);
+		bounds = manifold::Box(bounds.min - margin, bounds.max + margin);
+		const manifold::vec3 size = bounds.Size();
+		if (std::max(size.x, std::max(size.y, size.z)) / edge > 512)
+		{
+			ioTask.Fail("edge_length is too small for the shapes' size (more than 512 cells along a side)");
+			return false;
+		}
+
+		// Manifold's level set is positive inside
+		const manifold::Manifold solid = manifold::Manifold::LevelSet([&](manifold::vec3 p) { return -SceneDistance(list, p); }, bounds, edge, 0, -1, false);
+		if (solid.Status() != manifold::Manifold::Error::NoError || solid.IsEmpty())
+		{
+			ioTask.Fail("the shapes make no surface (all subtracted away, or smaller than edge_length)");
+			return false;
+		}
+
+		const manifold::MeshGL mesh = solid.GetMeshGL();
+		const uint32_t vertex_count = uint32_t(mesh.NumVert()), triangle_count = uint32_t(mesh.NumTri());
+		float *positions = static_cast<float *>(ioTask.AddOutput(size_t(vertex_count) * 3 * sizeof(float)));
+		float *normals = static_cast<float *>(ioTask.AddOutput(size_t(vertex_count) * 3 * sizeof(float)));
+		const double h = edge * 0.25;
+		for (uint32_t v = 0; v < vertex_count; ++v)
+		{
+			const manifold::vec3 p(mesh.vertProperties[size_t(v) * mesh.numProp], mesh.vertProperties[size_t(v) * mesh.numProp + 1], mesh.vertProperties[size_t(v) * mesh.numProp + 2]);
+			const manifold::vec3 dx(h, 0, 0), dy(0, h, 0), dz(0, 0, h);
+			manifold::vec3 gradient(SceneDistance(list, p + dx) - SceneDistance(list, p - dx), SceneDistance(list, p + dy) - SceneDistance(list, p - dy), SceneDistance(list, p + dz) - SceneDistance(list, p - dz));
+			const double length = manifold::la::length(gradient);
+			gradient = length > 0 ? gradient / length : manifold::vec3(0, 1, 0);
+			for (int k = 0; k < 3; ++k)
+			{
+				positions[v * 3 + k] = float(p[k]);
+				normals[v * 3 + k] = float(gradient[k]);
+			}
+		}
+		uint32_t *indices = static_cast<uint32_t *>(ioTask.AddOutput(size_t(triangle_count) * 3 * sizeof(uint32_t)));
+		std::memcpy(indices, mesh.triVerts.data(), size_t(triangle_count) * 3 * sizeof(uint32_t));
+		uint32_t *owner = static_cast<uint32_t *>(ioTask.AddOutput(size_t(triangle_count) * sizeof(uint32_t)));
+		for (uint32_t t = 0; t < triangle_count; ++t)
+		{
+			manifold::vec3 centroid(0.0);
+			for (int c = 0; c < 3; ++c)
+				centroid += manifold::vec3(positions[indices[t * 3 + c] * 3], positions[indices[t * 3 + c] * 3 + 1], positions[indices[t * 3 + c] * 3 + 2]);
+			centroid /= 3.0;
+			double nearest = 1e18;
+			for (uint32_t s = 0; s < list.size(); ++s)
+			{
+				const double d = std::abs(ShapeDistance(list[s], centroid));
+				if (d < nearest)
+				{
+					nearest = d;
+					owner[t] = s;
+				}
+			}
+		}
+		ioTask.SetResult(0, int32_t(triangle_count));
+		return true;
+	});
+}
+
 SN_API int32_t st_convex_decompose(const float *positions, uint32_t vertex_count, const uint32_t *indices, uint32_t index_count, uint32_t max_hulls, uint32_t voxel_resolution, uint32_t max_vertices_per_hull)
 {
 	SN_REQUIRE_INIT(SN_ERROR_NOT_INITIALIZED);
