@@ -405,8 +405,12 @@ namespace
 		auto slot_of = [&](const cgltf_texture_view &inView)
 		{
 			st_texture_slot slot = EmptySlot();
-			if (inView.texture != nullptr && inView.texture->image != nullptr)
-				slot.image = int32_t(inView.texture->image - data->images);
+			// 只有 EXT_texture_webp、KHR_texture_basisu 的图（没有 PNG/JPEG 的后备）也算：编辑器、运行时能解 WebP
+			const cgltf_image *image = inView.texture == nullptr ? nullptr
+				: inView.texture->image != nullptr ? inView.texture->image
+				: inView.texture->webp_image != nullptr ? inView.texture->webp_image : inView.texture->basisu_image;
+			if (image != nullptr)
+				slot.image = int32_t(image - data->images);
 			if (inView.has_transform)
 			{
 				slot.scale[0] = inView.transform.scale[0];
