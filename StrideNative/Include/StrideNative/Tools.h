@@ -55,6 +55,40 @@ SN_API void st_scene_destroy(int32_t scene);
 SN_API int32_t st_scene_mesh_info(int32_t scene, uint32_t mesh, st_mesh_info *out_info);
 /// Name of a material (UTF-8), valid until the scene is destroyed; null for a bad index.
 SN_API const char *st_scene_material_name(int32_t scene, uint32_t material);
+/// A texture slot of a material: the image (index for st_scene_image, -1 when the slot is empty) and the UV transform
+/// (glTF KHR_texture_transform, FBX texture UV transform): uv' = uv * scale + offset.
+typedef struct st_texture_slot
+{
+	int32_t image;
+	float scale[2];
+	float offset[2];
+} st_texture_slot;
+
+/// The PBR parameters of a material (glTF metallic-roughness; FBX through ufbx's PBR mapping of its material models).
+typedef struct st_material_info
+{
+	float base_color[4];			///< linear RGBA factor (multiplied with the base color texture)
+	float metallic;
+	float roughness;
+	float emissive[3];				///< linear, times the emissive strength
+	int32_t alpha_mode;				///< 0 opaque, 1 mask (alpha_cutoff), 2 blend
+	float alpha_cutoff;
+	int32_t double_sided;
+	float normal_scale;
+	st_texture_slot base_color_texture;
+	st_texture_slot metallic_roughness_texture;	///< glTF packing: roughness in G, metallic in B
+	st_texture_slot normal_texture;
+	st_texture_slot occlusion_texture;			///< occlusion in R
+	st_texture_slot emissive_texture;
+} st_material_info;
+
+/// Material parameters for a material index (the one st_mesh_info.material refers to).
+SN_API int32_t st_scene_material_info(int32_t scene, uint32_t material, st_material_info *out_info);
+/// Number of images the materials' texture slots refer to.
+SN_API int32_t st_scene_image_count(int32_t scene);
+/// An image: embedded ones give their encoded bytes (*out_data, valid until the scene is destroyed; returns the byte count),
+/// external ones their path relative to the source file (*out_uri; returns 0). *out_mime is the MIME type when known, else "".
+SN_API int32_t st_scene_image(int32_t scene, uint32_t image, const uint8_t **out_data, const char **out_uri, const char **out_mime);
 /// Copies a mesh; any output may be null. positions/normals xyz, uvs xy, indices uint32.
 SN_API int32_t st_scene_mesh_copy(int32_t scene, uint32_t mesh, float *positions, float *normals, float *uvs, uint32_t *indices);
 

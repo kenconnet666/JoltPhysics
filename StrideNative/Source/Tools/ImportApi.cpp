@@ -73,10 +73,20 @@ namespace
 		}
 	};
 
+	/// 材质的贴图引用的图片：嵌在文件里的是编码过的字节（PNG、JPEG……），外部文件是相对源文件的路径
+	struct ImportedImage
+	{
+		std::vector<uint8_t>	mBytes;
+		std::string				mUri;
+		std::string				mMime;
+	};
+
 	struct ImportedScene
 	{
 		std::vector<ImportedMesh>	mMeshes;
 		std::vector<std::string>	mMaterials;		///< 材质名，按网格的 mMaterial 下标
+		std::vector<st_material_info> mMaterialInfos;	///< 和 mMaterials 一一对应
+		std::vector<ImportedImage>	mImages;
 		std::vector<ImportedNode>	mNodes;
 		std::vector<std::string>	mAnimations;
 		/// 场景留着给 st_scene_animation_bake 用；mFbxNodes[i]、mGltfNodes[i] 是我们的第 i 个节点
@@ -85,6 +95,59 @@ namespace
 		std::shared_ptr<GltfDocument> mGltf;
 		std::vector<const cgltf_node *> mGltfNodes;
 	};
+
+	st_texture_slot EmptySlot()
+	{
+		return st_texture_slot { -1, { 1.0f, 1.0f }, { 0.0f, 0.0f } };
+	}
+
+	/// glTF 的默认值（白色、不透明、金属度 1、粗糙度 1，同 glTF 规范）
+	st_material_info DefaultMaterialInfo()
+	{
+		st_material_info info {};
+		for (float &c : info.base_color)
+			c = 1.0f;
+		info.metallic = 1.0f;
+		info.roughness = 1.0f;
+		info.alpha_cutoff = 0.5f;
+		info.normal_scale = 1.0f;
+		info.base_color_texture = info.metallic_roughness_texture = info.normal_texture = info.occlusion_texture = info.emissive_texture = EmptySlot();
+		return info;
+	}
+
+	/// data: URI 里 base64 的部分解码成字节；不是 base64 的 data URI 返回 false
+	bool DecodeDataUri(const char *inUri, std::vector<uint8_t> &outBytes, std::string &outMime)
+	{
+		const char *comma = std::strchr(inUri, ',');
+		if (comma == nullptr || std::strstr(inUri, ";base64") == nullptr || std::strstr(inUri, ";base64") > comma)
+			return false;
+		outMime.assign(inUri + 5, std::strcspn(inUri + 5, ";,"));
+		auto value = [](char c) -> int
+		{
+			if (c >= 'A' && c <= 'Z') return c - 'A';
+			if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+			if (c >= '0' && c <= '9') return c - '0' + 52;
+			if (c == '+' || c == '-') return 62;
+			if (c == '/' || c == '_') return 63;
+			return -1;
+		};
+		uint32_t bits = 0;
+		int count = 0;
+		for (const char *c = comma + 1; *c != 0 && *c != '='; ++c)
+		{
+			int v = value(*c);
+			if (v < 0)
+				continue;
+			bits = (bits << 6) | uint32_t(v);
+			count += 6;
+			if (count >= 8)
+			{
+				count -= 8;
+				outBytes.push_back(uint8_t((bits >> count) & 0xff));
+			}
+		}
+		return true;
+	}
 
 	/// 不带索引的角顶点流，用 meshoptimizer 焊接成带索引的网格。蒙皮数据也参与比较：同一个位置的角权重不同就不合并。
 	struct Vertex
@@ -318,6 +381,66 @@ namespace
 
 		for (cgltf_size i = 0; i < data->materials_count; ++i)
 			outScene.mMaterials.emplace_back(data->materials[i].name != nullptr ? data->materials[i].name : "material" + std::to_string(i));
+		// 图片：缓冲视图里的（GLB）、data URI 的取字节，外部文件留路径
+		for (cgltf_size i = 0; i < data->images_count; ++i)
+		{
+			const cgltf_image &image = data->images[i];
+			ImportedImage imported;
+			imported.mMime = image.mime_type != nullptr ? image.mime_type : "";
+			if (image.buffer_view != nullptr && image.buffer_view->buffer->data != nullptr)
+			{
+				const uint8_t *bytes = static_cast<const uint8_t *>(image.buffer_view->buffer->data) + image.buffer_view->offset;
+				imported.mBytes.assign(bytes, bytes + image.buffer_view->size);
+			}
+			else if (image.uri != nullptr && std::strncmp(image.uri, "data:", 5) == 0)
+			{
+				std::string mime;
+				if (DecodeDataUri(image.uri, imported.mBytes, mime) && imported.mMime.empty())
+					imported.mMime = mime;
+			}
+			else if (image.uri != nullptr)
+				imported.mUri = image.uri;
+			outScene.mImages.push_back(std::move(imported));
+		}
+		auto slot_of = [&](const cgltf_texture_view &inView)
+		{
+			st_texture_slot slot = EmptySlot();
+			if (inView.texture != nullptr && inView.texture->image != nullptr)
+				slot.image = int32_t(inView.texture->image - data->images);
+			if (inView.has_transform)
+			{
+				slot.scale[0] = inView.transform.scale[0];
+				slot.scale[1] = inView.transform.scale[1];
+				slot.offset[0] = inView.transform.offset[0];
+				slot.offset[1] = inView.transform.offset[1];
+			}
+			return slot;
+		};
+		for (cgltf_size i = 0; i < data->materials_count; ++i)
+		{
+			const cgltf_material &material = data->materials[i];
+			st_material_info info = DefaultMaterialInfo();
+			if (material.has_pbr_metallic_roughness)
+			{
+				const cgltf_pbr_metallic_roughness &pbr = material.pbr_metallic_roughness;
+				std::memcpy(info.base_color, pbr.base_color_factor, sizeof(info.base_color));
+				info.metallic = pbr.metallic_factor;
+				info.roughness = pbr.roughness_factor;
+				info.base_color_texture = slot_of(pbr.base_color_texture);
+				info.metallic_roughness_texture = slot_of(pbr.metallic_roughness_texture);
+			}
+			float strength = material.has_emissive_strength ? material.emissive_strength.emissive_strength : 1.0f;
+			for (int c = 0; c < 3; ++c)
+				info.emissive[c] = material.emissive_factor[c] * strength;
+			info.emissive_texture = slot_of(material.emissive_texture);
+			info.normal_texture = slot_of(material.normal_texture);
+			info.normal_scale = material.normal_texture.texture != nullptr ? material.normal_texture.scale : 1.0f;
+			info.occlusion_texture = slot_of(material.occlusion_texture);
+			info.alpha_mode = material.alpha_mode == cgltf_alpha_mode_mask ? 1 : material.alpha_mode == cgltf_alpha_mode_blend ? 2 : 0;
+			info.alpha_cutoff = material.alpha_cutoff;
+			info.double_sided = material.double_sided ? 1 : 0;
+			outScene.mMaterialInfos.push_back(info);
+		}
 		for (cgltf_size i = 0; i < data->animations_count; ++i)
 			outScene.mAnimations.emplace_back(data->animations[i].name != nullptr ? data->animations[i].name : "animation" + std::to_string(i));
 
@@ -557,6 +680,70 @@ namespace
 
 		for (size_t i = 0; i < scene->materials.count; ++i)
 			outScene.mMaterials.emplace_back(scene->materials.data[i]->name.data);
+		// 图片：每个文件贴图一张（ufbx 的 typed_id 换成我们的下标）；嵌在 FBX 里的取字节，外部文件留相对路径
+		std::unordered_map<uint32_t, int32_t> image_of;
+		for (size_t i = 0; i < scene->textures.count; ++i)
+		{
+			const ufbx_texture &texture = *scene->textures.data[i];
+			if (texture.type != UFBX_TEXTURE_FILE)
+				continue;
+			ImportedImage imported;
+			if (texture.content.size > 0)
+			{
+				const uint8_t *bytes = static_cast<const uint8_t *>(texture.content.data);
+				imported.mBytes.assign(bytes, bytes + texture.content.size);
+			}
+			else
+				imported.mUri = texture.relative_filename.data;
+			image_of[texture.typed_id] = int32_t(outScene.mImages.size());
+			outScene.mImages.push_back(std::move(imported));
+		}
+		auto fbx_slot = [&](const ufbx_material_map &inMap)
+		{
+			st_texture_slot slot = EmptySlot();
+			const ufbx_texture *texture = inMap.texture_enabled ? inMap.texture : nullptr;
+			// 贴图是节点图、多层的时候取第一张文件贴图（ufbx 的 file_textures）
+			if (texture != nullptr && texture->type != UFBX_TEXTURE_FILE)
+				texture = texture->file_textures.count > 0 ? texture->file_textures.data[0] : nullptr;
+			if (texture == nullptr)
+				return slot;
+			auto found = image_of.find(texture->typed_id);
+			if (found != image_of.end())
+				slot.image = found->second;
+			if (texture->has_uv_transform)
+			{
+				slot.scale[0] = float(texture->uv_transform.scale.x);
+				slot.scale[1] = float(texture->uv_transform.scale.y);
+				slot.offset[0] = float(texture->uv_transform.translation.x);
+				slot.offset[1] = float(texture->uv_transform.translation.y);
+			}
+			return slot;
+		};
+		for (size_t i = 0; i < scene->materials.count; ++i)
+		{
+			const ufbx_material &material = *scene->materials.data[i];
+			st_material_info info = DefaultMaterialInfo();
+			const ufbx_vec4 &base = material.pbr.base_color.value_vec4;
+			float factor = material.pbr.base_factor.has_value ? float(material.pbr.base_factor.value_real) : 1.0f;
+			info.base_color[0] = float(base.x) * factor;
+			info.base_color[1] = float(base.y) * factor;
+			info.base_color[2] = float(base.z) * factor;
+			info.base_color[3] = material.pbr.opacity.has_value ? float(material.pbr.opacity.value_real) : 1.0f;
+			// 没写金属度的（FBX 的 Phong、Lambert）当非金属
+			info.metallic = material.pbr.metalness.has_value ? float(material.pbr.metalness.value_real) : 0.0f;
+			info.roughness = material.pbr.roughness.has_value ? float(material.pbr.roughness.value_real) : 0.5f;
+			float emission = material.pbr.emission_factor.has_value ? float(material.pbr.emission_factor.value_real) : 1.0f;
+			info.emissive[0] = float(material.pbr.emission_color.value_vec3.x) * emission;
+			info.emissive[1] = float(material.pbr.emission_color.value_vec3.y) * emission;
+			info.emissive[2] = float(material.pbr.emission_color.value_vec3.z) * emission;
+			info.base_color_texture = fbx_slot(material.pbr.base_color);
+			info.normal_texture = fbx_slot(material.pbr.normal_map);
+			info.occlusion_texture = fbx_slot(material.pbr.ambient_occlusion);
+			info.emissive_texture = fbx_slot(material.pbr.emission_color);
+			info.alpha_mode = info.base_color[3] < 1.0f ? 2 : 0;
+			info.double_sided = material.features.double_sided.enabled ? 1 : 0;
+			outScene.mMaterialInfos.push_back(info);
+		}
 		for (size_t i = 0; i < scene->anim_stacks.count; ++i)
 			outScene.mAnimations.emplace_back(scene->anim_stacks.data[i]->name.data);
 
@@ -1037,6 +1224,39 @@ SN_API const char *st_scene_material_name(int32_t scene, uint32_t material)
 		return nullptr;
 	}
 	return s->mMaterials[material].c_str();
+}
+
+SN_API int32_t st_scene_material_info(int32_t scene, uint32_t material, st_material_info *out_info)
+{
+	ImportedScene *s = Lookup<ImportedScene>(scene, "scene");
+	if (s == nullptr)
+		return SN_ERROR_INVALID_HANDLE;
+	if (out_info == nullptr || material >= s->mMaterialInfos.size())
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "material index out of range (or out_info is null)");
+	*out_info = s->mMaterialInfos[material];
+	return SN_OK;
+}
+
+SN_API int32_t st_scene_image_count(int32_t scene)
+{
+	ImportedScene *s = Lookup<ImportedScene>(scene, "scene");
+	if (s == nullptr)
+		return SN_ERROR_INVALID_HANDLE;
+	return int32_t(s->mImages.size());
+}
+
+SN_API int32_t st_scene_image(int32_t scene, uint32_t image, const uint8_t **out_data, const char **out_uri, const char **out_mime)
+{
+	ImportedScene *s = Lookup<ImportedScene>(scene, "scene");
+	if (s == nullptr)
+		return SN_ERROR_INVALID_HANDLE;
+	if (image >= s->mImages.size() || out_data == nullptr || out_uri == nullptr || out_mime == nullptr)
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "image index out of range (or an output is null)");
+	const ImportedImage &imported = s->mImages[image];
+	*out_data = imported.mBytes.data();
+	*out_uri = imported.mUri.c_str();
+	*out_mime = imported.mMime.c_str();
+	return int32_t(imported.mBytes.size());
 }
 
 SN_API int32_t st_scene_mesh_copy(int32_t scene, uint32_t mesh, float *positions, float *normals, float *uvs, uint32_t *indices)

@@ -16,6 +16,43 @@ const SCENE_FORMATS: Record<SceneFormat, number> = { auto: 0, gltf: 1, fbx: 2, o
 const NO_MATERIAL = 0xffffffff;
 const BASIS_MODES: Record<BasisMode, number> = { uastc: 0, etc1s: 1 };
 
+/** 材质的一个贴图槽：图片（Scene.image 的下标，没有时是 null）和 UV 变换（uv' = uv * scale + offset）。 */
+export interface TextureSlot {
+	image: number | null;
+	scale: [number, number];
+	offset: [number, number];
+}
+
+/** 材质的 PBR 参数（glTF 的金属度工作流；FBX 经 ufbx 换成 PBR）。颜色是线性的。 */
+export interface MaterialInfo {
+	baseColor: [number, number, number, number];
+	metallic: number;
+	roughness: number;
+	/** 乘过自发光强度。 */
+	emissive: [number, number, number];
+	alphaMode: 'opaque' | 'mask' | 'blend';
+	alphaCutoff: number;
+	doubleSided: boolean;
+	normalScale: number;
+	baseColorTexture: TextureSlot;
+	/** glTF 的打包：G 是粗糙度、B 是金属度。 */
+	metallicRoughnessTexture: TextureSlot;
+	normalTexture: TextureSlot;
+	/** R 是遮蔽。 */
+	occlusionTexture: TextureSlot;
+	emissiveTexture: TextureSlot;
+}
+
+/** 材质引用的图片：嵌在文件里的有 data（编码过的字节，PNG、JPEG……），外部文件有 uri（相对源文件）；mime 不知道时是空串。 */
+export interface SceneImage {
+	data: Uint8Array | null;
+	uri: string | null;
+	mime: string;
+}
+
+/** st_material_info 的字数：base_color 4、metallic、roughness、emissive 3、alpha_mode、alpha_cutoff、double_sided、normal_scale，再 5 个贴图槽各 5 个。 */
+const MATERIAL_INFO_WORDS = 13 + 5 * 5;
+
 export interface MeshData {
 	/** 模型空间（节点的世界变换已经烘焙进去；蒙皮网格按绑定时的姿势），每个顶点 xyz。 */
 	positions: Float32Array;
@@ -463,6 +500,10 @@ export class Scene extends NativeObject<StrideTools> {
 	readonly meshCount: number;
 	/** 材质名，MeshData.material 是这里的下标。 */
 	readonly materials: readonly string[];
+	/** 材质的参数，和 materials 一一对应。 */
+	readonly materialInfos: readonly MaterialInfo[];
+	/** 材质的贴图引用的图片数（Scene.image 的下标从 0 到它）。 */
+	readonly imageCount: number;
 	readonly nodes: readonly SceneNode[];
 	/** 动画名（glTF 的动画、FBX 的动画栈），bakeAnimation 的下标。 */
 	readonly animations: readonly string[];
@@ -474,6 +515,27 @@ export class Scene extends NativeObject<StrideTools> {
 		this.meshCount = meshCount;
 		this.materials = Array.from({ length: materialCount }, (_, i) => name(tools.module._st_scene_material_name(handle, i)));
 		this.animations = Array.from({ length: animationCount }, (_, i) => name(tools.module._st_scene_animation_name(handle, i)));
+		this.materialInfos = Array.from({ length: materialCount }, (_, i) => tools.withScratch(MATERIAL_INFO_WORDS * 4, (ptr) => {
+			tools.check(tools.module._st_scene_material_info(handle, i, ptr), 'st_scene_material_info');
+			const f = tools.f32(ptr, MATERIAL_INFO_WORDS), w = tools.i32(ptr, MATERIAL_INFO_WORDS);
+			const slot = (at: number): TextureSlot => ({ image: w[at]! < 0 ? null : w[at]!, scale: [f[at + 1]!, f[at + 2]!], offset: [f[at + 3]!, f[at + 4]!] });
+			return {
+				baseColor: [f[0]!, f[1]!, f[2]!, f[3]!],
+				metallic: f[4]!,
+				roughness: f[5]!,
+				emissive: [f[6]!, f[7]!, f[8]!],
+				alphaMode: (['opaque', 'mask', 'blend'] as const)[w[9]!] ?? 'opaque',
+				alphaCutoff: f[10]!,
+				doubleSided: w[11] !== 0,
+				normalScale: f[12]!,
+				baseColorTexture: slot(13),
+				metallicRoughnessTexture: slot(18),
+				normalTexture: slot(23),
+				occlusionTexture: slot(28),
+				emissiveTexture: slot(33),
+			} satisfies MaterialInfo;
+		}));
+		this.imageCount = tools.check(tools.module._st_scene_image_count(handle), 'st_scene_image_count');
 		// st_node_info：parent、translation[3]、rotation[4]、scale[3]、world[16]，27 个字
 		this.nodes = Array.from({ length: nodeCount }, (_, i) => tools.withScratch(27 * 4, (ptr) => {
 			tools.check(tools.module._st_scene_node_info(handle, i, ptr), 'st_scene_node_info');
@@ -487,6 +549,17 @@ export class Scene extends NativeObject<StrideTools> {
 				world: f.slice(11, 27),
 			} satisfies SceneNode;
 		}));
+	}
+
+	/** 第 index 张图片：嵌在文件里的拷出字节，外部文件给路径。 */
+	image(index: number): SceneImage {
+		const t = this.native;
+		return t.withScratch(12, (out) => {
+			const size = t.check(t.module._st_scene_image(this[HANDLE], index, out, out + 4, out + 8), 'st_scene_image');
+			const [data, uri, mime] = Array.from(t.u32(out, 3));
+			const path = t.module.UTF8ToString(uri!);
+			return { data: size > 0 ? t.copyOut(Uint8Array, data!, size) : null, uri: size > 0 || path === '' ? null : path, mime: t.module.UTF8ToString(mime!) };
+		});
 	}
 
 	mesh(index: number): MeshData {

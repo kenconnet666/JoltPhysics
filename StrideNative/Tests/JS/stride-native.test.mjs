@@ -876,6 +876,51 @@ describe('stride-native and stride-tools', () => {
 		assert.equal(mesh.positions.length, 12);
 	});
 
+	it('reports glTF material parameters, texture slots and embedded or external images', async () => {
+		const positions = Buffer.from(new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]).buffer).toString('base64');
+		const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+		const gltf = {
+			asset: { version: '2.0' },
+			extensionsUsed: ['KHR_texture_transform', 'KHR_materials_emissive_strength'],
+			buffers: [{ byteLength: 36, uri: `data:application/octet-stream;base64,${positions}` }],
+			bufferViews: [{ buffer: 0, byteOffset: 0, byteLength: 36 }],
+			accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: 'VEC3', min: [0, 0, 0], max: [1, 1, 0] }],
+			images: [{ uri: `data:image/png;base64,${png.toString('base64')}` }, { uri: 'textures/normal.png' }],
+			textures: [{ source: 0 }, { source: 1 }],
+			materials: [{
+				name: 'Brick',
+				pbrMetallicRoughness: { baseColorFactor: [0.5, 0.25, 1, 0.8], metallicFactor: 0.2, roughnessFactor: 0.7, baseColorTexture: { index: 0, extensions: { KHR_texture_transform: { scale: [2, 3], offset: [0.5, 0.25] } } } },
+				normalTexture: { index: 1, scale: 0.6 },
+				emissiveFactor: [1, 0.5, 0],
+				extensions: { KHR_materials_emissive_strength: { emissiveStrength: 4 } },
+				alphaMode: 'MASK', alphaCutoff: 0.3, doubleSided: true,
+			}],
+			meshes: [{ primitives: [{ attributes: { POSITION: 0 }, material: 0 }] }],
+			nodes: [{ mesh: 0 }],
+			scenes: [{ nodes: [0] }],
+		};
+		const scene = await tools.loadScene(new TextEncoder().encode(JSON.stringify(gltf)), 'gltf');
+		try {
+			const near = (actual, expected) => actual.forEach((v, i) => assert.ok(Math.abs(v - expected[i]) < 1e-5, `${actual} is not near ${expected}`));
+			const [info] = scene.materialInfos;
+			near(info.baseColor, [0.5, 0.25, 1, 0.8]);
+			near([info.metallic, info.roughness, info.normalScale, info.alphaCutoff], [0.2, 0.7, 0.6, 0.3]);
+			near(info.emissive, [4, 2, 0]);
+			assert.equal(info.alphaMode, 'mask');
+			assert.equal(info.doubleSided, true);
+			assert.deepEqual(info.baseColorTexture, { image: 0, scale: [2, 3], offset: [0.5, 0.25] });
+			assert.equal(info.normalTexture.image, 1);
+			assert.equal(info.emissiveTexture.image, null);
+			assert.equal(scene.imageCount, 2);
+			const embedded = scene.image(0);
+			assert.deepEqual([...embedded.data], [...png]);
+			assert.equal(embedded.mime, 'image/png');
+			assert.deepEqual(scene.image(1), { data: null, uri: 'textures/normal.png', mime: '' });
+		} finally {
+			scene.destroy();
+		}
+	});
+
 	it('imports FBX and glTF, then runs the geometry tools on the result', async () => {
 		const scene = await tools.loadScene(await readFile(path.join(testData, 'cube.fbx')));
 		assert.equal(scene.meshCount, 1);

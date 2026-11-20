@@ -613,12 +613,28 @@ export interface NativeExports {
 	/** C: Tools.h */
 	_st_scene_destroy(scene: number): void;
 	/**
+	 * An image: embedded ones give their encoded bytes (*out_data, valid until the scene is destroyed; returns the byte count),
+	 * external ones their path relative to the source file (*out_uri; returns 0). *out_mime is the MIME type when known, else "".
+	 * C: Tools.h
+	 */
+	_st_scene_image(scene: number, image: number, outData: number, outUri: number, outMime: number): number;
+	/**
+	 * Number of images the materials' texture slots refer to.
+	 * C: Tools.h
+	 */
+	_st_scene_image_count(scene: number): number;
+	/**
 	 * Parses a scene. data must stay alive until the task finishes. Result [0]: scene handle,
 	 * [1]: mesh count, [2]: material count, [3]: node count, [4]: animation count.
 	 * FBX's root node is named "RootNode" (like Stride's importer); nodes keep the file's order.
 	 * C: Tools.h
 	 */
 	_st_scene_load(data: number, size: number, format: number): number;
+	/**
+	 * Material parameters for a material index (the one st_mesh_info.material refers to).
+	 * C: Tools.h
+	 */
+	_st_scene_material_info(scene: number, material: number, outInfo: number): number;
 	/**
 	 * Name of a material (UTF-8), valid until the scene is destroyed; null for a bad index.
 	 * C: Tools.h
@@ -785,6 +801,9 @@ export type ToolsExport =
 	| 'st_scene_destroy'
 	| 'st_scene_mesh_info'
 	| 'st_scene_material_name'
+	| 'st_scene_material_info'
+	| 'st_scene_image_count'
+	| 'st_scene_image'
 	| 'st_scene_mesh_copy'
 	| 'st_scene_node_info'
 	| 'st_scene_node_name'
