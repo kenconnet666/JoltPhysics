@@ -37,6 +37,10 @@ SN_API int32_t sn_transforms_set_parent(int32_t transforms, int32_t slot, int32_
 SN_API int32_t sn_transforms_set_link(int32_t transforms, int32_t slot, int32_t link_slot, const float *matrix);
 /// 按父节点（有链接时是链接的槽位）在前的顺序算出所有槽位的世界矩阵：world = parent.world * T * R * S。
 SN_API int32_t sn_transforms_update(int32_t transforms);
+/// 上一次 sn_transforms_update 时世界矩阵变了的槽位（和再上一次比；那之间分配、释放、sn_transforms_update_slot 改过的也算，
+/// 每个槽位只出现一次）。out_slots 指向存储里的数组，下一次 sn_transforms_update 之前有效；返回个数。渲染、天空遮挡这些
+/// 按它决定传哪些、要不要重画（没变就不做）。
+SN_API int32_t sn_transforms_changed(int32_t transforms, const int32_t **out_slots);
 /// 只算 slot 和它的祖先的世界矩阵（Stride 的 TransformComponent.UpdateWorldMatrix）：脚本在这一帧的 sn_transforms_update
 /// 之前要用世界位姿时调用。
 SN_API int32_t sn_transforms_update_slot(int32_t transforms, int32_t slot);

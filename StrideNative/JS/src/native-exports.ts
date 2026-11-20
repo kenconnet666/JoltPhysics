@@ -420,6 +420,13 @@ export interface NativeExports {
 	 * C: Runtime.h
 	 */
 	_sn_transforms_alloc(transforms: number, outSlots: number, count: number): number;
+	/**
+	 * 上一次 sn_transforms_update 时世界矩阵变了的槽位（和再上一次比；那之间分配、释放、sn_transforms_update_slot 改过的也算，
+	 * 每个槽位只出现一次）。out_slots 指向存储里的数组，下一次 sn_transforms_update 之前有效；返回个数。渲染、天空遮挡这些
+	 * 按它决定传哪些、要不要重画（没变就不做）。
+	 * C: Runtime.h
+	 */
+	_sn_transforms_changed(transforms: number, outSlots: number): number;
 	/** C: Runtime.h */
 	_sn_transforms_columns(transforms: number, outColumns: number): number;
 	/**
@@ -748,6 +755,7 @@ export type RuntimeExport =
 	| 'sn_transforms_set_parent'
 	| 'sn_transforms_set_link'
 	| 'sn_transforms_update'
+	| 'sn_transforms_changed'
 	| 'sn_transforms_update_slot'
 	| 'sn_transforms_slot_limit'
 	| 'sn_transforms_cull'

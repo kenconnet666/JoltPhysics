@@ -33,6 +33,9 @@ namespace StrideNative
 		/// 只算 inSlot 和它的祖先的世界矩阵，从根往下写
 		void UpdateSlot(int32_t inSlot);
 
+		/// 上一次 Update 时世界矩阵变了的槽位（和再上一次 Update 比；那之间分配、释放、UpdateSlot 改过的也算，不重复）。
+		const std::vector<int32_t> &Changed() const { return mPublished; }
+
 		/// 本地矩阵 T * R * S。
 		JPH::Mat44 LocalMatrix(int32_t inSlot) const;
 		/// 沿父链现算世界矩阵，不依赖上一次 Update（加物体时用：槽位可能刚设好位姿）。
@@ -53,6 +56,10 @@ namespace StrideNative
 		/// 父的世界矩阵乘到本地矩阵前面的那部分：有链接时是 链接槽位的 world * 链接矩阵，没有父时是单位矩阵
 		JPH::Mat44				ParentWorld(int32_t inSlot) const;
 		void					RebuildOrder();
+		/// 写世界矩阵：和原来的不一样才写，并记下这个槽位变了
+		void					StoreWorld(int32_t inSlot, JPH::Mat44Arg inWorld);
+		/// 记下槽位变了（这一轮还没记过才加进列表）
+		void					MarkChanged(int32_t inSlot);
 
 		uint32_t				mCapacity;
 		std::vector<uint8_t>	mAlive;
@@ -67,6 +74,10 @@ namespace StrideNative
 		std::vector<int32_t>	mChain;
 		std::vector<uint32_t>	mBuckets;
 		bool					mOrderDirty = false;
+		std::vector<uint32_t>	mChangedStamp;		///< 槽位上一次记进变了的列表时的轮次（去重用）
+		uint32_t				mStamp = 1;			///< 这一轮（下一次 Update 之前）的轮次
+		std::vector<int32_t>	mChanged;			///< 这一轮变了的槽位
+		std::vector<int32_t>	mPublished;			///< 上一次 Update 交出去的
 	};
 
 	/// 按句柄找变换存储，找不到时记下错误（提到 inWhat）。别的模块（物理）必须通过它找：句柄表是模板里的静态变量，

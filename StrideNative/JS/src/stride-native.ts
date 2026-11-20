@@ -986,6 +986,16 @@ export class TransformStore extends NativeObject<StrideNative> {
 		this.native.check(this.native.module._sn_transforms_update(this[HANDLE]), 'sn_transforms_update');
 	}
 
+	/**
+	 * 上一次 update() 时世界矩阵变了的槽位（和再上一次 update() 比；那之间分配、释放、updateSlot 改过的也算，每个只出现一次）。
+	 * 返回模块内存上的视图，下一次 update() 或内存增长之前有效，要留着就拷一份。渲染、天空遮挡按它决定传哪些、要不要重画。
+	 */
+	changedSlots(): Int32Array {
+		const n = this.native;
+		const count = n.check(n.module._sn_transforms_changed(this[HANDLE], this.#scratch), 'sn_transforms_changed');
+		return n.i32(n.u32(this.#scratch, 1)[0]!, count);
+	}
+
 	/** 只算 slot 和它的祖先的世界矩阵（Stride 的 UpdateWorldMatrix）：这一帧的 update() 之前要用世界位姿时调用。 */
 	updateSlot(slot: TransformSlot): void {
 		this.native.check(this.native.module._sn_transforms_update_slot(this[HANDLE], slot), 'sn_transforms_update_slot');

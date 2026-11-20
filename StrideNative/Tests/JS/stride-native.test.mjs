@@ -606,6 +606,32 @@ describe('stride-native and stride-tools', () => {
 		assert.equal(transforms.allocate(5).length, 5);
 	});
 
+	it('reports the slots whose world matrix changed in the last update', () => {
+		using transforms = native.createTransforms(8);
+		const [still, mover, child, spare] = transforms.allocate(4);
+		const changed = () => [...transforms.changedSlots()].sort((a, b) => a - b);
+		transforms.setParent(child, mover);
+		transforms.position[mover * 3] = 1;
+		transforms.update();
+		// 刚分配的都算变了
+		assert.deepEqual(changed(), [still, mover, child, spare]);
+		transforms.update();
+		assert.deepEqual(changed(), []);
+		// 动父节点，子节点跟着变；updateSlot 先算过的，下一次 update 照样报（每个只一次）
+		transforms.position[mover * 3] = 2;
+		transforms.updateSlot(child);
+		transforms.update();
+		assert.deepEqual(changed(), [mover, child]);
+		// 写一样的值不算变
+		transforms.position[mover * 3] = 2;
+		transforms.update();
+		assert.deepEqual(changed(), []);
+		// 释放的槽位也报
+		transforms.free(spare);
+		transforms.update();
+		assert.deepEqual(changed(), [spare]);
+	});
+
 	it('links a slot to another slot through a matrix (Stride TransformLink, ModelNodeLink), ignoring its parent', () => {
 		using transforms = native.createTransforms(8);
 		const [model, hand, other] = transforms.allocate(3);

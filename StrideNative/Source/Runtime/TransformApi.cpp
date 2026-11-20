@@ -20,7 +20,8 @@ namespace StrideNative
 		mAlive(inCapacity + 1, 0),
 		mChildCount(inCapacity + 1, 0),
 		mLinkSlot(inCapacity + 1, 0),
-		mLinkMatrix(size_t(inCapacity + 1) * 16, 0.0f)
+		mLinkMatrix(size_t(inCapacity + 1) * 16, 0.0f),
+		mChangedStamp(inCapacity + 1, 0)
 	{
 		for (uint32_t slot = 0; slot <= inCapacity; ++slot)
 		{
@@ -53,6 +54,7 @@ namespace StrideNative
 			mLinkSlot[slot] = 0;
 			Mat44::sIdentity().StoreFloat4x4(reinterpret_cast<Float4 *>(&mWorld[slot * 16]));
 			mAlive[slot] = 1;
+			MarkChanged(slot);
 			outSlots[i] = slot;
 		}
 		mOrderDirty |= inCount > 0;
@@ -91,6 +93,7 @@ namespace StrideNative
 				for (uint32_t i = 0; i < inCount; ++i)
 				{
 					mAlive[inSlots[i]] = 0;
+					MarkChanged(inSlots[i]);
 					mParent[inSlots[i]] = 0;
 					mLinkSlot[inSlots[i]] = 0;
 					mFreeSlots.push_back(inSlots[i]);
@@ -271,10 +274,28 @@ namespace StrideNative
 		if (mOrderDirty)
 			RebuildOrder();
 		for (int32_t slot : mOrder)
-		{
-			Mat44 world = EffectiveParent(slot) != 0 ? ParentWorld(slot) * LocalMatrix(slot) : LocalMatrix(slot);
-			world.StoreFloat4x4(reinterpret_cast<Float4 *>(&mWorld[slot * 16]));
-		}
+			StoreWorld(slot, EffectiveParent(slot) != 0 ? ParentWorld(slot) * LocalMatrix(slot) : LocalMatrix(slot));
+		// 这一轮变了的交出去，开始下一轮
+		mPublished.swap(mChanged);
+		mChanged.clear();
+		++mStamp;
+	}
+
+	void TransformStore::StoreWorld(int32_t inSlot, Mat44Arg inWorld)
+	{
+		Float4 *stored = reinterpret_cast<Float4 *>(&mWorld[inSlot * 16]);
+		if (Mat44::sLoadFloat4x4(stored) == inWorld)
+			return;
+		inWorld.StoreFloat4x4(stored);
+		MarkChanged(inSlot);
+	}
+
+	void TransformStore::MarkChanged(int32_t inSlot)
+	{
+		if (mChangedStamp[inSlot] == mStamp)
+			return;
+		mChangedStamp[inSlot] = mStamp;
+		mChanged.push_back(inSlot);
 	}
 
 	void TransformStore::UpdateSlot(int32_t inSlot)
@@ -283,10 +304,7 @@ namespace StrideNative
 		for (int32_t slot = inSlot; slot != 0; slot = EffectiveParent(slot))
 			chain.push_back(slot);
 		for (auto it = chain.rbegin(); it != chain.rend(); ++it)
-		{
-			Mat44 world = EffectiveParent(*it) != 0 ? ParentWorld(*it) * LocalMatrix(*it) : LocalMatrix(*it);
-			world.StoreFloat4x4(reinterpret_cast<Float4 *>(&mWorld[*it * 16]));
-		}
+			StoreWorld(*it, EffectiveParent(*it) != 0 ? ParentWorld(*it) * LocalMatrix(*it) : LocalMatrix(*it));
 	}
 
 	void TransformStore::SetWorldPose(int32_t inSlot, Vec3Arg inPosition, QuatArg inRotation)
@@ -395,6 +413,17 @@ SN_API int32_t sn_transforms_slot_limit(int32_t transforms)
 {
 	TransformStore *store = GetStore(transforms);
 	return store != nullptr ? int32_t(store->SlotLimit()) : SN_ERROR_INVALID_HANDLE;
+}
+
+SN_API int32_t sn_transforms_changed(int32_t transforms, const int32_t **out_slots)
+{
+	TransformStore *store = GetStore(transforms);
+	if (store == nullptr)
+		return SN_ERROR_INVALID_HANDLE;
+	if (out_slots == nullptr)
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "out_slots is required");
+	*out_slots = store->Changed().data();
+	return int32_t(store->Changed().size());
 }
 
 SN_API int32_t sn_transforms_update_slot(int32_t transforms, int32_t slot)
