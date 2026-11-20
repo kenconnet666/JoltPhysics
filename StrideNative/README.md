@@ -87,7 +87,7 @@ Third-party plugins are side modules too; see [Plugins/README.md](Plugins/README
 
 ## Build and test
 
-Requirements: emsdk 6.0.8 at `C:\Users\Administrator\emsdk`, Node 22+, pnpm 10; CMake and Ninja
+Requirements: emsdk 6.0.8 at `$env:EMSDK` (default `~\emsdk`), Node 22+, pnpm 10; CMake and Ninja
 are taken from CLion.
 
 ```powershell

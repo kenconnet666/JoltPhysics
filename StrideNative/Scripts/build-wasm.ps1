@@ -8,7 +8,7 @@
 param(
     [switch] $SourceDebug,
     [switch] $SkipTests,
-    [string] $Emsdk = 'C:\Users\Administrator\emsdk'
+    [string] $Emsdk = ($env:EMSDK ?? (Join-Path $HOME 'emsdk'))
 )
 
 $ErrorActionPreference = 'Stop'
