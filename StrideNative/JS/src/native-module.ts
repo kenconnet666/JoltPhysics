@@ -62,7 +62,7 @@ export type CoreModule<E extends string = never> = {
 export type CoreFactory<E extends string> = (options: Record<string, unknown>) => Promise<CoreModule<E>>;
 
 export interface ModuleOptions {
-	/** 任务系统的工作线程数；默认 navigator.hardwareConcurrency - 1（至少 1）。 */
+	/** 任务系统的工作线程数；默认 navigator.hardwareConcurrency - 1，至少 1、最多 8（见 defaultWorkerThreads）。 */
 	workerThreads?: number;
 	/**
 	 * 用调试版的运行时模块（stride-native-core-debug）：打开 Jolt 的断言（失败时 console.error 带 C++ 调用栈）和
@@ -111,10 +111,17 @@ const TASK_DONE = 1;
 
 const isNode = typeof process !== 'undefined' && process.versions?.node != null;
 
-/** 默认开的工作线程数：每个核一个，减去当前线程。 */
+/**
+ * 默认工作线程数的上限，和 C 侧 sn_init 的默认值一致。Tests/Bench/threads.mjs 在 18 核 36 线程的机器上量过：物理步进到
+ * 8～12 个线程就不再变快，导航网格这类并行任务 8 个最快，再多只是多占 CPU（35 个时占着 24 个核、反而慢一倍）；
+ * 浏览器里每个线程启动时还要把核心和侧模块各实例化一遍。要更多线程的游戏自己传 workerThreads。
+ */
+export const MAX_DEFAULT_WORKER_THREADS = 8;
+
+/** 默认开的工作线程数：每个核一个，减去当前线程，最多 MAX_DEFAULT_WORKER_THREADS 个。 */
 export function defaultWorkerThreads(): number {
 	const cores = globalThis.navigator?.hardwareConcurrency ?? 4;
-	return Math.max(1, cores - 1);
+	return Math.min(MAX_DEFAULT_WORKER_THREADS, Math.max(1, cores - 1));
 }
 
 /** 模块自己的 wasm：Emscripten 请求它时用的文件名，和打包器改写过的地址。 */

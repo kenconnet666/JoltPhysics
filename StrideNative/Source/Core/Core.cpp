@@ -12,6 +12,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <memory>
+#include <thread>
 #include <vector>
 
 namespace
@@ -19,6 +20,8 @@ namespace
 	// Physics uses one barrier per step; background tasks and ParallelFor use the rest.
 	constexpr JPH::uint cMaxJobs = 4096;
 	constexpr JPH::uint cMaxBarriers = 64;
+	/// sn_init 不给线程数时最多开几个工作线程（和 JS 的 MAX_DEFAULT_WORKER_THREADS 一致）
+	constexpr int32_t cMaxDefaultWorkerThreads = 8;
 	// 固定块够一般的世界用；物体多（大容量的物理世界一步要上百 MB）时超出的部分退回 malloc，不再 abort
 	constexpr JPH::uint cTempAllocatorSize = 32 * 1024 * 1024;
 
@@ -120,6 +123,10 @@ SN_API int32_t sn_init(int32_t worker_threads)
 	JPH_IF_ENABLE_ASSERTS(JPH::AssertFailed = AssertFailedImpl;)
 	// Jolt 的类型（形状、约束……）由物理模块在第一次创建世界时注册，见 PhysicsApi.cpp：
 	// 物理是单独的侧模块（wasm 里），核心不能依赖它
+
+	// 默认值和 JS 的 defaultWorkerThreads 一致：核多了以后再加线程只多占 CPU、不再变快（见 Tests/Bench/threads.mjs）
+	if (worker_threads < 0)
+		worker_threads = std::clamp(int32_t(std::thread::hardware_concurrency()) - 1, 1, cMaxDefaultWorkerThreads);
 
 	sTempAllocator = std::make_unique<JPH::TempAllocatorImplWithMallocFallback>(cTempAllocatorSize);
 	sJobSystem = std::make_unique<JPH::JobSystemThreadPool>(cMaxJobs, cMaxBarriers, worker_threads);

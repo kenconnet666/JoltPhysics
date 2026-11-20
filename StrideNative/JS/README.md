@@ -10,7 +10,7 @@ fonts, navmesh baking).
 ```ts
 import { createStrideNative } from '@stride-ts/native';
 
-const native = await createStrideNative();             // workers: hardwareConcurrency - 1
+const native = await createStrideNative();             // workers: hardwareConcurrency - 1, at most 8
 using transforms = native.createTransforms(1024);
 using world = native.createPhysicsWorld(1024, { transforms });
 ```

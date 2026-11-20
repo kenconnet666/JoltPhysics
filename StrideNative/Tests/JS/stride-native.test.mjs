@@ -8,7 +8,7 @@ import path from 'node:path';
 import { crc32, deflateSync } from 'node:zlib';
 
 const dist = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'JS', 'dist');
-const { createStrideNative, NativeError, AnimationBatch } = await import(pathToFileURL(path.join(dist, 'stride-native.js')));
+const { createStrideNative, NativeError, AnimationBatch, defaultWorkerThreads } = await import(pathToFileURL(path.join(dist, 'stride-native.js')));
 const { createStrideTools } = await import(pathToFileURL(path.join(dist, 'stride-tools.js')));
 const [{ physics }, { texture }, { navigation }] = await Promise.all(['physics', 'texture', 'navigation'].map((name) => import(pathToFileURL(path.join(dist, `${name}.js`)))));
 const features = [physics, texture, navigation];
@@ -69,6 +69,10 @@ describe('stride-native and stride-tools', () => {
 	it('starts the requested worker threads', () => {
 		assert.equal(native.workerThreadCount, 4);
 		assert.ok(native.buffer instanceof SharedArrayBuffer);
+	});
+
+	it('defaults to one worker per core minus the caller, at most 8', () => {
+		assert.equal(defaultWorkerThreads(), Math.min(8, Math.max(1, navigator.hardwareConcurrency - 1)));
 	});
 
 	it('loads the debug runtime (Jolt asserts, Emscripten checks) and steps physics with it', async () => {

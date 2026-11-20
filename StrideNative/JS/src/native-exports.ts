@@ -120,7 +120,7 @@ export interface NativeExports {
 	/** C: Core.h */
 	_sn_free(ptr: number): void;
 	/**
-	 * Starts the shared job system. worker_threads < 0 uses (hardware threads - 1); 0 is rejected because
+	 * Starts the shared job system. worker_threads < 0 uses (hardware threads - 1), at most 8; 0 is rejected because
 	 * tasks only run on worker threads. Call once.
 	 * C: Core.h
 	 */

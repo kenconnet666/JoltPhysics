@@ -143,7 +143,7 @@ import { createStrideNative } from '@stride-ts/native';
 import { navigation } from '@stride-ts/native/navigation';
 import { texture } from '@stride-ts/native/texture';
 
-// workers: hardwareConcurrency - 1; only the listed side modules are downloaded (and bundled)
+// workers: hardwareConcurrency - 1, at most 8; only the listed side modules are downloaded (and bundled)
 const native = await createStrideNative({ features: [texture, navigation] });
 const texture = await native.transcodeKtx2(ktx2Bytes, 'bc7');
 using navMesh = native.loadNavMesh(bakedBytes);        // or navMesh.destroy()

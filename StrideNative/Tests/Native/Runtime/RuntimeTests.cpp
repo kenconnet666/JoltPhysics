@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstring>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace
@@ -73,7 +74,9 @@ TEST_CASE("Values: dates, date-times and decimals match the stride-ts layouts")
 TEST_CASE("Init reports the worker count")
 {
 	ModuleScope module;
-	CHECK(sn_worker_thread_count() >= 0);
+	// 默认（-1）是每个核一个减去调用线程，至少 1、最多 8
+	int32_t expected = std::clamp(int32_t(std::thread::hardware_concurrency()) - 1, 1, 8);
+	CHECK(sn_worker_thread_count() == expected);
 	CHECK(sn_init(-1) == SN_ERROR_FAILED);
 }
 

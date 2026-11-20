@@ -14,10 +14,9 @@ set(STRIDE_NATIVE_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 set(THIRD_PARTY ${STRIDE_NATIVE_ROOT}/ThirdParty)
 set(REPO_ROOT ${STRIDE_NATIVE_ROOT}/..)
 
-# Initial worker pool for wasm; the JS loader passes the real value through Module.workerPoolSize.
+# wasm 的初始和最大内存（工作线程池的大小由 JS 加载器经 Module.workerPoolSize 给）
 set(STRIDE_NATIVE_INITIAL_MEMORY 67108864 CACHE STRING "Initial wasm memory in bytes")
 set(STRIDE_NATIVE_MAXIMUM_MEMORY 2147483648 CACHE STRING "Maximum wasm memory in bytes")
-
 if (EMSCRIPTEN)
 	# Every object linked into a shared-memory module must be built with atomics, so -pthread has to
 	# reach Jolt and all third-party code too. Set before add_subdirectory so Jolt inherits it.
