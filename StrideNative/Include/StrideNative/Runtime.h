@@ -105,6 +105,14 @@ typedef struct sn_terrain_noise
 enum
 {
 	SN_TERRAIN_FEATURE_FLATTEN = 0,	///< 多边形里压到 height（边外 falloff 米内过渡）
+	SN_TERRAIN_FEATURE_PATH = 1,	///< 折线（道路、河道）两侧 width / 2 米内压到折线的高度加 height（每个点的高度在 point_heights 里），再往外 falloff 米内过渡
+};
+
+enum
+{
+	SN_TERRAIN_PATH_CONFORM = 0,	///< 高了削、低了填
+	SN_TERRAIN_PATH_CARVE = 1,		///< 只削（路堑、河道）
+	SN_TERRAIN_PATH_FILL = 2,		///< 只填（路堤）
 };
 
 /// 矢量的地物：点在 points 表里（每个 x、z 两个 double），first_point 起 point_count 个。
@@ -113,9 +121,11 @@ typedef struct sn_terrain_feature
 	uint32_t type;					///< SN_TERRAIN_FEATURE_*
 	uint32_t first_point;
 	uint32_t point_count;
-	float height;					///< 目标高度（米）
+	float height;					///< 目标高度（米）；折线是加在每个点的高度上的偏移
 	float falloff;					///< 过渡的宽度（米）
 	float strength;					///< 0..1
+	float width;					///< 折线：压平的宽度（米，以折线为中心）
+	uint32_t mode;					///< 折线：SN_TERRAIN_PATH_*
 } sn_terrain_feature;
 
 enum
@@ -138,7 +148,8 @@ typedef struct sn_terrain_stroke
 } sn_terrain_stroke;
 
 /// 按描述建一个地形求值器（拷一份描述），返回句柄。
-SN_API int32_t sn_terrain_create(const sn_terrain_noise *noise, const sn_terrain_feature *features, uint32_t feature_count, const double *points, uint32_t point_count, const sn_terrain_stroke *strokes, uint32_t stroke_count);
+/// point_heights：每个点的高度（和 points 一样多，只有折线用；没有折线时可以是空）。
+SN_API int32_t sn_terrain_create(const sn_terrain_noise *noise, const sn_terrain_feature *features, uint32_t feature_count, const double *points, const float *point_heights, uint32_t point_count, const sn_terrain_stroke *strokes, uint32_t stroke_count);
 SN_API void sn_terrain_destroy(int32_t terrain);
 /// 一点的高度（同步，玩法、编辑器摆东西用）。
 SN_API float sn_terrain_height(int32_t terrain, double x, double z);

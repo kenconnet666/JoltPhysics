@@ -197,7 +197,10 @@ export class StrideNative extends NativeModule<RuntimeExport> {
 	/** 按描述建地形求值器（见 TerrainDescription）：同样的描述在任何机器上求出逐位相同的高度。 */
 	createTerrain(description: TerrainDescription): TerrainEvaluator {
 		const features = description.features ?? [], strokes = description.strokes ?? [];
-		const points = new Float64Array(features.reduce((sum, feature) => sum + feature.points.length * 2, 0));
+		const pointCount = features.reduce((sum, feature) => sum + feature.points.length, 0);
+		const points = new Float64Array(pointCount * 2);
+		// 每个点的高度：只有折线用（flatten 的点是 0）
+		const heights = new Float32Array(pointCount);
 		const featureBytes = new ArrayBuffer(Math.max(1, features.length) * TERRAIN_FEATURE_SIZE);
 		let first = 0;
 		features.forEach((feature, i) => {
@@ -205,12 +208,15 @@ export class StrideNative extends NativeModule<RuntimeExport> {
 			view.setUint32(0, enumCode(TERRAIN_FEATURES, feature.type, `features[${i}].type`), true);
 			view.setUint32(4, first, true);
 			view.setUint32(8, feature.points.length, true);
-			view.setFloat32(12, feature.height, true);
+			view.setFloat32(12, feature.type === 'path' ? feature.offset ?? 0 : feature.height, true);
 			view.setFloat32(16, feature.falloff ?? 0, true);
 			view.setFloat32(20, feature.strength ?? 1, true);
-			for (const [x, z] of feature.points) {
-				points[first * 2] = x;
-				points[first * 2 + 1] = z;
+			view.setFloat32(24, feature.type === 'path' ? feature.width : 0, true);
+			view.setUint32(28, feature.type === 'path' ? enumCode(TERRAIN_PATH_MODES, feature.mode ?? 'conform', `features[${i}].mode`) : 0, true);
+			for (const point of feature.points) {
+				points[first * 2] = point[0];
+				points[first * 2 + 1] = feature.type === 'path' ? (point as readonly [number, number, number])[2] : point[1];
+				if (feature.type === 'path') heights[first] = (point as readonly [number, number, number])[1];
 				first++;
 			}
 		});
@@ -236,8 +242,8 @@ export class StrideNative extends NativeModule<RuntimeExport> {
 		noise.setFloat32(52, g.detail, true);
 		noise.setFloat32(56, g.valley, true);
 		noise.setFloat32(60, g.peak, true);
-		return this.withArrays([new Uint8Array(noise.buffer), new Uint8Array(featureBytes), points.length ? points : null, new Uint8Array(strokeBytes)], (np, fp, pp, sp) =>
-			new TerrainEvaluator(this, this.check(this.module._sn_terrain_create(np, fp, features.length, pp, points.length / 2, sp, strokes.length), 'sn_terrain_create')));
+		return this.withArrays([new Uint8Array(noise.buffer), new Uint8Array(featureBytes), points.length ? points : null, heights.length ? heights : null, new Uint8Array(strokeBytes)], (np, fp, pp, hp, sp) =>
+			new TerrainEvaluator(this, this.check(this.module._sn_terrain_create(np, fp, features.length, pp, hp, pointCount, sp, strokes.length), 'sn_terrain_create')));
 	}
 }
 
@@ -1550,15 +1556,29 @@ export const TERRAIN_NOISE_DEFAULTS: Readonly<Required<Omit<TerrainNoise, 'gulli
 	seed: 0, octaves: 6, scale: 1000, height: 200, offset: 0, lacunarity: 2, gain: 0.5, ridged: 0, warp: 0, erosion: 0,
 };
 
-/** 矢量的地物：flatten 是多边形（x、z，米）里压到 height，边外 falloff 米内过渡。 */
-export interface TerrainFeature {
-	type: 'flatten';
-	points: readonly (readonly [number, number])[];
-	height: number;
-	falloff?: number;
-	/** 0..1，默认 1。 */
-	strength?: number;
-}
+/**
+ * 矢量的地物，按顺序作用：flatten 是多边形（x、z，米）里压到 height，边外 falloff 米内过渡；path 是折线（道路、河道：每个点
+ * x、y、z，y 是那里的高度），两侧 width / 2 米内压到折线的高度加 offset，再往外 falloff 米内过渡，mode 是都做（conform）、
+ * 只削（carve）还是只填（fill）。
+ */
+export type TerrainFeature =
+	| {
+		type: 'flatten';
+		points: readonly (readonly [number, number])[];
+		height: number;
+		falloff?: number;
+		/** 0..1，默认 1。 */
+		strength?: number;
+	}
+	| {
+		type: 'path';
+		points: readonly (readonly [number, number, number])[];
+		width: number;
+		offset?: number;
+		falloff?: number;
+		strength?: number;
+		mode?: 'conform' | 'carve' | 'fill';
+	};
 
 /** 雕刻的一笔：抬高、压低的 strength 是米，压平、磨平是 0..1；按顺序作用。 */
 export interface TerrainStroke {
@@ -1579,9 +1599,10 @@ export interface TerrainDescription {
 }
 
 const TERRAIN_NOISE_SIZE = 64;
-const TERRAIN_FEATURE_SIZE = 24;
+const TERRAIN_FEATURE_SIZE = 32;
 const TERRAIN_STROKE_SIZE = 32;
-const TERRAIN_FEATURES: Record<TerrainFeature['type'], number> = { flatten: 0 };
+const TERRAIN_FEATURES: Record<TerrainFeature['type'], number> = { flatten: 0, path: 1 };
+const TERRAIN_PATH_MODES: Record<NonNullable<Extract<TerrainFeature, { type: 'path' }>['mode']>, number> = { conform: 0, carve: 1, fill: 2 };
 const TERRAIN_STROKES: Record<TerrainStroke['op'], number> = { raise: 0, lower: 1, flatten: 2, smooth: 3 };
 
 /** 原生的地形求值器（StrideNative.createTerrain）：坐标是双精度，按需求一点或一页的高度。 */

@@ -769,6 +769,32 @@ describe('stride-native and stride-tools', () => {
 		assert.throws(() => native.createTerrain({ noise: { gullies: { strength: 10, scale: 0 } } }), /gullies need/);
 	});
 
+	it('flattens terrain along path features (roads): conform, carve, fill, interpolated heights, long paths', () => {
+		const noise = { seed: 5, octaves: 6, scale: 600, height: 80 };
+		using plain = native.createTerrain({ noise });
+		// 一条从 (0, 10, 0) 爬到 (200, 30, 0) 的路，宽 8 米、往外 10 米过渡
+		const road = { type: 'path', points: [[0, 10, 0], [100, 20, 0], [200, 30, 0]], width: 8, falloff: 10 };
+		using conform = native.createTerrain({ noise, features: [road] });
+		// 路中间、路面边上逐位是路的高度（按线段插值）；过渡带外是原来的地
+		assert.equal(conform.height(50, 0), 15);
+		assert.equal(conform.height(150, 3.9), 25);
+		assert.equal(conform.height(150, 30), plain.height(150, 30));
+		const mid = conform.height(150, 9), before = plain.height(150, 9);
+		assert.ok(Math.min(before, 25) - 1e-3 <= mid && mid <= Math.max(before, 25) + 1e-3, 'the falloff blends between the ground and the road');
+		// 只削：原来低于路的地方不动；只填：原来高于路的地方不动
+		using carve = native.createTerrain({ noise, features: [{ ...road, mode: 'carve' }] });
+		using fill = native.createTerrain({ noise, features: [{ ...road, mode: 'fill' }] });
+		for (let x = 5; x < 200; x += 7) {
+			const ground = plain.height(x, 0);
+			assert.ok(carve.height(x, 0) <= ground + 1e-4 && fill.height(x, 0) >= ground - 1e-4);
+		}
+		// 长路（2000 个点、20 公里）：每个点按格子只看附近的线段
+		const long = Array.from({ length: 2000 }, (_, i) => [i * 10, 5 + Math.sin(i / 50) * 3, Math.sin(i / 30) * 40]);
+		using winding = native.createTerrain({ noise, features: [{ type: 'path', points: long, width: 10, falloff: 5 }] });
+		assert.equal(winding.height(long[1234][0], long[1234][2]), Math.fround(long[1234][1]));
+		assert.throws(() => native.createTerrain({ noise, features: [{ type: 'path', points: [[0, 0, 0], [1, 0, 0]], width: 0 }] }), /positive width/);
+	});
+
 	it('collides with a height field (terrain tile) on a static body, releases and reuses shape handles', () => {
 		using world = native.createPhysicsWorld(8);
 		// 33 × 33 个高度、格距 2 米：沿 x 每米升 0.5 米的斜坡

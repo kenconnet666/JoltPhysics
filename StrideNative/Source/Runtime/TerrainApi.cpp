@@ -10,6 +10,7 @@
 #include <cmath>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace StrideNative
@@ -142,7 +143,16 @@ namespace StrideNative
 			sn_terrain_feature desc;
 			std::vector<Vec2d> points;
 			double minX, minZ, maxX, maxZ;	///< 包围盒加上过渡宽度，盒外不用算距离
+			/// 折线：每个点的高度；按格子分好的线段（一个格子里列着够得着它的线段，长路不用每个点都比所有线段）
+			std::vector<float> heights;
+			double cellSize = 0.0;
+			std::unordered_map<uint64_t, std::vector<uint32_t>> cells;
 		};
+
+		uint64_t CellKey(int64_t inX, int64_t inZ)
+		{
+			return (uint64_t(uint32_t(inX)) << 32) | uint32_t(inZ);
+		}
 
 		struct Stroke
 		{
@@ -197,7 +207,7 @@ namespace StrideNative
 			{
 				float h = Gullies(inX, inZ, Base(inX, inZ, noise.octaves));
 				for (const Feature &feature : features)
-					h = ApplyFeature(feature, inX, inZ, h);
+					h = feature.desc.type == SN_TERRAIN_FEATURE_PATH ? ApplyPath(feature, inX, inZ, h) : ApplyFeature(feature, inX, inZ, h);
 				for (const Stroke &stroke : strokes)
 					h = ApplyStroke(stroke.desc, inX, inZ, h);
 				return h;
@@ -285,6 +295,47 @@ namespace StrideNative
 				return weight >= 1.0f ? d.height : inHeight + (d.height - inHeight) * weight;
 			}
 
+			/// 折线：离它最近的线段上的高度（加偏移）是目标，宽度以内全压、往外 falloff 米内过渡；按模式只削、只填或都做。
+			static float ApplyPath(const Feature &inPath, double inX, double inZ, float inHeight)
+			{
+				if (inX < inPath.minX || inX > inPath.maxX || inZ < inPath.minZ || inZ > inPath.maxZ)
+					return inHeight;
+				auto cell = inPath.cells.find(CellKey(int64_t(std::floor(inX / inPath.cellSize)), int64_t(std::floor(inZ / inPath.cellSize))));
+				if (cell == inPath.cells.end())
+					return inHeight;
+				const sn_terrain_feature &d = inPath.desc;
+				const double half = 0.5 * d.width, reach = half + std::max(0.0f, d.falloff);
+				double best = reach * reach;
+				float target = 0.0f;
+				bool found = false;
+				for (uint32_t s : cell->second)
+				{
+					const Vec2d &a = inPath.points[s], &b = inPath.points[s + 1];
+					double ex = b.x - a.x, ez = b.z - a.z, wx = inX - a.x, wz = inZ - a.z;
+					double len = ex * ex + ez * ez;
+					double t = len > 0.0 ? std::clamp((wx * ex + wz * ez) / len, 0.0, 1.0) : 0.0;
+					double dx = wx - ex * t, dz = wz - ez * t, d2 = dx * dx + dz * dz;
+					if (d2 < best)
+					{
+						best = d2;
+						target = inPath.heights[s] + float(t) * (inPath.heights[s + 1] - inPath.heights[s]);
+						found = true;
+					}
+				}
+				if (!found)
+					return inHeight;
+				float distance = float(std::max(0.0, std::sqrt(best) - half));
+				float weight = d.falloff > 0.0f ? 1.0f - SmoothStep(0.0f, d.falloff, distance) : (distance <= 0.0f ? 1.0f : 0.0f);
+				weight *= d.strength;
+				target += d.height;
+				float h = weight >= 1.0f ? target : inHeight + (target - inHeight) * weight;
+				if (d.mode == SN_TERRAIN_PATH_CARVE)
+					return std::min(inHeight, h);
+				if (d.mode == SN_TERRAIN_PATH_FILL)
+					return std::max(inHeight, h);
+				return h;
+			}
+
 			float ApplyStroke(const sn_terrain_stroke &inStroke, double inX, double inZ, float inHeight) const
 			{
 				double dx = inX - inStroke.x, dz = inZ - inStroke.z;
@@ -325,7 +376,7 @@ namespace StrideNative
 
 using namespace StrideNative;
 
-SN_API int32_t sn_terrain_create(const sn_terrain_noise *noise, const sn_terrain_feature *features, uint32_t feature_count, const double *points, uint32_t point_count, const sn_terrain_stroke *strokes, uint32_t stroke_count)
+SN_API int32_t sn_terrain_create(const sn_terrain_noise *noise, const sn_terrain_feature *features, uint32_t feature_count, const double *points, const float *point_heights, uint32_t point_count, const sn_terrain_stroke *strokes, uint32_t stroke_count)
 {
 	SN_REQUIRE_INIT(SN_ERROR_NOT_INITIALIZED);
 	if (noise == nullptr)
@@ -345,11 +396,15 @@ SN_API int32_t sn_terrain_create(const sn_terrain_noise *noise, const sn_terrain
 	for (uint32_t i = 0; i < feature_count; ++i)
 	{
 		const sn_terrain_feature &desc = features[i];
-		if (desc.type != SN_TERRAIN_FEATURE_FLATTEN)
+		const bool path = desc.type == SN_TERRAIN_FEATURE_PATH;
+		if (desc.type != SN_TERRAIN_FEATURE_FLATTEN && !path)
 			return SetLastError(SN_ERROR_INVALID_ARGUMENT, "sn_terrain_create: feature " + std::to_string(i) + " has unknown type " + std::to_string(desc.type));
-		if (desc.point_count < 3 || uint64_t(desc.first_point) + desc.point_count > point_count)
-			return SetLastError(SN_ERROR_INVALID_ARGUMENT, "sn_terrain_create: feature " + std::to_string(i) + " needs at least 3 points inside the point array");
-		Feature feature{ desc, {}, 1e300, 1e300, -1e300, -1e300 };
+		const uint32_t minPoints = path ? 2u : 3u;
+		if (desc.point_count < minPoints || uint64_t(desc.first_point) + desc.point_count > point_count)
+			return SetLastError(SN_ERROR_INVALID_ARGUMENT, "sn_terrain_create: feature " + std::to_string(i) + " needs at least " + std::to_string(minPoints) + " points inside the point array");
+		if (path && (point_heights == nullptr || !(desc.width > 0.0f) || desc.mode > SN_TERRAIN_PATH_FILL))
+			return SetLastError(SN_ERROR_INVALID_ARGUMENT, "sn_terrain_create: path feature " + std::to_string(i) + " needs point heights, a positive width and a known mode");
+		Feature feature{ desc, {}, 1e300, 1e300, -1e300, -1e300, {}, 0.0, {} };
 		for (uint32_t p = 0; p < desc.point_count; ++p)
 		{
 			Vec2d point{ points[(desc.first_point + p) * 2], points[(desc.first_point + p) * 2 + 1] };
@@ -359,7 +414,22 @@ SN_API int32_t sn_terrain_create(const sn_terrain_noise *noise, const sn_terrain
 			feature.maxX = std::max(feature.maxX, point.x);
 			feature.maxZ = std::max(feature.maxZ, point.z);
 		}
-		double margin = std::max(0.0f, desc.falloff);
+		double margin = std::max(0.0f, desc.falloff) + (path ? 0.5 * desc.width : 0.0);
+		if (path)
+		{
+			// 线段按格子分：格子边长取够得着的距离（半宽加过渡，至少 1 米），每段放进它的包围盒（加够得着的距离）盖到的格子
+			feature.heights.assign(point_heights + desc.first_point, point_heights + desc.first_point + desc.point_count);
+			feature.cellSize = std::max(1.0, margin);
+			for (uint32_t s = 0; s + 1 < desc.point_count; ++s)
+			{
+				const Vec2d &a = feature.points[s], &b = feature.points[s + 1];
+				int64_t x0 = int64_t(std::floor((std::min(a.x, b.x) - margin) / feature.cellSize)), x1 = int64_t(std::floor((std::max(a.x, b.x) + margin) / feature.cellSize));
+				int64_t z0 = int64_t(std::floor((std::min(a.z, b.z) - margin) / feature.cellSize)), z1 = int64_t(std::floor((std::max(a.z, b.z) + margin) / feature.cellSize));
+				for (int64_t cz = z0; cz <= z1; ++cz)
+					for (int64_t cx = x0; cx <= x1; ++cx)
+						feature.cells[CellKey(cx, cz)].push_back(s);
+			}
+		}
 		feature.minX -= margin;
 		feature.minZ -= margin;
 		feature.maxX += margin;
