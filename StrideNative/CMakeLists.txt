@@ -138,6 +138,9 @@ stride_third_party_library(sn_manifold SOURCES ${MANIFOLD_SOURCES} INCLUDES ${TH
 file(GLOB MSDFGEN_SOURCES ${THIRD_PARTY}/msdfgen/core/*.cpp)
 # Defining MSDFGEN_PUBLIC replaces the msdfgen-config.h that upstream generates at configure time.
 stride_third_party_library(sn_msdfgen SOURCES ${MSDFGEN_SOURCES} INCLUDES ${THIRD_PARTY}/msdfgen DEFINES MSDFGEN_PUBLIC=)
+# libwebp 只有解码器（编辑器导入 WebP 贴图、SOG 泼溅用）；不开线程，并行交给任务系统。
+file(GLOB WEBP_SOURCES ${THIRD_PARTY}/libwebp/src/dec/*.c ${THIRD_PARTY}/libwebp/src/dsp/*.c ${THIRD_PARTY}/libwebp/src/utils/*.c)
+stride_third_party_library(sn_webp_decoder SOURCES ${WEBP_SOURCES} INCLUDES ${THIRD_PARTY}/libwebp ${THIRD_PARTY}/libwebp/src)
 # Header-only libraries get their implementation compiled in one of our own source files.
 add_library(sn_header_only INTERFACE)
 target_include_directories(sn_header_only SYSTEM INTERFACE ${THIRD_PARTY}/cgltf ${THIRD_PARTY}/stb ${THIRD_PARTY}/v-hacd)
@@ -191,7 +194,7 @@ target_link_libraries(StrideNativeNavigation PUBLIC StrideNativeShared)
 file(GLOB_RECURSE TOOLS_SOURCES ${STRIDE_NATIVE_ROOT}/Source/Tools/*.cpp)
 stride_native_library(StrideNativeTools ${TOOLS_SOURCES})
 target_link_libraries(StrideNativeTools PUBLIC StrideNativeCore StrideNativeShared sn_meshoptimizer sn_ozz_offline sn_basis_encoder
-	sn_ufbx sn_mikktspace sn_xatlas sn_msdfgen sn_manifold sn_header_only)
+	sn_ufbx sn_mikktspace sn_xatlas sn_msdfgen sn_manifold sn_webp_decoder sn_header_only)
 
 # Objects of an OBJECT library only reach its direct consumers, so each module lists all of its own.
 # 本机的运行时测试把所有功能链接进一个程序；wasm 的运行时只有核心，功能在各自的侧模块里。

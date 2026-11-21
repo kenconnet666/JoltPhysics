@@ -7,6 +7,7 @@
 #include <basisu_enc.h>
 #include <basisu_gpu_texture.h>
 #include <stb_image.h>
+#include <webp/decode.h>
 
 #include <cstring>
 #include <string>
@@ -180,6 +181,25 @@ SN_API int32_t st_image_decode(const void *data, uint32_t size)
 			ioTask.SetResult(0, int32_t(ddsWidth));
 			ioTask.SetResult(1, int32_t(ddsHeight));
 			ioTask.SetResult(2, 4);
+			return true;
+		}
+		if (size >= 12 && ReadU32(file) == FourCC('R', 'I', 'F', 'F') && ReadU32(file + 8) == FourCC('W', 'E', 'B', 'P'))
+		{
+			// WebP（有损、无损、带透明）：stb_image 不认，用 libwebp 的解码器
+			WebPBitstreamFeatures features;
+			int webpWidth = 0, webpHeight = 0;
+			uint8_t *rgba = WebPGetFeatures(file, size, &features) == VP8_STATUS_OK ? WebPDecodeRGBA(file, size, &webpWidth, &webpHeight) : nullptr;
+			if (rgba == nullptr)
+			{
+				ioTask.Fail("image decode failed: not a valid WebP image");
+				return false;
+			}
+			uint32_t bytes = uint32_t(webpWidth) * uint32_t(webpHeight) * 4;
+			std::memcpy(ioTask.AddOutput(bytes), rgba, bytes);
+			WebPFree(rgba);
+			ioTask.SetResult(0, webpWidth);
+			ioTask.SetResult(1, webpHeight);
+			ioTask.SetResult(2, features.has_alpha ? 4 : 3);
 			return true;
 		}
 		int width = 0, height = 0, channels = 0;

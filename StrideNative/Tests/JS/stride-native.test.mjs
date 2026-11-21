@@ -804,6 +804,10 @@ describe('stride-native and stride-tools', () => {
 		assert.deepEqual([decoded.width, decoded.height, decoded.channels], [size, size, 4]);
 		assert.deepEqual(decoded.pixels, rgba);
 		await assert.rejects(tools.decodeImage(new Uint8Array(8)), /image decode failed/);
+		// 1 × 1 的无损 WebP（stb_image 不认，走 libwebp）
+		const webp = await tools.decodeImage(Uint8Array.from(atob('UklGRhoAAABXRUJQVlA4TA0AAAAvAAAAEAcQERGIiP4HAA=='), (c) => c.charCodeAt(0)));
+		assert.deepEqual([webp.width, webp.height, webp.pixels.length], [1, 1, 4]);
+		await assert.rejects(tools.decodeImage(new TextEncoder().encode('RIFF    WEBPVP8 ')), /not a valid WebP/);
 		const ktx2 = await tools.encodeBasis(decoded.pixels, size, size, { mode: 'uastc', mipmaps: true });
 		const info = native.ktx2Info(ktx2);
 		assert.equal(info.width, size);

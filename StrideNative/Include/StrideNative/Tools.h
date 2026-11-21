@@ -203,7 +203,7 @@ enum
 	ST_BASIS_FLAG_MIPMAPS = 2,
 };
 
-/// Decodes a PNG, JPEG, TGA or DDS file (the largest mip: BC1-BC5, BC7, 24/32-bit RGB) into RGBA8. data must stay alive until the task finishes.
+/// Decodes a PNG, JPEG, TGA, WebP or DDS file (the largest mip: BC1-BC5, BC7, 24/32-bit RGB) into RGBA8. data must stay alive until the task finishes.
 /// Result [0]: width, [1]: height, [2]: channels in the file. Output [0]: the pixels, rows top-down.
 SN_API int32_t st_image_decode(const void *data, uint32_t size);
 
