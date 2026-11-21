@@ -32,6 +32,7 @@
 #include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
 #include <Jolt/Physics/Collision/Shape/ConvexHullShape.h>
 #include <Jolt/Physics/Collision/Shape/CylinderShape.h>
+#include <Jolt/Physics/Collision/Shape/HeightFieldShape.h>
 #include <Jolt/Physics/Collision/Shape/MeshShape.h>
 #include <Jolt/Physics/Collision/Shape/RotatedTranslatedShape.h>
 #include <Jolt/Physics/Collision/Shape/ScaledShape.h>
@@ -369,8 +370,25 @@ namespace
 		sn_physics_settings				mSettings;
 		std::vector<BodyRecord>			mBodies;			///< 按编号（加入顺序）
 		std::vector<CharacterRecord>	mCharacters;
-		std::vector<RefConst<Shape>>	mMeshes;			///< 网格和凸包，句柄是下标加 1
-		std::vector<MeshVolume>			mMeshVolumes;		///< 和 mMeshes 对应；凸包的是空的（Jolt 自己算质量）
+		std::vector<RefConst<Shape>>	mMeshes;			///< 网格、凸包、高度场，句柄是下标加 1；释放了的是空的
+		std::vector<MeshVolume>			mMeshVolumes;		///< 和 mMeshes 对应；凸包、高度场的是空的（Jolt 自己算质量）
+		std::vector<uint32_t>			mFreeMeshes;		///< 释放了的下标（地形的块流式地建和释放）
+
+		/// 登记一个形状，返回句柄（优先复用释放了的位置）
+		int32_t AddMesh(RefConst<Shape> inShape, const MeshVolume &inVolume)
+		{
+			if (!mFreeMeshes.empty())
+			{
+				uint32_t index = mFreeMeshes.back();
+				mFreeMeshes.pop_back();
+				mMeshes[index] = std::move(inShape);
+				mMeshVolumes[index] = inVolume;
+				return int32_t(index + 1);
+			}
+			mMeshes.push_back(std::move(inShape));
+			mMeshVolumes.push_back(inVolume);
+			return int32_t(mMeshes.size());
+		}
 		int32_t							mTransforms = 0;	///< 绑定用的变换存储句柄，0 表示没有
 		std::vector<double>				mPositions;			///< 每个物体的 xyz；只分配一次，调用方可以一直拿着视图
 		ContactCollector				mContacts;
@@ -627,8 +645,9 @@ namespace
 			return new EmptyShape();
 		case SN_SHAPE_MESH:
 		case SN_SHAPE_CONVEX_HULL:
+		case SN_SHAPE_HEIGHTFIELD:
 		{
-			if (inShape.mesh <= 0 || size_t(inShape.mesh) > inWorld.mMeshes.size())
+			if (inShape.mesh <= 0 || size_t(inShape.mesh) > inWorld.mMeshes.size() || inWorld.mMeshes[inShape.mesh - 1] == nullptr)
 			{
 				outError = "mesh or hull handle " + std::to_string(inShape.mesh) + " does not exist";
 				return nullptr;
@@ -943,9 +962,7 @@ SN_API int32_t sn_physics_create_mesh(int32_t world, const float *positions, uin
 	ShapeSettings::ShapeResult result = settings.Create();
 	if (result.HasError())
 		return SetLastError(SN_ERROR_FAILED, std::string("mesh shape: ") + result.GetError().c_str());
-	w->mMeshes.push_back(result.Get());
-	w->mMeshVolumes.push_back(volume);
-	return int32_t(w->mMeshes.size());
+	return w->AddMesh(result.Get(), volume);
 }
 
 SN_API int32_t sn_physics_create_hull(int32_t world, const float *positions, uint32_t point_count)
@@ -962,9 +979,31 @@ SN_API int32_t sn_physics_create_hull(int32_t world, const float *positions, uin
 	ShapeSettings::ShapeResult result = settings.Create();
 	if (result.HasError())
 		return SetLastError(SN_ERROR_FAILED, std::string("convex hull shape: ") + result.GetError().c_str());
-	w->mMeshes.push_back(result.Get());
-	w->mMeshVolumes.emplace_back();
-	return int32_t(w->mMeshes.size());
+	return w->AddMesh(result.Get(), MeshVolume());
+}
+
+SN_API int32_t sn_physics_create_heightfield(int32_t world, const float *heights, uint32_t sample_count, float spacing)
+{
+	World *w = GetWorld(world);
+	if (w == nullptr)
+		return SN_ERROR_INVALID_HANDLE;
+	if (heights == nullptr || sample_count < 4 || !(spacing > 0.0f))
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "a height field needs at least 4 x 4 heights and a positive spacing");
+	HeightFieldShapeSettings settings(heights, Vec3::sZero(), Vec3(spacing, 1.0f, spacing), sample_count);
+	ShapeSettings::ShapeResult result = settings.Create();
+	if (result.HasError())
+		return SetLastError(SN_ERROR_FAILED, std::string("height field shape: ") + result.GetError().c_str());
+	return w->AddMesh(result.Get(), MeshVolume());
+}
+
+SN_API void sn_physics_release_shape(int32_t world, int32_t shape)
+{
+	World *w = GetWorld(world);
+	if (w == nullptr || shape <= 0 || size_t(shape) > w->mMeshes.size() || w->mMeshes[shape - 1] == nullptr)
+		return;
+	w->mMeshes[shape - 1] = nullptr;
+	w->mMeshVolumes[shape - 1] = MeshVolume();
+	w->mFreeMeshes.push_back(uint32_t(shape - 1));
 }
 
 SN_API int32_t sn_physics_add_bodies(int32_t world, const sn_body *bodies, uint32_t count, const sn_shape *shapes, uint32_t shape_count,
@@ -1017,8 +1056,12 @@ SN_API int32_t sn_physics_add_bodies(int32_t world, const sn_body *bodies, uint3
 		}
 		const sn_shape *own = shapes + body.first_shape;
 		for (uint32_t s = 0; s < body.shape_count; ++s)
+		{
 			if (own[s].type == SN_SHAPE_MESH && Moves(body.motion) && (body.shape_count != 1 || body.motion == SN_MOTION_CHARACTER))
 				return SetLastError(SN_ERROR_INVALID_ARGUMENT, where + "a moving body with a mesh shape must have only that shape (and cannot be a character)");
+			if (own[s].type == SN_SHAPE_HEIGHTFIELD && body.motion != SN_MOTION_STATIC)
+				return SetLastError(SN_ERROR_INVALID_ARGUMENT, where + "a height field shape can only be used on a static body");
+		}
 		std::string error;
 		body_shapes[i] = MakeBodyShape(*w, own, body.shape_count, scale, error);
 		mesh_scales[i] = scale;

@@ -744,6 +744,29 @@ describe('stride-native and stride-tools', () => {
 		assert.throws(() => native.createTerrain({ noise: {}, features: [{ type: 'flatten', points: [[0, 0], [1, 0]], height: 0 }] }), /at least 3 points/);
 	});
 
+	it('collides with a height field (terrain tile) on a static body, releases and reuses shape handles', () => {
+		using world = native.createPhysicsWorld(8);
+		// 33 × 33 个高度、格距 2 米：沿 x 每米升 0.5 米的斜坡
+		const n = 33, spacing = 2;
+		const heights = Float32Array.from({ length: n * n }, (_, i) => (i % n) * spacing * 0.5);
+		const field = world.createHeightfield(heights, n, spacing);
+		world.addBody({ motion: 'static', position: [100, 0, 100], shapes: [{ type: 'heightfield', heightfield: field }] });
+		// 本地原点是第一个样本：(100 + 20, ·, 100 + 10) 处地面高 10
+		const hit = world.rayCast([120, 50, 110], [0, -1, 0], 100);
+		assert.ok(hit && Math.abs(hit.point[1] - 10) < 0.05, `hit at ${hit?.point}`);
+		// 球落到斜坡上停住（会往下滚：只看它没穿过去）
+		const ball = world.addBody({ motion: 'dynamic', position: [140, 30, 130], shapes: [{ type: 'sphere', radius: 0.5 }] });
+		for (let i = 0; i < 120; i++) world.step(1 / 60);
+		const y = world.positions()[ball * 3 + 1], x = world.positions()[ball * 3];
+		assert.ok(y > (x - 100) * 0.5 - 0.1, `ball at (${x}, ${y}) fell through the slope`);
+		assert.throws(() => world.addBody({ motion: 'dynamic', position: [0, 0, 0], shapes: [{ type: 'heightfield', heightfield: field }] }), /only be used on a static body/);
+		// 释放后句柄复用；已经用着它的物体照旧碰撞
+		world.releaseShape(field);
+		assert.throws(() => world.addBody({ motion: 'static', position: [0, 0, 0], shapes: [{ type: 'heightfield', heightfield: field }] }), /does not exist/);
+		assert.equal(world.createHeightfield(heights, n, spacing), field);
+		assert.ok(world.rayCast([120, 50, 110], [0, -1, 0], 100));
+	});
+
 	it('reports the slots whose world matrix changed in the last update', () => {
 		using transforms = native.createTransforms(8);
 		const [still, mover, child, spare] = transforms.allocate(4);

@@ -38,6 +38,7 @@ enum
 	SN_SHAPE_MESH = 4,				///< mesh：sn_physics_create_mesh 的结果；按实体的世界缩放缩放（Stride 的 MeshCollider）；动态物体上只能单独用，质量属性按封闭网格积分
 	SN_SHAPE_CONVEX_HULL = 5,		///< mesh：sn_physics_create_hull 的结果；同网格按实体的世界缩放缩放（Stride 的 ConvexHullCollider）
 	SN_SHAPE_EMPTY = 6,				///< 没有形状、不碰撞（Stride 的 EmptyCollider）；只能单独用，动态时转动惯量同 Bepu 的半径 1 的球
+	SN_SHAPE_HEIGHTFIELD = 7,		///< mesh：sn_physics_create_heightfield 的结果（地形的一块）；只能用在静态物体上
 };
 
 /// 复合碰撞体里的一个形状（Stride 的 ColliderBase 加 CompoundCollider 的本地位姿）。
@@ -100,6 +101,13 @@ typedef struct sn_body
 SN_API int32_t sn_physics_create_mesh(int32_t world, const float *positions, uint32_t vertex_count, const uint32_t *indices, uint32_t index_count);
 /// 凸包形状（Jolt 由点算出凸包），世界内的物体共用；和网格共用句柄空间。positions 是 xyz。返回句柄。
 SN_API int32_t sn_physics_create_hull(int32_t world, const float *positions, uint32_t point_count);
+/**
+ * 高度场形状（地形的一块碰撞）：sample_count × sample_count 个高度（米，按行 z 排），格距 spacing 米；形状的本地原点是第一个
+ * 样本，x、z 往正方向。返回的句柄用在 SN_SHAPE_HEIGHTFIELD 的 mesh 上。
+ */
+SN_API int32_t sn_physics_create_heightfield(int32_t world, const float *heights, uint32_t sample_count, float spacing);
+/** 网格、凸包、高度场不再用来建新物体了：句柄作废（之后会复用）；已经用着它的物体不受影响，物体都删了形状才真的释放。 */
+SN_API void sn_physics_release_shape(int32_t world, int32_t shape);
 /// 移除物体（实体销毁时）：从世界里拿走并释放，编号留给以后加的物体复用；和它有关的接触不再报告。移除过的忽略。
 SN_API int32_t sn_physics_remove_bodies(int32_t world, const int32_t *bodies, uint32_t count);
 /// 一次加入 count 个物体（Jolt 成批插进宽相），每个物体的编号写进 out_bodies（可以是 null），返回第一个物体的编号。

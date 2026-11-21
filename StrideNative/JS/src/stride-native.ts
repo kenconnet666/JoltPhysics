@@ -249,7 +249,7 @@ const QUERY_BYTES = QUERY_HIT + HIT_WORDS * 4;
 // sn_physics_settings：gravity[3]、linear_damping、angular_damping、collision_masks[32]
 const SETTINGS_WORDS = 37;
 
-const SHAPE_TYPES = { box: 0, sphere: 1, capsule: 2, cylinder: 3, mesh: 4, convexHull: 5, empty: 6 } as const;
+const SHAPE_TYPES = { box: 0, sphere: 1, capsule: 2, cylinder: 3, mesh: 4, convexHull: 5, empty: 6, heightfield: 7 } as const;
 const MOTIONS = { static: 0, dynamic: 1, kinematic: 2, character: 3 } as const;
 const BODY_INTERPOLATED = 1;
 const BODY_NO_GRAVITY = 2;
@@ -276,6 +276,8 @@ const IDENTITY: ArrayLike<number> = [0, 0, 0, 1];
 export type PhysicsMesh = Branded<number, 'PhysicsMesh'>;
 /** 用 PhysicsWorld.createHull 建的凸包形状，同一个世界里的物体共用。 */
 export type PhysicsHull = Branded<number, 'PhysicsHull'>;
+/** 用 PhysicsWorld.createHeightfield 建的高度场形状（地形的一块碰撞）。 */
+export type PhysicsHeightfield = Branded<number, 'PhysicsHeightfield'>;
 
 /** 复合碰撞体里的一个形状（Stride 的 BoxCollider、SphereCollider……加 CompoundCollider 的本地位姿）。 */
 export type ShapeDesc = (
@@ -290,6 +292,8 @@ export type ShapeDesc = (
 	| { type: 'convexHull'; hull: PhysicsHull }
 	/** 没有形状、不碰撞（Stride 的 EmptyCollider）；只能单独用。 */
 	| { type: 'empty' }
+	/** 高度场（地形的一块），只能用在静态物体上；本地原点是第一个样本。 */
+	| { type: 'heightfield'; heightfield: PhysicsHeightfield }
 ) & {
 	/** 本地位置，默认原点。 */
 	position?: Vec3;
@@ -543,6 +547,18 @@ export class PhysicsWorld extends NativeObject<StrideNative> {
 	createHull(points: Float32Array): PhysicsHull {
 		const n = this.native;
 		return n.withArrays([points], (p) => n.check(n.module._sn_physics_create_hull(this[HANDLE], p, points.length / 3), 'sn_physics_create_hull') as PhysicsHull);
+	}
+
+	/** 高度场形状：sampleCount × sampleCount 个高度（按行 z 排），格距 spacing 米；本地原点是第一个样本，x、z 往正方向。 */
+	createHeightfield(heights: Float32Array, sampleCount: number, spacing: number): PhysicsHeightfield {
+		if (heights.length !== sampleCount * sampleCount) throw new NativeError(`createHeightfield: ${sampleCount}² heights expected, got ${heights.length}`, -1);
+		const n = this.native;
+		return n.withArrays([heights], (h) => n.check(n.module._sn_physics_create_heightfield(this[HANDLE], h, sampleCount, spacing), 'sn_physics_create_heightfield') as PhysicsHeightfield);
+	}
+
+	/** 网格、凸包、高度场不再用来建新物体：句柄作废（之后会复用）；用着它的物体不受影响。 */
+	releaseShape(shape: PhysicsMesh | PhysicsHull | PhysicsHeightfield): void {
+		this.native.module._sn_physics_release_shape(this[HANDLE], shape);
 	}
 
 	addBody(body: BodyDesc): BodyId {
@@ -811,9 +827,9 @@ function writeShape(floats: Float32Array, words: Uint32Array, o: number, shape: 
 	floats.set([position[0]!, position[1]!, position[2]!, rotation[0]!, rotation[1]!, rotation[2]!, rotation[3]!], o + 1);
 	const size = shape.type === 'box' ? [shape.size[0]!, shape.size[1]!, shape.size[2]!]
 		: shape.type === 'sphere' ? [shape.radius, 0, 0]
-			: shape.type === 'mesh' || shape.type === 'convexHull' || shape.type === 'empty' ? [0, 0, 0] : [shape.radius, shape.length, 0];
+			: shape.type === 'mesh' || shape.type === 'convexHull' || shape.type === 'empty' || shape.type === 'heightfield' ? [0, 0, 0] : [shape.radius, shape.length, 0];
 	floats.set(size, o + 8);
-	words[o + 11] = shape.type === 'mesh' ? shape.mesh : shape.type === 'convexHull' ? shape.hull : 0;
+	words[o + 11] = shape.type === 'mesh' ? shape.mesh : shape.type === 'convexHull' ? shape.hull : shape.type === 'heightfield' ? shape.heightfield : 0;
 	floats[o + 12] = shape.mass ?? 1;
 }
 

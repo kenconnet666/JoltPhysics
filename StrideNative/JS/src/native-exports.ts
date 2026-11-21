@@ -283,6 +283,8 @@ export interface NativeExports {
 	 * C: Physics.h
 	 */
 	_sn_physics_create(maxBodies: number, transforms: number, settings: number): number;
+	/** C: Physics.h */
+	_sn_physics_create_heightfield(world: number, heights: number, sampleCount: number, spacing: number): number;
 	/**
 	 * 凸包形状（Jolt 由点算出凸包），世界内的物体共用；和网格共用句柄空间。positions 是 xyz。返回句柄。
 	 * C: Physics.h
@@ -324,6 +326,8 @@ export interface NativeExports {
 	 * C: Physics.h
 	 */
 	_sn_physics_ray_cast_all(world: number, origin: number, direction: number, maxDistance: number, mask: number, outHits: number, capacity: number): number;
+	/** C: Physics.h */
+	_sn_physics_release_shape(world: number, shape: number): void;
 	/**
 	 * 移除物体（实体销毁时）：从世界里拿走并释放，编号留给以后加的物体复用；和它有关的接触不再报告。移除过的忽略。
 	 * C: Physics.h
@@ -770,6 +774,7 @@ export const POINTER_SIGNATURES: Readonly<Record<string, string>> = {
 	sn_physics_body_velocity: '___pp',
 	sn_physics_contact_events: 'p_p',
 	sn_physics_create: '___p',
+	sn_physics_create_heightfield: '__p__',
 	sn_physics_create_hull: '__p_',
 	sn_physics_create_mesh: '__p_p_',
 	sn_physics_overlap: '__pp_p_',
@@ -875,6 +880,8 @@ export type RuntimeExport =
 	| 'sn_physics_set_gravity'
 	| 'sn_physics_create_mesh'
 	| 'sn_physics_create_hull'
+	| 'sn_physics_create_heightfield'
+	| 'sn_physics_release_shape'
 	| 'sn_physics_remove_bodies'
 	| 'sn_physics_add_bodies'
 	| 'sn_physics_step'
