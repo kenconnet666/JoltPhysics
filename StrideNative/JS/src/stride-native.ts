@@ -193,6 +193,45 @@ export class StrideNative extends NativeModule<RuntimeExport> {
 		if (inverseBinds.length !== joints.length * 16) throw new NativeError(`createSkin: ${joints.length} joints need ${joints.length * 16} inverse bind floats, got ${inverseBinds.length}`, -1);
 		return this.withArrays([joints, inverseBinds], (j, b) => new Skin(this, this.check(this.module._sn_anim_skin_create(j, b, joints.length), 'sn_anim_skin_create'), joints.length));
 	}
+
+	/** 按描述建地形求值器（见 TerrainDescription）：同样的描述在任何机器上求出逐位相同的高度。 */
+	createTerrain(description: TerrainDescription): TerrainEvaluator {
+		const features = description.features ?? [], strokes = description.strokes ?? [];
+		const points = new Float64Array(features.reduce((sum, feature) => sum + feature.points.length * 2, 0));
+		const featureBytes = new ArrayBuffer(Math.max(1, features.length) * TERRAIN_FEATURE_SIZE);
+		let first = 0;
+		features.forEach((feature, i) => {
+			const view = new DataView(featureBytes, i * TERRAIN_FEATURE_SIZE, TERRAIN_FEATURE_SIZE);
+			view.setUint32(0, enumCode(TERRAIN_FEATURES, feature.type, `features[${i}].type`), true);
+			view.setUint32(4, first, true);
+			view.setUint32(8, feature.points.length, true);
+			view.setFloat32(12, feature.height, true);
+			view.setFloat32(16, feature.falloff ?? 0, true);
+			view.setFloat32(20, feature.strength ?? 1, true);
+			for (const [x, z] of feature.points) {
+				points[first * 2] = x;
+				points[first * 2 + 1] = z;
+				first++;
+			}
+		});
+		const strokeBytes = new ArrayBuffer(Math.max(1, strokes.length) * TERRAIN_STROKE_SIZE);
+		strokes.forEach((stroke, i) => {
+			const view = new DataView(strokeBytes, i * TERRAIN_STROKE_SIZE, TERRAIN_STROKE_SIZE);
+			view.setFloat64(0, stroke.x, true);
+			view.setFloat64(8, stroke.z, true);
+			view.setUint32(16, enumCode(TERRAIN_STROKES, stroke.op, `strokes[${i}].op`), true);
+			view.setFloat32(20, stroke.radius, true);
+			view.setFloat32(24, stroke.strength, true);
+			view.setFloat32(28, stroke.height ?? 0, true);
+		});
+		const n = { ...TERRAIN_NOISE_DEFAULTS, ...description.noise };
+		const noise = new DataView(new ArrayBuffer(TERRAIN_NOISE_SIZE));
+		noise.setUint32(0, n.seed >>> 0, true);
+		noise.setUint32(4, n.octaves, true);
+		[n.scale, n.height, n.offset, n.lacunarity, n.gain, n.ridged, n.warp, n.erosion].forEach((value, i) => noise.setFloat32(8 + i * 4, value, true));
+		return this.withArrays([new Uint8Array(noise.buffer), new Uint8Array(featureBytes), points.length ? points : null, new Uint8Array(strokeBytes)], (np, fp, pp, sp) =>
+			new TerrainEvaluator(this, this.check(this.module._sn_terrain_create(np, fp, features.length, pp, points.length / 2, sp, strokes.length), 'sn_terrain_create')));
+	}
 }
 
 // sn_shape：type、position[3]、rotation[4]、size[3]、mesh、mass，13 个字
@@ -1438,6 +1477,85 @@ export class Skin extends NativeObject<StrideNative> {
 
 	protected override release(): void {
 		this.native.module._sn_anim_skin_destroy(this[HANDLE]);
+	}
+}
+
+/** 地形的程序化的底：分形噪声（梯度噪声），没给的字段用 TERRAIN_NOISE_DEFAULTS。 */
+export interface TerrainNoise {
+	seed?: number;
+	/** 层数（0..16）。 */
+	octaves?: number;
+	/** 最大的起伏的波长（米）。 */
+	scale?: number;
+	/** 起伏的幅度（米）。 */
+	height?: number;
+	/** 整体抬高（米）。 */
+	offset?: number;
+	/** 每层频率乘多少。 */
+	lacunarity?: number;
+	/** 每层幅度乘多少。 */
+	gain?: number;
+	/** 0..1：混进多少山脊。 */
+	ridged?: number;
+	/** 域扭曲的幅度（米）。 */
+	warp?: number;
+	/** ≥ 0：按累积的坡度压低细节（陡处平滑、谷里留细节）。 */
+	erosion?: number;
+}
+
+export const TERRAIN_NOISE_DEFAULTS: Readonly<Required<TerrainNoise>> = {
+	seed: 0, octaves: 6, scale: 1000, height: 200, offset: 0, lacunarity: 2, gain: 0.5, ridged: 0, warp: 0, erosion: 0,
+};
+
+/** 矢量的地物：flatten 是多边形（x、z，米）里压到 height，边外 falloff 米内过渡。 */
+export interface TerrainFeature {
+	type: 'flatten';
+	points: readonly (readonly [number, number])[];
+	height: number;
+	falloff?: number;
+	/** 0..1，默认 1。 */
+	strength?: number;
+}
+
+/** 雕刻的一笔：抬高、压低的 strength 是米，压平、磨平是 0..1；按顺序作用。 */
+export interface TerrainStroke {
+	op: 'raise' | 'lower' | 'flatten' | 'smooth';
+	x: number;
+	z: number;
+	radius: number;
+	strength: number;
+	/** 压平的目标高度（米）。 */
+	height?: number;
+}
+
+/** 地形的描述：底、地物、笔画依次叠加。 */
+export interface TerrainDescription {
+	noise: TerrainNoise;
+	features?: readonly TerrainFeature[];
+	strokes?: readonly TerrainStroke[];
+}
+
+const TERRAIN_NOISE_SIZE = 40;
+const TERRAIN_FEATURE_SIZE = 24;
+const TERRAIN_STROKE_SIZE = 32;
+const TERRAIN_FEATURES: Record<TerrainFeature['type'], number> = { flatten: 0 };
+const TERRAIN_STROKES: Record<TerrainStroke['op'], number> = { raise: 0, lower: 1, flatten: 2, smooth: 3 };
+
+/** 原生的地形求值器（StrideNative.createTerrain）：坐标是双精度，按需求一点或一页的高度。 */
+export class TerrainEvaluator extends NativeObject<StrideNative> {
+	/** 一点的高度（同步）。 */
+	height(x: number, z: number): number {
+		return this.native.module._sn_terrain_height(this[HANDLE], x, z);
+	}
+
+	/** 一页高度（工作线程上算）：从 (x0, z0) 起、间距 spacing 米的 countX × countZ 个点，按行（z）排。 */
+	heights(x0: number, z0: number, spacing: number, countX: number, countZ: number): Promise<Float32Array> {
+		return this.native.awaitTask(this.native.module._sn_terrain_heights(this[HANDLE], x0, z0, spacing, countX, countZ), 'sn_terrain_heights',
+			(task) => task.output(Float32Array, 0));
+	}
+
+	protected override release(): void {
+		this.native.module._sn_terrain_destroy(this[HANDLE]);
 	}
 }
 

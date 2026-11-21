@@ -416,6 +416,24 @@ export interface NativeExports {
 	/** C: Core.h */
 	_sn_task_status_address(task: number): number;
 	/**
+	 * 按描述建一个地形求值器（拷一份描述），返回句柄。
+	 * C: Runtime.h
+	 */
+	_sn_terrain_create(noise: number, features: number, featureCount: number, points: number, pointCount: number, strokes: number, strokeCount: number): number;
+	/** C: Runtime.h */
+	_sn_terrain_destroy(terrain: number): void;
+	/**
+	 * 一点的高度（同步，玩法、编辑器摆东西用）。
+	 * C: Runtime.h
+	 */
+	_sn_terrain_height(terrain: number, x: number, z: number): number;
+	/**
+	 * 一页高度（异步任务）：从 (x0, z0) 起、间距 spacing 米的 count_x × count_z 个点，按行（z）排。输出 [0]：float 的高度。
+	 * 求值器在任务开始前拷一份，任务跑着时销毁地形也安全。
+	 * C: Runtime.h
+	 */
+	_sn_terrain_heights(terrain: number, x0: number, z0: number, spacing: number, countX: number, countZ: number): number;
+	/**
 	 * 分配 count 个槽位写进 out_slots：位置 0、旋转单位、缩放 1、没有父节点。返回 count；容量不够时什么都不分配。
 	 * C: Runtime.h
 	 */
@@ -770,6 +788,7 @@ export const POINTER_SIGNATURES: Readonly<Record<string, string>> = {
 	sn_task_output_data: 'p__',
 	sn_task_set_result: '_p__',
 	sn_task_status_address: 'p_',
+	sn_terrain_create: '_pp_p_p_',
 	sn_transforms_alloc: '__p_',
 	sn_transforms_changed: '__p',
 	sn_transforms_columns: '__p',
@@ -904,6 +923,10 @@ export type RuntimeExport =
 	| 'sn_transforms_set_render_origin'
 	| 'sn_transforms_slot_limit'
 	| 'sn_transforms_cull'
+	| 'sn_terrain_create'
+	| 'sn_terrain_destroy'
+	| 'sn_terrain_height'
+	| 'sn_terrain_heights'
 	| 'sn_meshopt_decode'
 	| 'sn_meshopt_decode_batch'
 	| 'sn_anim_load_skeleton'

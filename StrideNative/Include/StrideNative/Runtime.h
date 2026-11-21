@@ -76,6 +76,70 @@ typedef struct sn_cull_view
 SN_API int32_t sn_transforms_cull(int32_t transforms, const int32_t *slots, uint32_t slot_count, const uint32_t *batch_ends, const float *bounds, uint32_t batch_count, sn_cull_view *views, uint32_t view_count, int32_t *out_slots, uint32_t *out_counts);
 
 // ---------------------------------------------------------------------------------------------
+// 矢量地形（stride-ts 的 W2）：地形是分层的描述——程序化的底（噪声）、矢量的地物（多边形压平）、雕刻的笔画（参数），按需求值成
+// 高度页。坐标是双精度（大世界），同样的描述在任何机器上求出逐位相同的高度（碰撞、导航、渲染用同一份）。
+// ---------------------------------------------------------------------------------------------
+
+/// 程序化的底：分形噪声（梯度噪声，每层转一个角度），可以混进山脊、域扭曲，按导数压低陡处的细节（近似侵蚀的样子）。
+typedef struct sn_terrain_noise
+{
+	uint32_t seed;
+	uint32_t octaves;				///< 层数（1..16）
+	float scale;					///< 最大的起伏的波长（米）
+	float height;					///< 起伏的幅度（米）
+	float offset;					///< 整体抬高（米）
+	float lacunarity;				///< 每层频率乘多少（常用 2）
+	float gain;						///< 每层幅度乘多少（常用 0.5）
+	float ridged;					///< 0..1：混进多少山脊（1 − |噪声|）
+	float warp;						///< 域扭曲的幅度（米）：采样点先按低频噪声挪一挪，山形不那么规整
+	float erosion;					///< ≥ 0：按累积的坡度压低细节的强度（Inigo Quilez 的导数 fBm），陡处平滑、谷里留细节
+} sn_terrain_noise;
+
+enum
+{
+	SN_TERRAIN_FEATURE_FLATTEN = 0,	///< 多边形里压到 height（边外 falloff 米内过渡）
+};
+
+/// 矢量的地物：点在 points 表里（每个 x、z 两个 double），first_point 起 point_count 个。
+typedef struct sn_terrain_feature
+{
+	uint32_t type;					///< SN_TERRAIN_FEATURE_*
+	uint32_t first_point;
+	uint32_t point_count;
+	float height;					///< 目标高度（米）
+	float falloff;					///< 过渡的宽度（米）
+	float strength;					///< 0..1
+} sn_terrain_feature;
+
+enum
+{
+	SN_TERRAIN_STROKE_RAISE = 0,	///< 抬高 strength 米（中心，往外按平滑的衰减）
+	SN_TERRAIN_STROKE_LOWER = 1,	///< 压低
+	SN_TERRAIN_STROKE_FLATTEN = 2,	///< 压向 height
+	SN_TERRAIN_STROKE_SMOOTH = 3,	///< 磨平：靠向少几层细节的底
+};
+
+/// 雕刻的一笔（存参数，不存采样）：按顺序作用在底和地物上。
+typedef struct sn_terrain_stroke
+{
+	double x;
+	double z;
+	uint32_t op;					///< SN_TERRAIN_STROKE_*
+	float radius;					///< 米
+	float strength;					///< 抬高、压低是米；压平、磨平是 0..1
+	float height;					///< 压平的目标高度（米）
+} sn_terrain_stroke;
+
+/// 按描述建一个地形求值器（拷一份描述），返回句柄。
+SN_API int32_t sn_terrain_create(const sn_terrain_noise *noise, const sn_terrain_feature *features, uint32_t feature_count, const double *points, uint32_t point_count, const sn_terrain_stroke *strokes, uint32_t stroke_count);
+SN_API void sn_terrain_destroy(int32_t terrain);
+/// 一点的高度（同步，玩法、编辑器摆东西用）。
+SN_API float sn_terrain_height(int32_t terrain, double x, double z);
+/// 一页高度（异步任务）：从 (x0, z0) 起、间距 spacing 米的 count_x × count_z 个点，按行（z）排。输出 [0]：float 的高度。
+/// 求值器在任务开始前拷一份，任务跑着时销毁地形也安全。
+SN_API int32_t sn_terrain_heights(int32_t terrain, double x0, double z0, double spacing, uint32_t count_x, uint32_t count_z);
+
+// ---------------------------------------------------------------------------------------------
 // Mesh decoding (EXT_meshopt_compression / KHR_meshopt_compression)
 // ---------------------------------------------------------------------------------------------
 

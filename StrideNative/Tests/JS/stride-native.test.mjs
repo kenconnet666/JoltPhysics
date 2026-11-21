@@ -719,6 +719,31 @@ describe('stride-native and stride-tools', () => {
 		assert.ok(hit && Math.abs(hit.point[1] - 1) < 0.05 && Math.abs(hit.point[0] - 20000000.501) < 1e-3);
 	});
 
+	it('evaluates vector terrain: noise base, flatten polygons and strokes, seamless pages far from the origin', async () => {
+		using terrain = native.createTerrain({
+			noise: { seed: 7, octaves: 8, scale: 800, height: 150, erosion: 0.3, ridged: 0.3, warp: 200 },
+			features: [{ type: 'flatten', points: [[0, 0], [100, 0], [100, 100], [0, 100]], height: 12, falloff: 20 }],
+			strokes: [{ op: 'raise', x: 500, z: 500, radius: 50, strength: 30 }],
+		});
+		// 多边形里压平，过渡带外是原来的噪声
+		assert.equal(terrain.height(50, 50), 12);
+		assert.notEqual(terrain.height(-200, 50), 12);
+		// 一页的点和单点同值，相邻两页的接缝逐位相同
+		const page = await terrain.heights(64, 0, 4, 17, 17);
+		assert.equal(page.length, 17 * 17);
+		assert.equal(page[3 * 17 + 5], terrain.height(64 + 20, 12));
+		const right = await terrain.heights(128, 0, 4, 17, 17);
+		for (let j = 0; j < 17; j++) assert.equal(page[j * 17 + 16], right[j * 17]);
+		// 笔画抬高了中心
+		using plain = native.createTerrain({ noise: { seed: 7, octaves: 8, scale: 800, height: 150, erosion: 0.3, ridged: 0.3, warp: 200 } });
+		assert.ok(Math.abs(terrain.height(500, 500) - plain.height(500, 500) - 30) < 1e-3);
+		// 两万公里外照样连续：隔半米的两个点高度不同又差得不多（单精度的坐标在那里一个刻度 2 米，两点会落成同一个）
+		const a = plain.height(20000000, -15000000), b = plain.height(20000000.5, -15000000);
+		assert.ok(Number.isFinite(a) && Math.abs(a - b) < 1 && a !== b);
+		assert.throws(() => native.createTerrain({ noise: { scale: 0 } }), /scale and lacunarity must be positive/);
+		assert.throws(() => native.createTerrain({ noise: {}, features: [{ type: 'flatten', points: [[0, 0], [1, 0]], height: 0 }] }), /at least 3 points/);
+	});
+
 	it('reports the slots whose world matrix changed in the last update', () => {
 		using transforms = native.createTransforms(8);
 		const [still, mover, child, spare] = transforms.allocate(4);
