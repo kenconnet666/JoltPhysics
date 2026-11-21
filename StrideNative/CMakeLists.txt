@@ -51,6 +51,11 @@ set(INTERPROCEDURAL_OPTIMIZATION OFF)
 option(STRIDE_NATIVE_DEBUG_CHECKS "Build only the runtime module, as stride-native-core-debug, with Jolt asserts and Emscripten runtime checks" OFF)
 if (STRIDE_NATIVE_DEBUG_CHECKS)
 	set(USE_ASSERTS ON)
+	# 调试版带行号表，链接时出 source map（.wasm.map）：stride-ts 的 `stride debug` 能按 C++ 的 文件:行 下断点、调用栈报 C++ 的位置。
+	# 只要行号，不要变量（那是 -SourceDebug 的 DWARF），对优化没影响、文件不大。
+	if (NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
+		add_compile_options(-gline-tables-only)
+	endif()
 endif()
 add_subdirectory(${REPO_ROOT}/Build ${CMAKE_CURRENT_BINARY_DIR}/Jolt EXCLUDE_FROM_ALL)
 
@@ -220,9 +225,11 @@ if (EMSCRIPTEN)
 
 	if (STRIDE_NATIVE_DEBUG_CHECKS)
 		set(FLAVOR -debug)
-		list(APPEND WASM_COMMON_LINK_OPTIONS -sASSERTIONS=1 -sSTACK_OVERFLOW_CHECK=2)
+		set(SOURCE_MAP_LINK_OPTIONS -gsource-map)
+		list(APPEND WASM_COMMON_LINK_OPTIONS -sASSERTIONS=1 -sSTACK_OVERFLOW_CHECK=2 ${SOURCE_MAP_LINK_OPTIONS})
 	else()
 		set(FLAVOR "")
+		set(SOURCE_MAP_LINK_OPTIONS "")
 	endif()
 
 	# 侧模块：功能的代码加上它独有的第三方库，只导出 C API。
@@ -230,7 +237,7 @@ if (EMSCRIPTEN)
 		set(TARGET stride-native-${NAME}${FLAVOR})
 		add_executable(${TARGET})
 		target_link_libraries(${TARGET} PRIVATE ${ARGN})
-		target_link_options(${TARGET} PRIVATE -sSIDE_MODULE=2 --profiling-funcs)
+		target_link_options(${TARGET} PRIVATE -sSIDE_MODULE=2 --profiling-funcs ${SOURCE_MAP_LINK_OPTIONS})
 		set_target_properties(${TARGET} PROPERTIES SUFFIX ".wasm")
 	endfunction()
 
@@ -287,7 +294,13 @@ if (EMSCRIPTEN)
 	set(PACKAGE_TARGETS ${RUNTIME_MODULE} ${SIDE_MODULES})
 	foreach (SIDE_MODULE ${SIDE_MODULES})
 		list(APPEND PACKAGE_FILES $<TARGET_FILE:${SIDE_MODULE}>)
+		if (STRIDE_NATIVE_DEBUG_CHECKS)
+			list(APPEND PACKAGE_FILES $<TARGET_FILE:${SIDE_MODULE}>.map)
+		endif()
 	endforeach()
+	if (STRIDE_NATIVE_DEBUG_CHECKS)
+		list(APPEND PACKAGE_FILES $<TARGET_FILE_DIR:${RUNTIME_MODULE}>/${RUNTIME_MODULE}.wasm.map)
+	endif()
 
 	# 工具模块只在 Node 里跑资源管线，没有调试版
 	if (NOT STRIDE_NATIVE_DEBUG_CHECKS)
