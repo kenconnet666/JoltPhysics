@@ -2033,8 +2033,17 @@ public:
 				// Decode min/max height
 				JPH_ASSERT(offset < mShape->mRangeBlocksSize);
 				UVec4 block = UVec4::sLoadInt4Aligned(reinterpret_cast<const uint32 *>(&mShape->mRangeBlocks[offset]));
-				Vec4 bounds_miny = oy + sy * block.Expand4Uint16Lo().ToFloat();
-				Vec4 bounds_maxy = oy + sy * block.Expand4Uint16Hi().ToFloat();
+				Vec4 block_min = block.Expand4Uint16Lo().ToFloat();
+				Vec4 block_max = block.Expand4Uint16Hi().ToFloat();
+				Vec4 bounds_miny = oy + sy * block_min;
+				Vec4 bounds_maxy = oy + sy * block_max;
+
+				// A child without collision has an inside-out range (this includes the padding blocks beyond the edge of the height field
+				// that we get because the grid is built as if the number of blocks were a power of 2). On an (almost) flat height field
+				// sy is so small that oy + sy * block_min can round to oy, which makes the range look valid. Make sure the visitor rejects these children.
+				UVec4 inside_out = Vec4::sGreater(block_min, block_max);
+				bounds_miny = Vec4::sSelect(bounds_miny, Vec4::sReplicate(cLargeFloat), inside_out);
+				bounds_maxy = Vec4::sSelect(bounds_maxy, Vec4::sReplicate(-cLargeFloat), inside_out);
 
 				// Calculate size of one cell at this grid level
 				UVec4 internal_cell_size = UVec4::sReplicate(block_size << (max_level - level - 1)); // subtract 1 from level because we have an internal grid of 2x2
@@ -2448,8 +2457,11 @@ struct HeightFieldShape::HSGetTrianglesContext
 		return true;
 	}
 
-	int		VisitRangeBlock(Vec4Arg inBoundsMinX, Vec4Arg inBoundsMinY, Vec4Arg inBoundsMinZ, Vec4Arg inBoundsMaxX, Vec4Arg inBoundsMaxY, Vec4Arg inBoundsMaxZ, UVec4 &ioProperties, [[maybe_unused]] int inStackTop) const
+	int		VisitRangeBlock(Vec4Arg inBoundsMinX, Vec4Arg inBoundsMinY, Vec4Arg inBoundsMinZ, Vec4Arg inBoundsMaxX, Vec4Arg inBoundsMaxY, Vec4Arg inBoundsMaxZ, UVec4 &ioProperties, [[maybe_unused]] int inStackTop)
 	{
+		// Start counting triangles again
+		mCurrentTriangle = 0;
+
 		// Scale the bounding boxes of this node
 		Vec4 bounds_min_x, bounds_min_y, bounds_min_z, bounds_max_x, bounds_max_y, bounds_max_z;
 		AABox4Scale(mHeightFieldScale, inBoundsMinX, inBoundsMinY, inBoundsMinZ, inBoundsMaxX, inBoundsMaxY, inBoundsMaxZ, bounds_min_x, bounds_min_y, bounds_min_z, bounds_max_x, bounds_max_y, bounds_max_z);
@@ -2465,9 +2477,18 @@ struct HeightFieldShape::HSGetTrianglesContext
 
 	void	VisitTriangle(uint inX, uint inY, [[maybe_unused]] uint inTriangle, Vec3Arg inV0, Vec3Arg inV1, Vec3Arg inV2)
 	{
+		// Index of this triangle within the block that is being visited
+		int current_triangle = mCurrentTriangle++;
+
+		// When continuing an aborted walk, the walk restarts at the block that we aborted in. Skip the triangles of this block that we already returned.
+		if (current_triangle < mFirstTriangle)
+			return;
+		mFirstTriangle = 0;
+
 		// When the buffer is full and we cannot process the triangles, abort the height field walk. The next time GetTrianglesNext is called we will continue here.
 		if (mNumTrianglesFound + 1 > mMaxTrianglesRequested)
 		{
+			mFirstTriangle = current_triangle;
 			mShouldAbort = true;
 			return;
 		}
@@ -2503,6 +2524,8 @@ struct HeightFieldShape::HSGetTrianglesContext
 	Mat44						mLocalToWorld;
 	int							mMaxTrianglesRequested;
 	Float3 *					mTriangleVertices;
+	int							mCurrentTriangle = 0;		///< Index of the next triangle within the block that is being visited
+	int							mFirstTriangle = 0;			///< When continuing an aborted walk: index of the first triangle within the block that has not been returned yet
 	int							mNumTrianglesFound;
 	const PhysicsMaterial **	mMaterials;
 	bool						mShouldAbort;
