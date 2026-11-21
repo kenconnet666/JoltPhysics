@@ -301,12 +301,12 @@ export interface NativeExports {
 	 */
 	_sn_physics_interpolate(world: number, alpha: number): number;
 	/**
-	 * 形状的重叠查询（Stride 的 BepuSimulation.Overlap）：shape 的 position、rotation 是查询的世界位姿（size、mesh 同 sn_shape，网格
-	 * 不缩放），mask 同射线。和它重叠的物体编号（去掉重复）写进 out_bodies，最多 capacity 个；返回重叠的物体总数（可能比 capacity 多），
+	 * 形状的重叠查询（Stride 的 BepuSimulation.Overlap）：查询的世界位置是 origin（双精度），shape 的 position、rotation 是相对它的
+	 * 位姿（size、mesh 同 sn_shape，网格不缩放），mask 同射线。和它重叠的物体编号（去掉重复）写进 out_bodies，最多 capacity 个；返回重叠的物体总数（可能比 capacity 多），
 	 * 负数是错误。触发器也算（同 Bepu）。
 	 * C: Physics.h
 	 */
-	_sn_physics_overlap(world: number, shape: number, mask: number, outBodies: number, capacity: number): number;
+	_sn_physics_overlap(world: number, origin: number, shape: number, mask: number, outBodies: number, capacity: number): number;
 	/**
 	 * 每个物体的位置 xyz，按编号排，能放 max_bodies 个；地址在世界销毁前不变，add_bodies 和 step 原地改写。
 	 * C: Physics.h
@@ -435,7 +435,7 @@ export interface NativeExports {
 	 */
 	_sn_transforms_create(capacity: number): number;
 	/**
-	 * 视锥剔除：实例的变换槽位按批次连续排在 slots 里，batch_ends[b] 是第 b 批的结束下标；同一批（同一个网格）共用一个本地
+	 * 视锥剔除（在渲染空间里：平面相对渲染原点，用 render_world）：实例的变换槽位按批次连续排在 slots 里，batch_ends[b] 是第 b 批的结束下标；同一批（同一个网格）共用一个本地
 	 * 包围盒，bounds 每批 6 个 float（中心 xyz、半长 xyz）。包围盒用槽位的世界矩阵变换（中心按点变换，半长按矩阵分量的绝对值
 	 * 变换，同 Stride 的 BoundingBoxExt.Transform），半长为 0 的包围盒总是可见、不参与量距离。第 v 个视图的结果写进
 	 * out_slots 的第 v * slot_count 段：每批可见的槽位按原顺序紧凑地放在这批原来的起点，个数写进 out_counts[v * batch_count + b]。
@@ -462,6 +462,12 @@ export interface NativeExports {
 	 * C: Runtime.h
 	 */
 	_sn_transforms_set_parent(transforms: number, slot: number, parent: number): number;
+	/**
+	 * 渲染原点：render_world 的平移减去它。变了时所有槽位的 render_world 重算、都算"变了"（GPU 上的全部重传一次），所以按格
+	 * 对齐、相机走出一格才换（渲染器的做法）。
+	 * C: Runtime.h
+	 */
+	_sn_transforms_set_render_origin(transforms: number, x: number, y: number, z: number): number;
 	/**
 	 * 发出去过的最大槽位号（释放了也不降）：用到的槽位都在 1..它 之内，上传世界矩阵时只传这一段。
 	 * C: Runtime.h
@@ -748,7 +754,7 @@ export const POINTER_SIGNATURES: Readonly<Record<string, string>> = {
 	sn_physics_create: '___p',
 	sn_physics_create_hull: '__p_',
 	sn_physics_create_mesh: '__p_p_',
-	sn_physics_overlap: '__p_p_',
+	sn_physics_overlap: '__pp_p_',
 	sn_physics_positions: 'p_',
 	sn_physics_ray_cast: '__pp__p',
 	sn_physics_ray_cast_all: '__pp__p_',
@@ -895,6 +901,7 @@ export type RuntimeExport =
 	| 'sn_transforms_update'
 	| 'sn_transforms_changed'
 	| 'sn_transforms_update_slot'
+	| 'sn_transforms_set_render_origin'
 	| 'sn_transforms_slot_limit'
 	| 'sn_transforms_cull'
 	| 'sn_meshopt_decode'

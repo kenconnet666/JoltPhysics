@@ -197,12 +197,16 @@ export class StrideNative extends NativeModule<RuntimeExport> {
 
 // sn_shape：type、position[3]、rotation[4]、size[3]、mesh、mass，13 个字
 const SHAPE_WORDS = 13;
-// sn_body：motion、flags、transform、position[3]、rotation[4]、first_shape、shape_count、layer、friction、character，15 个字
-const BODY_WORDS = 15;
+// sn_body：motion、flags、transform、（对齐空一个字）、position[3]（double，字 4..9）、rotation[4]、first_shape、shape_count、layer、friction、
+// character、（结尾对齐到 8 字节空一个字），20 个字
+const BODY_WORDS = 20;
 // sn_character：6 个 float
 const CHARACTER_WORDS = 6;
-// sn_hit：distance、point[3]、normal[3]、body
-const HIT_WORDS = 8;
+// sn_hit：point[3]（double，字 0..5）、distance、normal[3]、body、（对齐空一个字），12 个字
+const HIT_WORDS = 12;
+// 查询的暂存：origin（3 个 double，字节 0..24）、direction（3 个 float，字节 24..36），sn_hit 从字节 40 起（8 字节对齐）
+const QUERY_HIT = 40;
+const QUERY_BYTES = QUERY_HIT + HIT_WORDS * 4;
 // sn_physics_settings：gravity[3]、linear_damping、angular_damping、collision_masks[32]
 const SETTINGS_WORDS = 37;
 
@@ -407,19 +411,21 @@ export class PhysicsWorld extends NativeObject<StrideNative> {
 	readonly maxBodies: number;
 	#bodyCount = 0;
 	readonly #positionsAddress: number;
-	#positions: Float32Array;
+	#positions: Float64Array;
 	// 查询复用的 origin、direction 和 sn_hit，查询不分配内存
 	readonly #query: number;
 	readonly #queryFloats: Float32Array;
+	readonly #queryDoubles: Float64Array;
 
 	/** @internal */
 	constructor(native: StrideNative, handle: number, maxBodies: number) {
 		super(native, handle);
 		this.maxBodies = maxBodies;
 		this.#positionsAddress = native.module._sn_physics_positions(handle);
-		this.#positions = native.f32(this.#positionsAddress, 0);
-		this.#query = native.alloc((6 + HIT_WORDS) * 4);
-		this.#queryFloats = native.f32(this.#query, 6 + HIT_WORDS);
+		this.#positions = native.f64(this.#positionsAddress, 0);
+		this.#query = native.alloc(QUERY_BYTES);
+		this.#queryFloats = native.f32(this.#query, QUERY_BYTES / 4);
+		this.#queryDoubles = native.f64(this.#query, QUERY_BYTES / 8);
 	}
 
 	/** 用过的编号上限（最大的编号 + 1），也是 positions() 的长度 / 3；移除的物体的编号会被复用。 */
@@ -510,18 +516,19 @@ export class PhysicsWorld extends NativeObject<StrideNative> {
 		const n = this.native;
 		const shapeCount = bodies.reduce((sum, body) => sum + body.shapes.length, 0);
 		const characters = bodies.filter((body) => body.motion === 'character');
-		// 末尾留出 bodies.length 个字放原生分到的编号
+		// 末尾留出 bodies.length 个字放原生分到的编号；物体表在开头（里面有 double，表从 8 字节对齐的地址开始）
 		const bytes = (bodies.length * BODY_WORDS + shapeCount * SHAPE_WORDS + characters.length * CHARACTER_WORDS + bodies.length) * 4;
 		return n.withScratch(bytes, (table) => {
 			const floats = n.f32(table, bytes / 4);
 			const words = n.u32(table, bytes / 4);
+			const doubles = n.f64(table, (bodies.length * BODY_WORDS) / 2);
 			const shapesWord = bodies.length * BODY_WORDS;
 			const charactersWord = shapesWord + shapeCount * SHAPE_WORDS;
 			let shape = 0, character = 0;
 			bodies.forEach((body, i) => {
 				body.shapes.forEach((desc, s) => writeShape(floats, words, shapesWord + (shape + s) * SHAPE_WORDS, desc, i, s));
 				if (body.motion === 'character') writeCharacter(floats, charactersWord + character * CHARACTER_WORDS, body.character ?? {});
-				writeBody(floats, words, i * BODY_WORDS, body, i, shape, body.motion === 'character' ? character++ : 0);
+				writeBody(floats, words, doubles, i * BODY_WORDS, body, i, shape, body.motion === 'character' ? character++ : 0);
 				shape += body.shapes.length;
 			});
 			const idsWord = charactersWord + characters.length * CHARACTER_WORDS;
@@ -529,7 +536,7 @@ export class PhysicsWorld extends NativeObject<StrideNative> {
 				table + charactersWord * 4, characters.length, table + idsWord * 4), 'sn_physics_add_bodies');
 			const ids = Array.from(n.i32(table + idsWord * 4, bodies.length)) as BodyId[];
 			this.#bodyCount = Math.max(this.#bodyCount, ...ids.map((id) => id + 1));
-			this.#positions = n.f32(this.#positionsAddress, this.#bodyCount * 3);
+			this.#positions = n.f64(this.#positionsAddress, this.#bodyCount * 3);
 			return ids;
 		});
 	}
@@ -559,10 +566,10 @@ export class PhysicsWorld extends NativeObject<StrideNative> {
 	}
 
 	/**
-	 * 每个物体的位置 xyz，按 BodyId 排：原生内存上的视图，step() 原地改写，所以不拷贝，加物体之前一直是同一个对象。
+	 * 每个物体的位置 xyz（双精度），按 BodyId 排：原生内存上的视图，step() 原地改写，所以不拷贝，加物体之前一直是同一个对象。
 	 * 世界销毁后失效。
 	 */
-	positions(): Float32Array {
+	positions(): Float64Array {
 		return this.#positions;
 	}
 
@@ -582,10 +589,10 @@ export class PhysicsWorld extends NativeObject<StrideNative> {
 
 	/** 瞬移到世界位姿并唤醒（Stride 的 Teleport）；绑定了变换的立即写回。 */
 	teleport(body: BodyId, position: Vec3, rotation: ArrayLike<number>): void {
-		const f = this.#queryFloats;
-		f.set([position[0]!, position[1]!, position[2]!, rotation[0]!, rotation[1]!, rotation[2]!, rotation[3]!]);
+		this.#queryDoubles.set([position[0]!, position[1]!, position[2]!]);
+		this.#queryFloats.set([rotation[0]!, rotation[1]!, rotation[2]!, rotation[3]!], 6);
 		const q = this.#query;
-		this.native.check(this.native.module._sn_physics_body_teleport(this[HANDLE], body, q, q + 12), 'sn_physics_body_teleport');
+		this.native.check(this.native.module._sn_physics_body_teleport(this[HANDLE], body, q, q + 24), 'sn_physics_body_teleport');
 	}
 
 	/**
@@ -651,7 +658,7 @@ export class PhysicsWorld extends NativeObject<StrideNative> {
 	rayCast(origin: Vec3, direction: Vec3, maxDistance: number, { mask = ALL_LAYERS, hit = new PhysicsHit() }: QueryOptions = {}): PhysicsHit | undefined {
 		this.#setQuery(origin, direction);
 		const q = this.#query;
-		const result = this.native.module._sn_physics_ray_cast(this[HANDLE], q, q + 12, maxDistance, mask >>> 0, q + 24);
+		const result = this.native.module._sn_physics_ray_cast(this[HANDLE], q, q + 24, maxDistance, mask >>> 0, q + QUERY_HIT);
 		return this.#hit(this.native.check(result, 'sn_physics_ray_cast'), hit);
 	}
 
@@ -663,18 +670,11 @@ export class PhysicsWorld extends NativeObject<StrideNative> {
 		this.#setQuery(origin, direction);
 		const q = this.#query;
 		return n.withScratch(capacity * HIT_WORDS * 4, (out) => {
-			const total = n.check(n.module._sn_physics_ray_cast_all(this[HANDLE], q, q + 12, maxDistance, mask >>> 0, out, capacity), 'sn_physics_ray_cast_all');
+			const total = n.check(n.module._sn_physics_ray_cast_all(this[HANDLE], q, q + 24, maxDistance, mask >>> 0, out, capacity), 'sn_physics_ray_cast_all');
 			// 比 capacity 多时再查一次，放得下全部
 			if (total > capacity) return this.rayCastAll(origin, direction, maxDistance, { mask, capacity: total });
-			const floats = n.f32(out, total * HIT_WORDS), ints = n.i32(out, total * HIT_WORDS);
-			return Array.from({ length: total }, (_, i) => {
-				const at = i * HIT_WORDS, hit = new PhysicsHit();
-				hit.distance = floats[at]!;
-				hit.point[0] = floats[at + 1]!; hit.point[1] = floats[at + 2]!; hit.point[2] = floats[at + 3]!;
-				hit.normal[0] = floats[at + 4]!; hit.normal[1] = floats[at + 5]!; hit.normal[2] = floats[at + 6]!;
-				hit.body = ints[at + 7]! as BodyId;
-				return hit;
-			});
+			const floats = n.f32(out, total * HIT_WORDS), ints = n.i32(out, total * HIT_WORDS), doubles = n.f64(out, (total * HIT_WORDS) / 2);
+			return Array.from({ length: total }, (_, i) => readHit(doubles, floats, ints, i * HIT_WORDS, new PhysicsHit()));
 		});
 	}
 
@@ -699,21 +699,25 @@ export class PhysicsWorld extends NativeObject<StrideNative> {
 		this.#setQuery(origin, direction);
 		const q = this.#query;
 		const flags = ignoreInitialOverlap ? CAST_IGNORE_INITIAL_OVERLAP : 0;
-		const result = this.native.module._sn_physics_sphere_cast(this[HANDLE], radius, q, q + 12, maxDistance, mask >>> 0, flags, q + 24);
+		const result = this.native.module._sn_physics_sphere_cast(this[HANDLE], radius, q, q + 24, maxDistance, mask >>> 0, flags, q + QUERY_HIT);
 		return this.#hit(this.native.check(result, 'sn_physics_sphere_cast'), hit);
 	}
 
 	/**
-	 * 形状的重叠查询（Stride 的 BepuSimulation.Overlap）：shape 的 position、rotation 是查询的世界位姿，返回和它重叠的物体
-	 * （去掉重复，触发器也算）。网格、凸包不缩放。
+	 * 形状的重叠查询（Stride 的 BepuSimulation.Overlap）：shape 的 position、rotation 是查询的世界位姿（位置按双精度传），返回和它重叠
+	 * 的物体（去掉重复，触发器也算）。网格、凸包不缩放。
 	 */
 	overlap(shape: ShapeDesc, { mask = ALL_LAYERS, capacity = 64 }: { mask?: number; capacity?: number } = {}): BodyId[] {
 		const n = this.native;
-		const bytes = (SHAPE_WORDS + capacity) * 4;
-		return n.withScratch(bytes, (table) => {
-			writeShape(n.f32(table, SHAPE_WORDS), n.u32(table, SHAPE_WORDS), 0, shape, 0, 0);
+		// 世界位置是双精度的原点（字节 0..24），形状本身放在原点上（字节 24 起）
+		const bytes = 24 + (SHAPE_WORDS + capacity) * 4;
+		return n.withScratch(bytes, (origin) => {
+			const position = shape.position ?? ORIGIN;
+			n.f64(origin, 3).set([position[0]!, position[1]!, position[2]!]);
+			const table = origin + 24;
+			writeShape(n.f32(table, SHAPE_WORDS), n.u32(table, SHAPE_WORDS), 0, { ...shape, position: ORIGIN }, 0, 0);
 			const out = table + SHAPE_WORDS * 4;
-			const total = n.check(n.module._sn_physics_overlap(this[HANDLE], table, mask >>> 0, out, capacity), 'sn_physics_overlap');
+			const total = n.check(n.module._sn_physics_overlap(this[HANDLE], origin, table, mask >>> 0, out, capacity), 'sn_physics_overlap');
 			// 比 capacity 多时再查一次，放得下全部
 			if (total > capacity) return this.overlap(shape, { mask, capacity: total });
 			return Array.from(n.i32(out, total)) as BodyId[];
@@ -721,25 +725,31 @@ export class PhysicsWorld extends NativeObject<StrideNative> {
 	}
 
 	#setQuery(origin: Vec3, direction: Vec3): void {
-		const f = this.#queryFloats;
-		f[0] = origin[0]!; f[1] = origin[1]!; f[2] = origin[2]!;
-		f[3] = direction[0]!; f[4] = direction[1]!; f[5] = direction[2]!;
+		const d = this.#queryDoubles, f = this.#queryFloats;
+		d[0] = origin[0]!; d[1] = origin[1]!; d[2] = origin[2]!;
+		f[6] = direction[0]!; f[7] = direction[1]!; f[8] = direction[2]!;
 	}
 
 	#hit(found: number, hit: PhysicsHit): PhysicsHit | undefined {
 		if (found === 0) return undefined;
-		const f = this.#queryFloats;
-		hit.distance = f[6]!;
-		hit.point[0] = f[7]!; hit.point[1] = f[8]!; hit.point[2] = f[9]!;
-		hit.normal[0] = f[10]!; hit.normal[1] = f[11]!; hit.normal[2] = f[12]!;
-		hit.body = this.native.i32(this.#query + 13 * 4, 1)[0]! as BodyId;
-		return hit;
+		const words = QUERY_HIT / 4;
+		return readHit(this.#queryDoubles, this.#queryFloats, this.native.i32(this.#query, QUERY_BYTES / 4), words, hit);
 	}
 
 	protected override release(): void {
 		this.native.module._sn_physics_destroy(this[HANDLE]);
 		this.native.free(this.#query);
 	}
+}
+
+/** 读一个 sn_hit（从第 at 个字起；三个视图都从同一个 8 字节对齐的地址开始）。 */
+function readHit(doubles: Float64Array, floats: Float32Array, ints: Int32Array, at: number, hit: PhysicsHit): PhysicsHit {
+	const d = at / 2;
+	hit.point[0] = doubles[d]!; hit.point[1] = doubles[d + 1]!; hit.point[2] = doubles[d + 2]!;
+	hit.distance = floats[at + 6]!;
+	hit.normal[0] = floats[at + 7]!; hit.normal[1] = floats[at + 8]!; hit.normal[2] = floats[at + 9]!;
+	hit.body = ints[at + 10]! as BodyId;
+	return hit;
 }
 
 function boxMotion(motion: string, index: number): 'dynamic' | 'static' {
@@ -865,7 +875,7 @@ function writeCharacter(floats: Float32Array, o: number, settings: CharacterSett
 	], o);
 }
 
-function writeBody(floats: Float32Array, words: Uint32Array, o: number, body: BodyDesc, index: number, firstShape: number, character: number): void {
+function writeBody(floats: Float32Array, words: Uint32Array, doubles: Float64Array, o: number, body: BodyDesc, index: number, firstShape: number, character: number): void {
 	const motion = MOTIONS[body.motion ?? 'static'];
 	if (motion === undefined) throw new TypeError(`body ${index}: motion must be 'static', 'dynamic', 'kinematic' or 'character', not '${String(body.motion)}'`);
 	if (body.shapes.length === 0) throw new RangeError(`body ${index} needs at least one shape`);
@@ -876,18 +886,18 @@ function writeBody(floats: Float32Array, words: Uint32Array, o: number, body: Bo
 		| (body.sensor ? BODY_SENSOR : 0) | (body.contactEvents === 'touching' ? BODY_TOUCHING_EVENTS : body.contactEvents ? BODY_CONTACT_EVENTS : 0);
 	words[o + 2] = body.transform ?? 0;
 	const position = body.position ?? ORIGIN, rotation = body.rotation ?? IDENTITY;
-	floats.set([position[0]!, position[1]!, position[2]!, rotation[0]!, rotation[1]!, rotation[2]!, rotation[3]!], o + 3);
-	words[o + 10] = firstShape;
-	words[o + 11] = body.shapes.length;
-	words[o + 12] = layer;
-	floats[o + 13] = body.friction ?? 1;
-	words[o + 14] = character;
+	doubles.set([position[0]!, position[1]!, position[2]!], o / 2 + 2);
+	floats.set([rotation[0]!, rotation[1]!, rotation[2]!, rotation[3]!], o + 10);
+	words[o + 14] = firstShape;
+	words[o + 15] = body.shapes.length;
+	words[o + 16] = layer;
+	floats[o + 17] = body.friction ?? 1;
+	words[o + 18] = character;
 }
 
 
-/** sn_transform_columns：5 个指针加 capacity。 */
-/** sn_transform_columns（64 位）：五个列的指针各 8 字节，再是 capacity。 */
-const COLUMNS_SIZE = 48;
+/** sn_transform_columns（64 位）：六个列的指针各 8 字节，再是 capacity（结构体按 8 字节对齐）。 */
+const COLUMNS_SIZE = 56;
 
 /**
  * 实体的本地位姿和世界矩阵，按结构数组放在模块内存里，用 StrideNative.createTransforms 创建。
@@ -897,32 +907,38 @@ const COLUMNS_SIZE = 48;
 export class TransformStore extends NativeObject<StrideNative> {
 	/** 最大槽位号；槽位是 1..capacity。 */
 	readonly capacity: number;
-	/** 本地位置，position[slot * 3 + 0..2]。 */
-	readonly position: Float32Array;
+	/** 本地位置（双精度：大世界几十公里外也不抖），position[slot * 3 + 0..2]。 */
+	readonly position: Float64Array;
 	/** 本地旋转，单位四元数 xyzw，rotation[slot * 4 + 0..3]。 */
 	readonly rotation: Float32Array;
 	/** 本地缩放，scale[slot * 3 + 0..2]。 */
 	readonly scale: Float32Array;
 	/** 父槽位，0 表示根。只能读：要改用 setParent，原生那边要维护子节点数和计算顺序。 */
 	readonly parent: Int32Array;
-	/** 世界矩阵，列主序 4x4，world[slot * 16 + 0..15]，平移在 12..14；update() 写入。 */
-	readonly world: Float32Array;
+	/** 世界矩阵（双精度），列主序 4x4，world[slot * 16 + 0..15]，平移在 12..14；update() 写入。 */
+	readonly world: Float64Array;
+	/**
+	 * 渲染用的世界矩阵（单精度），平移减了渲染原点（setRenderOrigin）；和 world 一起写。GPU 和剔除用它：整段交给
+	 * GPUQueue.writeBuffer，远处的东西在相机附近也有足够的精度。
+	 */
+	readonly renderWorld: Float32Array;
 	readonly #scratch: number;
 
 	/** @internal */
 	constructor(native: StrideNative, handle: number) {
 		super(native, handle);
-		const [position, rotation, scale, parent, world, capacity] = native.withScratch(COLUMNS_SIZE, (out) => {
+		const [position, rotation, scale, parent, world, renderWorld, capacity] = native.withScratch(COLUMNS_SIZE, (out) => {
 			native.check(native.module._sn_transforms_columns(handle, out), 'sn_transforms_columns');
-			return [0, 1, 2, 3, 4].map((i) => native.readPointer(out + i * 8)).concat(native.u32(out + 40, 1)[0]!);
-		}) as [number, number, number, number, number, number];
+			return [0, 1, 2, 3, 4, 5].map((i) => native.readPointer(out + i * 8)).concat(native.u32(out + 48, 1)[0]!);
+		}) as [number, number, number, number, number, number, number];
 		const slots = capacity + 1;
 		this.capacity = capacity;
-		this.position = native.f32(position, slots * 3);
+		this.position = native.f64(position, slots * 3);
 		this.rotation = native.f32(rotation, slots * 4);
 		this.scale = native.f32(scale, slots * 3);
 		this.parent = native.i32(parent, slots);
-		this.world = native.f32(world, slots * 16);
+		this.world = native.f64(world, slots * 16);
+		this.renderWorld = native.f32(renderWorld, slots * 16);
 		this.#scratch = native.alloc(8);
 	}
 
@@ -978,9 +994,17 @@ export class TransformStore extends NativeObject<StrideNative> {
 		});
 	}
 
-	/** 发出去过的最大槽位号（释放了也不降）：用到的槽位都在 1..slotLimit 之内，上传世界矩阵时只传 world 的前 (slotLimit + 1) * 16 个 float。 */
+	/** 发出去过的最大槽位号（释放了也不降）：用到的槽位都在 1..slotLimit 之内，上传渲染用世界矩阵时只传 renderWorld 的前 (slotLimit + 1) * 16 个 float。 */
 	get slotLimit(): number {
 		return this.native.check(this.native.module._sn_transforms_slot_limit(this[HANDLE]), 'sn_transforms_slot_limit');
+	}
+
+	/**
+	 * 渲染原点：renderWorld 的平移减去它。变了时所有槽位的 renderWorld 重算、都算"变了"（GPU 上的要全部重传一次），所以按格对齐、
+	 * 相机走出一格才换。
+	 */
+	setRenderOrigin(x: number, y: number, z: number): void {
+		this.native.check(this.native.module._sn_transforms_set_render_origin(this[HANDLE], x, y, z), 'sn_transforms_set_render_origin');
 	}
 
 	/** 按父节点在前的顺序算所有世界矩阵。层级变了才重排顺序，平时是一遍顺序扫描。 */

@@ -692,6 +692,33 @@ describe('stride-native and stride-tools', () => {
 		assert.equal(transforms.allocate(5).length, 5);
 	});
 
+	it('keeps far positions in double precision and renders them relative to the render origin', () => {
+		using transforms = native.createTransforms(4);
+		using world = native.createPhysicsWorld(4, { transforms });
+		const [far, child] = transforms.allocate(2);
+		transforms.setParent(child, far);
+		// 2 万公里外（单精度在那里一个刻度是 2 米）：毫米也留得住
+		transforms.position.set([20000000.001, 0, -15000000.002], far * 3);
+		transforms.position[child * 3] = 0.5;
+		transforms.update();
+		assert.ok(Math.abs(transforms.world[child * 16 + 12] - 20000000.501) < 1e-6);
+		assert.ok(Math.abs(transforms.world[child * 16 + 14] + 15000000.002) < 1e-6);
+		// 渲染原点放在附近：渲染用的矩阵是小数，精度在相机附近
+		transforms.setRenderOrigin(20000000, 0, -15000000);
+		assert.ok(transforms.changedSlots().length === 2, 'moving the render origin marks every slot changed');
+		assert.ok(Math.abs(transforms.renderWorld[child * 16 + 12] - 0.501) < 1e-6);
+		assert.ok(Math.abs(transforms.renderWorld[child * 16 + 14] + 0.002) < 1e-6);
+		// 物理也是双精度：远处的盒子落在远处的地板上，射线打中它
+		world.addBox({ halfExtent: [10, 0.5, 10], position: [20000000, -0.5, -15000000], motion: 'static' });
+		const box = world.addBox({ halfExtent: [0.5, 0.5, 0.5], transform: child, motion: 'dynamic' });
+		for (let i = 0; i < 120; i++) world.step(1 / 60);
+		transforms.update();
+		assert.ok(Math.abs(world.positions()[box * 3 + 1] - 0.5) < 0.05, 'rests on the far floor');
+		assert.ok(Math.abs(world.positions()[box * 3] - 20000000.501) < 0.01, 'kept its far x to the centimeter');
+		const hit = world.rayCast([20000000.501, 10, -15000000.002], [0, -1, 0], 20);
+		assert.ok(hit && Math.abs(hit.point[1] - 1) < 0.05 && Math.abs(hit.point[0] - 20000000.501) < 1e-3);
+	});
+
 	it('reports the slots whose world matrix changed in the last update', () => {
 		using transforms = native.createTransforms(8);
 		const [still, mover, child, spare] = transforms.allocate(4);
