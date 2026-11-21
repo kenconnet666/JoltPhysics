@@ -16,8 +16,15 @@ set(REPO_ROOT ${STRIDE_NATIVE_ROOT}/..)
 
 # wasm 的初始和最大内存（工作线程池的大小由 JS 加载器经 Module.workerPoolSize 给）
 set(STRIDE_NATIVE_INITIAL_MEMORY 67108864 CACHE STRING "Initial wasm memory in bytes")
-set(STRIDE_NATIVE_MAXIMUM_MEMORY 2147483648 CACHE STRING "Maximum wasm memory in bytes")
+# 上限 16 GB：Chrome、Firefox 给 Memory64 的上限（32 位最多 4 GB）
+set(STRIDE_NATIVE_MAXIMUM_MEMORY 17179869184 CACHE STRING "Maximum wasm memory in bytes")
 if (EMSCRIPTEN)
+	# 64 位（Memory64，用户 2026-11-21 定：只出 64 位，不留 32 位）：指针是 i64，JS 加载器按头文件生成的签名把它们换成
+	# number。实测 Jolt 的性能测试单线程慢 7%～12%（stride-ts 的 docs/decisions.md 2026-11-21 的"Memory64"）。要 Chrome 133、
+	# Firefox 134 以上。Jolt 和第三方库都经这里的全局选项编成 64 位
+	set(JPH_USE_WASM64 ON)
+	add_compile_options(-m64)
+	add_link_options(-m64)
 	# Every object linked into a shared-memory module must be built with atomics, so -pthread has to
 	# reach Jolt and all third-party code too. Set before add_subdirectory so Jolt inherits it.
 	add_compile_options(-pthread -msimd128)

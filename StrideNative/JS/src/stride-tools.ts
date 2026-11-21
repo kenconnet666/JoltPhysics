@@ -656,11 +656,11 @@ export class Scene extends NativeObject<StrideTools> {
 	/** 第 index 张图片：嵌在文件里的拷出字节，外部文件给路径。 */
 	image(index: number): SceneImage {
 		const t = this.native;
-		return t.withScratch(12, (out) => {
-			const size = t.check(t.module._st_scene_image(this[HANDLE], index, out, out + 4, out + 8), 'st_scene_image');
-			const [data, uri, mime] = Array.from(t.u32(out, 3));
-			const path = t.module.UTF8ToString(uri!);
-			return { data: size > 0 ? t.copyOut(Uint8Array, data!, size) : null, uri: size > 0 || path === '' ? null : path, mime: t.module.UTF8ToString(mime!) };
+		return t.withScratch(24, (out) => {
+			const size = t.check(t.module._st_scene_image(this[HANDLE], index, out, out + 8, out + 16), 'st_scene_image');
+			const [data, uri, mime] = [0, 8, 16].map((offset) => t.readPointer(out + offset)) as [number, number, number];
+			const path = t.module.UTF8ToString(uri);
+			return { data: size > 0 ? t.copyOut(Uint8Array, data, size) : null, uri: size > 0 || path === '' ? null : path, mime: t.module.UTF8ToString(mime) };
 		});
 	}
 

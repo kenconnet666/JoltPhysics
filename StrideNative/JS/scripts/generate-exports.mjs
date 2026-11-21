@@ -1,5 +1,5 @@
 // 从 C 头文件（Include/StrideNative/*.h 的 SN_API 声明）生成 src/native-exports.ts：每个 C 函数在 Emscripten 模块上的
-// 签名（参数名、个数、文档注释照抄头文件），以及每个模块导出哪些函数。构建时（pnpm run build）先跑它；生成的文件也提交，
+// 签名（参数名、个数、文档注释照抄头文件），以及每个模块导出哪些函数，和 64 位（Memory64）模块要转换的指针参数（POINTER_SIGNATURES）。构建时（pnpm run build）先跑它；生成的文件也提交，
 // IDE 不构建也能看到。用法：node scripts/generate-exports.mjs [--check]（--check 时只检查是否需要重新生成）
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -32,10 +32,13 @@ function parseHeader(file) {
 		const [, returnType, name, params] = match;
 		const docs = [];
 		for (let j = start - 1; j >= 0 && lines[j].startsWith('///'); j--) docs.unshift(lines[j].replace(/^\/\/\/\s?/, ''));
+		const rawParams = VOID.test(params) || params.trim() === '' ? [] : splitParams(params);
 		functions.push({
 			name,
 			returns: /^\s*void\s*$/.test(returnType) ? 'void' : 'number',
-			params: VOID.test(params) || params.trim() === '' ? [] : splitParams(params).map(paramName),
+			params: rawParams.map(paramName),
+			// 64 位模块里是 i64 的：指针（含函数指针）和 size_t；返回值在前，参数在后（'p' 是指针，'_' 不是）
+			signature: [returnType, ...rawParams].map((type) => (/[*]|size_t|u?intptr_t/.test(type) ? 'p' : '_')).join(''),
 			docs,
 			file,
 		});
@@ -84,6 +87,17 @@ for (const fn of [...byName.values()].sort((a, b) => a.name.localeCompare(b.name
 	out.push(`\t_${fn.name}(${fn.params.map((param) => `${camel(param)}: number`).join(', ')}): ${fn.returns};`);
 }
 out.push('}', '');
+out.push(
+	'/**',
+	' * 64 位（Memory64）模块里指针是 i64，JS 里是 bigint：这些函数的哪些位置是指针（第一个字符是返回值，后面依次是参数；',
+	" * 'p' 是指针，'_' 不是）。加载器按它包一层，指针在 JS 这边仍然是 number。没有指针的函数不在表里。",
+	' */',
+	'export const POINTER_SIGNATURES: Readonly<Record<string, string>> = {',
+);
+for (const fn of [...byName.values()].sort((a, b) => a.name.localeCompare(b.name))) {
+	if (fn.signature.includes('p')) out.push(`	${fn.name}: '${fn.signature}',`);
+}
+out.push('};', '');
 for (const [type, { headers, extra = [] }] of Object.entries(MODULES)) {
 	const names = [...byName.values()].filter((fn) => headers.includes(fn.file)).map((fn) => fn.name).concat(extra);
 	for (const name of extra) if (!byName.has(name)) throw new Error(`${type}: ${name} is not declared in any header`);

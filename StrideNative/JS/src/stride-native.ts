@@ -5,7 +5,7 @@ import {
 	type Branded, type ModuleOptions, type NavConfig,
 } from './native-module.ts';
 
-export { NativeError, defaultWorkerThreads } from './native-module.ts';
+export { NativeError, defaultWorkerThreads, memory64Supported } from './native-module.ts';
 export type { ModuleOptions, NativeDebugSnapshot, NativeErrorCode, NativeFeature, NativeLogLine, NavConfig } from './native-module.ts';
 
 /** xyz；数组、元组和 Vector3 之类的 ArrayLike 都行。 */
@@ -110,7 +110,8 @@ export class StrideNative extends NativeModule<RuntimeExport> {
 
 	/** 在任务系统上并行解码多个 buffer view。 */
 	async decodeMeshoptBatch(requests: readonly MeshoptRequest[]): Promise<Uint8Array[]> {
-		const REQUEST_SIZE = 32;
+		// sn_meshopt_request（64 位）：dst 指针、count、stride、src 指针、src_size、mode、filter、result
+		const REQUEST_SIZE = 40;
 		const table = this.alloc(Math.max(1, requests.length) * REQUEST_SIZE);
 		const buffers: number[] = [];
 		try {
@@ -121,14 +122,14 @@ export class StrideNative extends NativeModule<RuntimeExport> {
 				const dst = this.alloc(request.count * request.stride);
 				buffers.push(src, dst);
 				const view = this.view(table + i * REQUEST_SIZE, REQUEST_SIZE);
-				view.setUint32(0, dst, true);
-				view.setUint32(4, request.count, true);
-				view.setUint32(8, request.stride, true);
-				view.setUint32(12, src, true);
-				view.setUint32(16, request.source.byteLength, true);
-				view.setInt32(20, mode, true);
-				view.setInt32(24, filter, true);
-				view.setInt32(28, 1, true);
+				view.setBigUint64(0, BigInt(dst), true);
+				view.setUint32(8, request.count, true);
+				view.setUint32(12, request.stride, true);
+				view.setBigUint64(16, BigInt(src), true);
+				view.setUint32(24, request.source.byteLength, true);
+				view.setInt32(28, mode, true);
+				view.setInt32(32, filter, true);
+				view.setInt32(36, 1, true);
 			});
 			await this.awaitTask(this.module._sn_meshopt_decode_batch(table, requests.length), 'sn_meshopt_decode_batch');
 			return requests.map((request, i) => this.copyOut(Uint8Array, buffers[i * 2 + 1]!, request.count * request.stride));
@@ -683,9 +684,9 @@ export class PhysicsWorld extends NativeObject<StrideNative> {
 	 */
 	staticTriangles(mask = ALL_LAYERS): Float32Array {
 		const n = this.native;
-		return n.withScratch(4, (out) => {
+		return n.withScratch(8, (out) => {
 			const count = n.check(n.module._sn_physics_static_triangles(this[HANDLE], mask >>> 0, out), 'sn_physics_static_triangles');
-			const data = n.u32(out, 1)[0]!;
+			const data = n.readPointer(out);
 			if (count === 0) return new Float32Array(0);
 			const triangles = n.copyOut(Float32Array, data, count * 9);
 			n.free(data);
@@ -885,7 +886,8 @@ function writeBody(floats: Float32Array, words: Uint32Array, o: number, body: Bo
 
 
 /** sn_transform_columns：5 个指针加 capacity。 */
-const COLUMNS_SIZE = 24;
+/** sn_transform_columns（64 位）：五个列的指针各 8 字节，再是 capacity。 */
+const COLUMNS_SIZE = 48;
 
 /**
  * 实体的本地位姿和世界矩阵，按结构数组放在模块内存里，用 StrideNative.createTransforms 创建。
@@ -912,7 +914,7 @@ export class TransformStore extends NativeObject<StrideNative> {
 		super(native, handle);
 		const [position, rotation, scale, parent, world, capacity] = native.withScratch(COLUMNS_SIZE, (out) => {
 			native.check(native.module._sn_transforms_columns(handle, out), 'sn_transforms_columns');
-			return Array.from(native.u32(out, 6));
+			return [0, 1, 2, 3, 4].map((i) => native.readPointer(out + i * 8)).concat(native.u32(out + 40, 1)[0]!);
 		}) as [number, number, number, number, number, number];
 		const slots = capacity + 1;
 		this.capacity = capacity;
@@ -921,7 +923,7 @@ export class TransformStore extends NativeObject<StrideNative> {
 		this.scale = native.f32(scale, slots * 3);
 		this.parent = native.i32(parent, slots);
 		this.world = native.f32(world, slots * 16);
-		this.#scratch = native.alloc(4);
+		this.#scratch = native.alloc(8);
 	}
 
 	/** 分配一个槽位：位置 0、旋转单位、缩放 1、没有父节点。容量不够时抛 NativeError。 */
@@ -993,7 +995,7 @@ export class TransformStore extends NativeObject<StrideNative> {
 	changedSlots(): Int32Array {
 		const n = this.native;
 		const count = n.check(n.module._sn_transforms_changed(this[HANDLE], this.#scratch), 'sn_transforms_changed');
-		return n.i32(n.u32(this.#scratch, 1)[0]!, count);
+		return n.i32(n.readPointer(this.#scratch), count);
 	}
 
 	/** 只算 slot 和它的祖先的世界矩阵（Stride 的 UpdateWorldMatrix）：这一帧的 update() 之前要用世界位姿时调用。 */
@@ -1268,7 +1270,8 @@ export class AnimationBatch implements Disposable {
 	readonly #native: StrideNative;
 	#ops = new NativeBuffer(16);
 	#requests = new NativeBuffer(16);
-	#skins = new NativeBuffer(16);
+	/** sn_anim_skin_request（64 位）：instance、skin、output 指针（偏移 8）、result（偏移 16），24 字节。 */
+	#skins = new NativeBuffer(24);
 	#opCount = 0;
 	#requestCount = 0;
 	#skinCount = 0;
@@ -1321,12 +1324,12 @@ export class AnimationBatch implements Disposable {
 	skin(skin: Skin, palette: SkinPalette): this {
 		if (this.#current < 0) throw new NativeError('AnimationBatch.skin: call instance() first', -1);
 		if (palette.jointCount !== skin.jointCount) throw new NativeError(`AnimationBatch.skin: the palette holds ${palette.jointCount} joints, the skin has ${skin.jointCount}`, -1);
-		const at = this.#skins.ensure(this.#native, this.#skinCount + 1) + this.#skinCount * 16;
-		const view = this.#native.i32(at, 4);
+		const at = this.#skins.ensure(this.#native, this.#skinCount + 1) + this.#skinCount * 24;
+		const view = this.#native.i32(at, 6);
 		view[0] = this.#native.i32(this.#requests.address + this.#current * 16, 1)[0]!;
 		view[1] = skin[HANDLE];
-		view[2] = palette.address;
-		view[3] = 0;
+		this.#native.writePointer(at + 8, palette.address);
+		view[4] = 0;
 		this.#skinCount++;
 		return this;
 	}

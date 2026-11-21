@@ -15,7 +15,12 @@ const features = [physics, texture, navigation];
 
 // 示例插件不进 npm 包，从正式版的构建目录加载（Scripts/build-wasm.ps1 编出它）
 const examplePlugin = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'Build', 'WASM_Release', 'example-plugin.wasm');
-const example = { name: 'example', url: pathToFileURL(examplePlugin) };
+// 插件的导出里哪些位置是指针（模块是 64 位的）：返回值在前，'p' 是指针
+const example = {
+	name: 'example',
+	url: pathToFileURL(examplePlugin),
+	signatures: { sn_example_wave: '__p___', sn_example_histogram: '_p_', sn_example_counter_create: '_p', sn_example_counter_name: 'p_' },
+};
 
 const testData = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'Data');
 const fontPath = process.env.STRIDE_TEST_FONT ?? 'C:/Windows/Fonts/arial.ttf';

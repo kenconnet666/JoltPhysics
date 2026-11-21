@@ -13,6 +13,9 @@
 - **标准库只用示例插件用到的那些**。核心模块恰好导出示例插件（"ABI 探针"，它在核心的链接行上）导入的符号，插件用了别的
   库函数，加载时报 `undefined symbol`。需要新的库功能时，在示例插件里用上它、重编运行时，下一个版本就有了。
 - **和运行时用同一个 emsdk 版本**（README 的"Build and test"里写着），C++ 标准库的 ABI 要一致。
+- **64 位**：运行时是 Memory64 的（指针 8 字节，内存最多 16 GB），`stride_native_plugin` 也把插件编成 64 位。指针、`size_t`
+  到 JS 是 bigint：在 JS 的 `NativeFeature` 里写上 `signatures`（见下面），加载器替你换成 number。结构体里有指针字段时，JS 写它
+  按 8 字节排（`native.writePointer`、`readPointer`）。
 - **只在启动时加载**，每个线程一份；插件导出的函数在哪个线程都能调用，并发安全由插件自己负责。
 - 调试版运行时（`debug: true`）也能加载只用 C API 的插件；内置模块各有调试版，是因为它们用 Jolt 的内部结构。
 
@@ -63,6 +66,8 @@ import { createStrideNative, type NativeFeature } from '@stride-ts/native';
 const myPlugin: NativeFeature<'my_plugin_lift'> = {
 	name: 'my_plugin',
 	url: new URL('./my-plugin.wasm', import.meta.url),
+	// 哪些位置是指针：第一个字符是返回值，后面依次是参数，'p' 指针、'_' 不是。列出的函数指针照旧传 number
+	signatures: { my_plugin_lift: '__p__' },
 };
 
 const native = await createStrideNative({ features: [myPlugin] });

@@ -1,5 +1,7 @@
 // StrideNative 两个 wasm 模块（stride-native、stride-tools）共用的 JS 侧：实例化、内存视图、结构体读写、
 // 错误和原生任务的等待。两个模块都是多线程的，内存是 SharedArrayBuffer。
+// 模块是 64 位的（Memory64，内存最多 16 GB）：C 的指针是 i64，到 JS 是 bigint；加载器按头文件生成的签名
+// （native-exports.ts 的 POINTER_SIGNATURES）给每个 C 函数包一层，指针在 JS 这边照旧是 number。
 // 这是 npm 包 @stride-ts/native 的源码：tsc 编译进 dist/（相对导入写 .ts，产出里改成 .js），
 // 和 Emscripten 产出的 .mjs、.wasm 放在一起，用 pnpm pack 打包。
 
@@ -26,7 +28,7 @@ export class NativeError extends Error {
 	}
 }
 
-import type { CoreExport, NativeExports } from './native-exports.ts';
+import { POINTER_SIGNATURES, type CoreExport, type NativeExports } from './native-exports.ts';
 
 export type { CoreExport };
 
@@ -95,6 +97,12 @@ export interface NativeFeature<E extends string = string> {
 	 * 只用插件 C API 的第三方插件不需要，没有时用 url。
 	 */
 	readonly debugUrl?: URL;
+	/**
+	 * 插件导出的 C 函数里哪些位置是指针（模块是 64 位的，指针到 JS 是 bigint）：函数名到签名，第一个字符是返回值，后面依次是
+	 * 参数，'p' 是指针（或 size_t），'_' 不是，比如 `const char *name(int32_t id)` 是 'p_'。列出的函数加载器包一层，指针照旧用
+	 * number；没列的按原样（指针参数要传 bigint）。内置功能不用写，它们的签名从头文件生成。
+	 */
+	readonly signatures?: { readonly [K in E]?: string };
 	readonly [FEATURE_EXPORTS]?: E;
 }
 
@@ -110,6 +118,34 @@ const TASK_RUNNING = 0;
 const TASK_DONE = 1;
 
 const isNode = typeof process !== 'undefined' && process.versions?.node != null;
+
+/** 一个只声明了 64 位内存的最小模块：引擎支持 Memory64 时才验证得过（Chrome 133、Firefox 134、Node 24 起）。 */
+const MEMORY64_PROBE = new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x05, 0x03, 0x01, 0x04, 0x01]);
+
+/** 这个环境能不能加载 StrideNative 的（64 位）模块。 */
+export function memory64Supported(): boolean {
+	try {
+		return WebAssembly.validate(MEMORY64_PROBE);
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * 把 64 位模块的 C 函数包成指针是 number 的样子：signature 第一个字符是返回值，后面依次是参数，'p' 是指针（JS 传进来的
+ * number 换成 bigint，返回的 bigint 换回 number；16 GB 以内的地址都在 2^53 以内）。
+ */
+function withNumberPointers(fn: (...args: unknown[]) => unknown, signature: string): NativeFunction {
+	const returnsPointer = signature[0] === 'p';
+	const pointers: number[] = [];
+	for (let i = 1; i < signature.length; i++) if (signature[i] === 'p') pointers.push(i - 1);
+	return (...args: number[]) => {
+		const converted: unknown[] = args;
+		for (const i of pointers) converted[i] = BigInt(args[i]!);
+		const result = fn(...converted);
+		return (returnsPointer ? Number(result as bigint) : result) as number;
+	};
+}
 
 /**
  * 默认工作线程数的上限，和 C 侧 sn_init 的默认值一致。Tests/Bench/threads.mjs 在 18 核 36 线程的机器上量过：物理步进到
@@ -145,6 +181,9 @@ function printErr(text: string): void {
  * 打包器给模块 wasm 改的（带哈希的）地址只能由调用方的 new URL 提供。
  */
 export async function instantiate<E extends string>(factory: CoreFactory<E>, { workerThreads = defaultWorkerThreads(), debug = false, locateFile, features = [] }: ModuleOptions = {}, wasm?: ModuleWasm): Promise<LoadedModule<E>> {
+	if (!memory64Supported()) {
+		throw new NativeError('StrideNative needs WebAssembly Memory64 (64-bit memory): Chrome 133, Firefox 134, Node 24 or newer', -4);
+	}
 	if (!isNode && !globalThis.crossOriginIsolated) {
 		throw new NativeError('StrideNative needs a cross-origin isolated page: serve it with ' +
 			'"Cross-Origin-Opener-Policy: same-origin" and "Cross-Origin-Embedder-Policy: require-corp"', -4);
@@ -179,11 +218,15 @@ export async function instantiate<E extends string>(factory: CoreFactory<E>, { w
 	const loaded = new Map<string, Record<string, NativeFunction>>();
 	const ldso = (module as unknown as { LDSO?: { loadedLibsByName: Record<string, { exports: Record<string, unknown> } | undefined> } }).LDSO;
 	const abiVersion = (module as unknown as Partial<Record<'_sn_plugin_abi_version', NativeFunction>>)._sn_plugin_abi_version;
-	for (const { name } of features) {
+	for (const { name, signatures = {} } of features) {
 		const library = ldso?.loadedLibsByName[`${name}.wasm`];
 		if (!library || !abiVersion) throw new NativeError(`feature '${name}' was not loaded: only the runtime module (stride-native-core) loads features`, -3);
 		const exports: Record<string, NativeFunction> = {};
-		for (const [symbol, value] of Object.entries(library.exports)) if (typeof value === 'function') exports[symbol] = value as NativeFunction;
+		for (const [symbol, value] of Object.entries(library.exports)) {
+			if (typeof value !== 'function') continue;
+			const signature = (signatures as Record<string, string | undefined>)[symbol];
+			exports[symbol] = signature ? withNumberPointers(value as (...args: unknown[]) => unknown, signature) : value as NativeFunction;
+		}
 		const pluginAbi = exports[`sn_plugin_abi_${name}`];
 		if (!pluginAbi) throw new NativeError(`feature '${name}' does not export sn_plugin_abi_${name}: declare it with SN_PLUGIN(${name})`, -3);
 		if (pluginAbi() !== abiVersion()) {
@@ -194,6 +237,12 @@ export async function instantiate<E extends string>(factory: CoreFactory<E>, { w
 			if (!(`_${symbol}` in module)) (module as unknown as Record<string, unknown>)[`_${symbol}`] = fn;
 		}
 		loaded.set(name, exports);
+	}
+	// 核心和内置功能的 C 函数（头文件里有的）：指针换成 number。插件的导出按 NativeFeature.signatures 换（上面）
+	const functions = module as unknown as Record<string, unknown>;
+	for (const [name, signature] of Object.entries(POINTER_SIGNATURES)) {
+		const fn = functions[`_${name}`];
+		if (typeof fn === 'function') functions[`_${name}`] = withNumberPointers(fn as (...args: unknown[]) => unknown, signature);
 	}
 	const status = module._sn_init(workerThreads);
 	if (status !== 0) {
@@ -315,6 +364,19 @@ export class NativeModule<E extends string = never> implements Disposable {
 	u64(ptr: number, length: number): BigUint64Array { return new BigUint64Array(this.buffer, ptr, length); }
 	view(ptr: number, length: number): DataView { return new DataView(this.buffer, ptr, length); }
 
+	/** C 的指针（和 size_t）在内存里占几个字节：模块是 64 位的。结构体里有指针字段、读输出指针时按它排。 */
+	static readonly POINTER_SIZE = 8;
+
+	/** 读内存里的一个指针（C 写出的 `void **out` 之类），8 字节对齐。 */
+	readPointer(ptr: number): number {
+		return Number(this.u64(ptr, 1)[0]!);
+	}
+
+	/** 往内存里写一个指针（结构体的指针字段），8 字节对齐。 */
+	writePointer(ptr: number, value: number): void {
+		this.u64(ptr, 1)[0] = BigInt(value);
+	}
+
 	/** 在模块内存里分配 16 字节对齐的一块，返回偏移；用 free 释放。 */
 	alloc(size: number): number {
 		const ptr = this.module._sn_alloc(size);
@@ -416,13 +478,14 @@ export class NativeModule<E extends string = never> implements Disposable {
 		}
 	}
 
-	/** 读原生调用通过一对输出指针分配出来的缓冲，然后释放它。 */
+	/** 读原生调用通过一对输出指针（`void **out_data`、`uint32_t *out_size`）分配出来的缓冲，然后释放它。 */
 	readOwnedBuffer(call: (dataOut: number, sizeOut: number) => number, what: string): Uint8Array {
-		return this.withScratch(8, (out) => {
-			this.check(call(out, out + 4), what);
-			const [dataPtr, size] = this.u32(out, 2);
-			const bytes = this.copyOut(Uint8Array, dataPtr!, size!);
-			this.free(dataPtr!);
+		return this.withScratch(16, (out) => {
+			this.check(call(out, out + 8), what);
+			const dataPtr = this.readPointer(out);
+			const size = this.u32(out + 8, 1)[0]!;
+			const bytes = this.copyOut(Uint8Array, dataPtr, size);
+			this.free(dataPtr);
 			return bytes;
 		});
 	}

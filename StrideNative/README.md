@@ -14,6 +14,11 @@ built into **multithreaded, SIMD** WebAssembly modules with a flat C API and a s
 There is no single-threaded build: pages must be cross-origin isolated
 (`Cross-Origin-Opener-Policy: same-origin`, `Cross-Origin-Embedder-Policy: require-corp`).
 
+All modules are **64-bit (Memory64)**: up to 16 GB of memory, which needs Chrome 133, Firefox 134 or Node 24 or newer
+(stable Safari does not support Memory64 yet). C pointers are `i64` in the wasm; the JS layer wraps every C function with
+a pointer signature generated from the headers (`POINTER_SIGNATURES` in `JS/src/native-exports.ts`), so pointers stay
+plain `number`s in JS. Plugins declare theirs in `NativeFeature.signatures`.
+
 ## Layout
 
 ```
