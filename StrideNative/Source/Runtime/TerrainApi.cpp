@@ -206,8 +206,20 @@ namespace StrideNative
 			float Height(double inX, double inZ) const
 			{
 				float h = Gullies(inX, inZ, Base(inX, inZ, noise.octaves));
-				for (const Feature &feature : features)
-					h = feature.desc.type == SN_TERRAIN_FEATURE_PATH ? ApplyPath(feature, inX, inZ, h) : ApplyFeature(feature, inX, inZ, h);
+				for (size_t i = 0; i < features.size();)
+				{
+					if (features[i].desc.type != SN_TERRAIN_FEATURE_PATH)
+					{
+						h = ApplyFeature(features[i++], inX, inZ, h);
+						continue;
+					}
+					// 连着的几条折线一起算（路网交汇处一条的过渡带不能盖过另一条的路面）
+					size_t end = i;
+					while (end < features.size() && features[end].desc.type == SN_TERRAIN_FEATURE_PATH)
+						++end;
+					h = ApplyPaths(i, end, inX, inZ, h);
+					i = end;
+				}
 				for (const Stroke &stroke : strokes)
 					h = ApplyStroke(stroke.desc, inX, inZ, h);
 				return h;
@@ -295,9 +307,31 @@ namespace StrideNative
 				return weight >= 1.0f ? d.height : inHeight + (d.height - inHeight) * weight;
 			}
 
-			/// 折线：离它最近的线段上的高度（加偏移）是目标，宽度以内全压、往外 falloff 米内过渡；按模式只削、只填或都做。
-			static float ApplyPath(const Feature &inPath, double inX, double inZ, float inHeight)
+			/**
+			 * 连着的几条折线 [inBegin, inEnd)：各自照 ApplyPath 算出结果和拉力 w，按 w⁴ / (1 − w) 加权平均（一条的路面上 w = 1，
+			 * 它说了算、高度准；都在过渡带里时平滑地混；只有一条时同它自己）。不按顺序一条盖一条：路口处后一条的过渡带会把前一条的
+			 * 路面盖住。
+			 */
+			float ApplyPaths(size_t inBegin, size_t inEnd, double inX, double inZ, float inHeight) const
 			{
+				double sum = 0.0, weights = 0.0;
+				for (size_t i = inBegin; i < inEnd; ++i)
+				{
+					float pull = 0.0f;
+					float h = ApplyPath(features[i], inX, inZ, inHeight, pull);
+					if (pull <= 0.0f)
+						continue;
+					double w = double(pull) * pull * pull * pull / std::max(1.0e-4, 1.0 - double(pull));
+					sum += w * h;
+					weights += w;
+				}
+				return weights > 0.0 ? float(sum / weights) : inHeight;
+			}
+
+			/// 折线：离它最近的线段上的高度（加偏移）是目标，宽度以内全压、往外 falloff 米内过渡；按模式只削、只填或都做。outPull 是拉力（0..1）。
+			static float ApplyPath(const Feature &inPath, double inX, double inZ, float inHeight, float &outPull)
+			{
+				outPull = 0.0f;
 				if (inX < inPath.minX || inX > inPath.maxX || inZ < inPath.minZ || inZ > inPath.maxZ)
 					return inHeight;
 				auto cell = inPath.cells.find(CellKey(int64_t(std::floor(inX / inPath.cellSize)), int64_t(std::floor(inZ / inPath.cellSize))));
@@ -327,6 +361,7 @@ namespace StrideNative
 				float distance = float(std::max(0.0, std::sqrt(best) - half));
 				float weight = d.falloff > 0.0f ? 1.0f - SmoothStep(0.0f, d.falloff, distance) : (distance <= 0.0f ? 1.0f : 0.0f);
 				weight *= d.strength;
+				outPull = std::clamp(weight, 0.0f, 1.0f);
 				target += d.height;
 				float h = weight >= 1.0f ? target : inHeight + (target - inHeight) * weight;
 				if (d.mode == SN_TERRAIN_PATH_CARVE)

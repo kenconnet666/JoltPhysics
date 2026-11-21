@@ -793,6 +793,12 @@ describe('stride-native and stride-tools', () => {
 		using winding = native.createTerrain({ noise, features: [{ type: 'path', points: long, width: 10, falloff: 5 }] });
 		assert.equal(winding.height(long[1234][0], long[1234][2]), Math.fround(long[1234][1]));
 		assert.throws(() => native.createTerrain({ noise, features: [{ type: 'path', points: [[0, 0, 0], [1, 0, 0]], width: 0 }] }), /positive width/);
+		// 路网：东西向的路在 (100, ·, 0) 是 20 米高，往南岔出一条从 20 米降到 0 的路；岔路的过渡带不能盖过主路的路面
+		const branch = { type: 'path', points: [[100, 20, 0], [100, 0, 100]], width: 8, falloff: 30 };
+		using network = native.createTerrain({ noise, features: [road, branch] });
+		for (const x of [70, 85, 115, 130]) assert.ok(Math.abs(network.height(x, 0) - conform.height(x, 0)) < 1e-3, `main road at x = ${x}: ${network.height(x, 0)} vs ${conform.height(x, 0)}`);
+		// 岔路的路面上是岔路的高度
+		assert.ok(Math.abs(network.height(100, 50) - 10) < 1e-3, `branch at its middle: ${network.height(100, 50)}`);
 	});
 
 	it('collides with a height field (terrain tile) on a static body, releases and reuses shape handles', () => {
