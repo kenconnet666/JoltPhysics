@@ -229,6 +229,13 @@ export class StrideNative extends NativeModule<RuntimeExport> {
 		noise.setUint32(0, n.seed >>> 0, true);
 		noise.setUint32(4, n.octaves, true);
 		[n.scale, n.height, n.offset, n.lacunarity, n.gain, n.ridged, n.warp, n.erosion].forEach((value, i) => noise.setFloat32(8 + i * 4, value, true));
+		const g = { ...TERRAIN_GULLY_DEFAULTS, ...n.gullies };
+		noise.setFloat32(40, n.gullies ? g.strength : 0, true);
+		noise.setFloat32(44, g.scale, true);
+		noise.setUint32(48, g.octaves, true);
+		noise.setFloat32(52, g.detail, true);
+		noise.setFloat32(56, g.valley, true);
+		noise.setFloat32(60, g.peak, true);
 		return this.withArrays([new Uint8Array(noise.buffer), new Uint8Array(featureBytes), points.length ? points : null, new Uint8Array(strokeBytes)], (np, fp, pp, sp) =>
 			new TerrainEvaluator(this, this.check(this.module._sn_terrain_create(np, fp, features.length, pp, points.length / 2, sp, strokes.length), 'sn_terrain_create')));
 	}
@@ -1517,9 +1524,29 @@ export interface TerrainNoise {
 	warp?: number;
 	/** ≥ 0：按累积的坡度压低细节（陡处平滑、谷里留细节）。 */
 	erosion?: number;
+	/** 冲沟（侵蚀的样子，逐点算、不模拟）；不给就没有。 */
+	gullies?: TerrainGullies;
 }
 
-export const TERRAIN_NOISE_DEFAULTS: Readonly<Required<TerrainNoise>> = {
+/** 冲沟：沿下坡方向的条纹一层层分叉；坡缓的地方淡成谷底（valley 以下）、山顶（peak 以上）。没给的字段用 TERRAIN_GULLY_DEFAULTS。 */
+export interface TerrainGullies {
+	/** 深度（米）。 */
+	strength?: number;
+	/** 最粗一层的间距（米）。 */
+	scale?: number;
+	/** 层数（0..8），每层间距减半。 */
+	octaves?: number;
+	/** > 0：细的冲沟要多陡才出现（越小越只长在陡处）。 */
+	detail?: number;
+	/** 谷底的高度（米）。 */
+	valley?: number;
+	/** 山顶的高度（米）。 */
+	peak?: number;
+}
+
+export const TERRAIN_GULLY_DEFAULTS: Readonly<Required<TerrainGullies>> = { strength: 20, scale: 400, octaves: 4, detail: 1.5, valley: 0, peak: 300 };
+
+export const TERRAIN_NOISE_DEFAULTS: Readonly<Required<Omit<TerrainNoise, 'gullies'>>> = {
 	seed: 0, octaves: 6, scale: 1000, height: 200, offset: 0, lacunarity: 2, gain: 0.5, ridged: 0, warp: 0, erosion: 0,
 };
 
@@ -1551,7 +1578,7 @@ export interface TerrainDescription {
 	strokes?: readonly TerrainStroke[];
 }
 
-const TERRAIN_NOISE_SIZE = 40;
+const TERRAIN_NOISE_SIZE = 64;
 const TERRAIN_FEATURE_SIZE = 24;
 const TERRAIN_STROKE_SIZE = 32;
 const TERRAIN_FEATURES: Record<TerrainFeature['type'], number> = { flatten: 0 };

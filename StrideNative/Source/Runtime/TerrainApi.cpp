@@ -1,4 +1,5 @@
-// 矢量地形的求值器（Runtime.h 的 sn_terrain_*）：底是梯度噪声的分形（带解析导数，按导数压低陡处的细节），叠上矢量地物和雕刻的笔画。
+// 矢量地形的求值器（Runtime.h 的 sn_terrain_*）：底是梯度噪声的分形（带解析导数，按导数压低陡处的细节），可选的冲沟，叠上矢量地物和
+// 雕刻的笔画。
 // 输入坐标是双精度：取整、求格子里的小数都在双精度里做，所以离原点几千公里的地方噪声照样连续、不起台阶。
 #include <Core/Core.h>
 #include <Core/HandleTable.h>
@@ -77,6 +78,63 @@ namespace StrideNative
 			return t * t * (3.0f - 2.0f * t);
 		}
 
+		/// 1 − (1 − t)²：从 0 出发是斜着上去的（不像 √t 那样竖着起步，坡度从 0 变大时不起折痕）。
+		float EaseOut(float inT)
+		{
+			float t = 1.0f - std::clamp(inT, 0.0f, 1.0f);
+			return 1.0f - t * t;
+		}
+
+		/// 1 − (1 − t)^p
+		float PowInv(float inT, float inP)
+		{
+			return 1.0f - std::pow(1.0f - std::clamp(inT, 0.0f, 1.0f), inP);
+		}
+
+		constexpr float TWO_PI = 6.28318530717958647692f;
+
+		/**
+		 * 一层方向条纹（Phacelle 噪声的做法：Rune Skovbo Johansen 2026，自己的实现）：每个格子里一个随机位置的"斑"，斑上是一列平面波，
+		 * 波沿 (inPX, inPZ) 变化（条纹顺着它的垂线走）。周围 4 × 4 个格子按距离加权（(1 − d² / R²)³，R = 1.5 格：钟形、到截断处
+		 * 正好是 0，不出格子的缝；比指数衰减省掉 exp），加权平均出 cos、sin，再"半归一化"：长度乘 2、到 1 封顶（波互相抵消的地方不会被硬拉成尖刺）。
+		 * 输入是格子坐标（双精度），所有斑用同一个方向（这一点的方向）。
+		 */
+		void Stripes(double inQX, double inQZ, float inPX, float inPZ, uint32_t inSeed, float &outCos, float &outSin)
+		{
+			// 4 × 4 的窗口让 q 落在中间两格：窗口外的斑离 q 至少 1.5 格，权重已经是 0
+			double bx = std::floor(inQX - 0.5), bz = std::floor(inQZ - 0.5);
+			int64_t ix = int64_t(bx), iz = int64_t(bz);
+			float sumC = 0.0f, sumS = 0.0f, sumW = 0.0f;
+			for (int j = -1; j <= 2; ++j)
+				for (int i = -1; i <= 2; ++i)
+				{
+					uint32_t h = Hash(uint32_t(ix + i), uint32_t(iz + j), inSeed);
+					// 斑到 q 的位置差：先在双精度里减掉整数，再加格子里的随机偏移
+					float rx = float(bx + i - inQX) + float(h & 0xffffu) * (1.0f / 65536.0f);
+					float rz = float(bz + j - inQZ) + float(h >> 16) * (1.0f / 65536.0f);
+					float d2 = (rx * rx + rz * rz) * (1.0f / 2.25f);
+					if (d2 >= 1.0f)
+						continue;
+					float k = 1.0f - d2;
+					float w = k * k * k;
+					float phase = -TWO_PI * (rx * inPX + rz * inPZ);
+					sumC += w * std::cos(phase);
+					sumS += w * std::sin(phase);
+					sumW += w;
+				}
+			if (sumW <= 0.0f)
+			{
+				outCos = 1.0f;
+				outSin = 0.0f;
+				return;
+			}
+			float c = sumC / sumW, s = sumS / sumW;
+			float length = std::sqrt(c * c + s * s);
+			float scale = length > 1e-6f ? std::min(1.0f, 2.0f * length) / length : 0.0f;
+			outCos = c * scale;
+			outSin = s * scale;
+		}
+
 		struct Feature
 		{
 			sn_terrain_feature desc;
@@ -135,12 +193,65 @@ namespace StrideNative
 
 			float Height(double inX, double inZ) const
 			{
-				float h = Base(inX, inZ, noise.octaves);
+				float h = Gullies(inX, inZ, Base(inX, inZ, noise.octaves));
 				for (const Feature &feature : features)
 					h = ApplyFeature(feature, inX, inZ, h);
 				for (const Stroke &stroke : strokes)
 					h = ApplyStroke(stroke.desc, inX, inZ, h);
 				return h;
+			}
+
+			/**
+			 * 冲沟（Rune Skovbo Johansen 2026 的 erosion filter 的思路，自己的实现，逐点算、不模拟，流式加载的块各算各的也接得上）：
+			 * 每层一列顺着下坡方向的条纹（Stripes），cos 是这一层的起伏；下一层的方向加上这一层条纹的坡（按符号，像三角波），细的冲沟
+			 * 就从粗的两侧斜着分出去。坡缓的地方（山顶、谷底、平地）冲沟没有方向：按遮罩淡向目标——谷底的高度以下是 −1（谷）、
+			 * 山顶以上是 +1（尖），淡完的值又是下一层的目标；遮罩一层层乘上"这一层条纹的坡"，细的冲沟不压在粗的冲沟的脊、槽上。
+			 * 方向取一半层数的底的坡（大的起伏定走向）。
+			 */
+			float Gullies(double inX, double inZ, float inHeight) const
+			{
+				const float strength = noise.gully_strength;
+				if (!(strength > 0.0f) || noise.gully_octaves == 0)
+					return inHeight;
+				// 走向只看大的起伏：一半的层数（坡度要算三次底，层少省得多）
+				const uint32_t octaves = std::max(2u, noise.octaves / 2);
+				const double e = std::max(0.01, double(noise.gully_scale) * 0.02);
+				const float h0 = Base(inX, inZ, octaves);
+				float gx = float(double(Base(inX + e, inZ, octaves) - h0) / e), gz = float(double(Base(inX, inZ + e, octaves) - h0) / e);
+				float slope = std::sqrt(gx * gx + gz * gz);
+				if (slope < 1e-6f)
+				{
+					gx = 1.0f;
+					gz = 0.0f;
+				}
+				const float range = noise.gully_peak - noise.gully_valley;
+				float fade = range > 0.0f ? std::clamp(2.0f * (inHeight - noise.gully_valley) / range - 1.0f, -1.0f, 1.0f) : 0.0f;
+				// 坡 0.5（约 27°）以上全是冲沟
+				float mask = EaseOut(slope * 2.0f);
+				float total = 0.0f, norm = 0.0f, amplitude = 1.0f;
+				double frequency = 1.0 / double(noise.gully_scale);
+				float sx = gx, sz = gz;
+				for (uint32_t octave = 0; octave < noise.gully_octaves; ++octave)
+				{
+					float length = std::sqrt(sx * sx + sz * sz);
+					float dx = sx / length, dz = sz / length;
+					// 条纹顺着下坡方向走：相位沿它的垂线变
+					float px = -dz, pz = dx;
+					float c, s;
+					Stripes(inX * frequency, inZ * frequency, px, pz, noise.seed ^ (0x7f4a7c15u + octave * 0x2545f491u), c, s);
+					float faded = fade + (c - fade) * mask;
+					total += faded * amplitude;
+					norm += amplitude;
+					fade = faded;
+					mask = PowInv(mask, noise.gully_detail) * EaseOut(std::fabs(s) * 2.0f);
+					// 这一层条纹的坡（米每米，按符号）加到走向上
+					float gullySlope = strength * amplitude * TWO_PI * float(frequency) * (s >= 0.0f ? 1.0f : -1.0f);
+					sx += px * gullySlope;
+					sz += pz * gullySlope;
+					amplitude *= 0.5f;
+					frequency *= 2.0;
+				}
+				return inHeight + strength * total / norm;
 			}
 
 			static float ApplyFeature(const Feature &inFeature, double inX, double inZ, float inHeight)
@@ -219,6 +330,8 @@ SN_API int32_t sn_terrain_create(const sn_terrain_noise *noise, const sn_terrain
 		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "sn_terrain_create: octaves must be in [0, 16], got " + std::to_string(noise->octaves));
 	if (!(noise->scale > 0.0f) || !(noise->lacunarity > 0.0f) || noise->erosion < 0.0f)
 		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "sn_terrain_create: scale and lacunarity must be positive, erosion non-negative");
+	if (noise->gully_strength > 0.0f && (noise->gully_octaves > 8 || !(noise->gully_scale > 0.0f) || !(noise->gully_detail > 0.0f)))
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "sn_terrain_create: gullies need octaves in [0, 8] and a positive scale and detail");
 	if ((feature_count > 0 && features == nullptr) || (point_count > 0 && points == nullptr) || (stroke_count > 0 && strokes == nullptr))
 		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "sn_terrain_create: a non-empty array is null");
 

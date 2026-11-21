@@ -744,6 +744,31 @@ describe('stride-native and stride-tools', () => {
 		assert.throws(() => native.createTerrain({ noise: {}, features: [{ type: 'flatten', points: [[0, 0], [1, 0]], height: 0 }] }), /at least 3 points/);
 	});
 
+	it('carves gullies into the noise base: deterministic, bounded by the strength, under features and strokes', async () => {
+		const noise = { seed: 3, octaves: 8, scale: 1200, height: 300, ridged: 0.2, warp: 150 };
+		const gullies = { strength: 25, scale: 300, octaves: 4, detail: 1.5, valley: -100, peak: 200 };
+		using plain = native.createTerrain({ noise });
+		using eroded = native.createTerrain({ noise: { ...noise, gullies }, features: [{ type: 'flatten', points: [[0, 0], [100, 0], [100, 100], [0, 100]], height: 12 }] });
+		using again = native.createTerrain({ noise: { ...noise, gullies } });
+		// 冲沟只改底：每一点和不带冲沟的差不超过深度，而且确实改了
+		let changed = 0, worst = 0;
+		for (let i = 0; i < 400; i++) {
+			const x = 200 + (i % 20) * 37.3, z = -900 + Math.floor(i / 20) * 41.7;
+			const d = Math.abs(again.height(x, z) - plain.height(x, z));
+			worst = Math.max(worst, d);
+			if (d > 0.5) changed++;
+		}
+		assert.ok(worst <= gullies.strength + 1e-3, `moved by ${worst} m`);
+		assert.ok(changed > 200, `only ${changed} of 400 points changed`);
+		// 同样的描述逐位相同；页和单点一致（页的块各算各的也接得上）
+		assert.equal(again.height(345.5, -678.25), native.createTerrain({ noise: { ...noise, gullies } }).height(345.5, -678.25));
+		const page = await again.heights(1000, 1000, 8, 9, 9);
+		assert.equal(page[4 * 9 + 7], again.height(1000 + 56, 1000 + 32));
+		// 地物压平照旧压在冲沟上面
+		assert.equal(eroded.height(50, 50), 12);
+		assert.throws(() => native.createTerrain({ noise: { gullies: { strength: 10, scale: 0 } } }), /gullies need/);
+	});
+
 	it('collides with a height field (terrain tile) on a static body, releases and reuses shape handles', () => {
 		using world = native.createPhysicsWorld(8);
 		// 33 × 33 个高度、格距 2 米：沿 x 每米升 0.5 米的斜坡

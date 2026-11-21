@@ -93,6 +93,13 @@ typedef struct sn_terrain_noise
 	float ridged;					///< 0..1：混进多少山脊（1 − |噪声|）
 	float warp;						///< 域扭曲的幅度（米）：采样点先按低频噪声挪一挪，山形不那么规整
 	float erosion;					///< ≥ 0：按累积的坡度压低细节的强度（Inigo Quilez 的导数 fBm），陡处平滑、谷里留细节
+	// 冲沟（侵蚀的样子，逐点算、不模拟）：沿下坡方向的条纹一层层分叉，坡缓的地方淡成谷底、山顶
+	float gully_strength;			///< 冲沟的深度（米）；0 不做
+	float gully_scale;				///< 最粗一层冲沟的间距（米）
+	uint32_t gully_octaves;			///< 层数（0..8），每层间距减半
+	float gully_detail;				///< > 0：细的冲沟要多陡才出现（越小越只长在陡处）
+	float gully_valley;				///< 谷底的高度（米）：往下冲沟淡成谷
+	float gully_peak;				///< 山顶的高度（米）：往上淡成尖
 } sn_terrain_noise;
 
 enum
