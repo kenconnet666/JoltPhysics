@@ -96,7 +96,7 @@ namespace StrideNative
 		/**
 		 * 一层方向条纹（Phacelle 噪声的做法：Rune Skovbo Johansen 2026，自己的实现）：每个格子里一个随机位置的"斑"，斑上是一列平面波，
 		 * 波沿 (inPX, inPZ) 变化（条纹顺着它的垂线走）。周围 4 × 4 个格子按距离加权（(1 − d² / R²)³，R = 1.5 格：钟形、到截断处
-		 * 正好是 0，不出格子的缝；比指数衰减省掉 exp），加权平均出 cos、sin，再"半归一化"：长度乘 2、到 1 封顶（波互相抵消的地方不会被硬拉成尖刺）。
+		 * 正好是 0，不出格子的缝；比指数衰减省掉 exp），加权平均出 cos、sin，再"半归一化"：长度平滑地拉向 1（波互相抵消的地方不会被硬拉成尖刺）。
 		 * 输入是格子坐标（双精度），所有斑用同一个方向（这一点的方向）。
 		 */
 		void Stripes(double inQX, double inQZ, float inPX, float inPZ, uint32_t inSeed, float &outCos, float &outSin)
@@ -129,8 +129,10 @@ namespace StrideNative
 				return;
 			}
 			float c = sumC / sumW, s = sumS / sumW;
-			float length = std::sqrt(c * c + s * s);
-			float scale = length > 1e-6f ? std::min(1.0f, 2.0f * length) / length : 0.0f;
+			// 平滑地饱和：2L / √(1 + 4L²)（短的放大到接近两倍、长的趋近 1）；按 min(1, 2L) 截断的话截断处有折痕，地形的网格采样不到这么
+			// 细的棱，远处出锯齿
+			float length2 = c * c + s * s;
+			float scale = 2.0f / std::sqrt(1.0f + 4.0f * length2);
 			outCos = c * scale;
 			outSin = s * scale;
 		}
@@ -244,7 +246,8 @@ namespace StrideNative
 					total += faded * amplitude;
 					norm += amplitude;
 					fade = faded;
-					mask = PowInv(mask, noise.gully_detail) * EaseOut(std::fabs(s) * 2.0f);
+					// sin² 而不是 |sin|：遮罩在条纹的脊、槽上平滑地到 0，不起折痕
+					mask = PowInv(mask, noise.gully_detail) * EaseOut(s * s * 4.0f);
 					// 这一层条纹的坡（米每米）加到走向上：用 sin 本身（连续的），按符号的话正负交界处下一层的方向跳一下，地上出坎
 					float gullySlope = strength * amplitude * TWO_PI * float(frequency) * s;
 					sx += px * gullySlope;
