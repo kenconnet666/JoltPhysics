@@ -8,6 +8,9 @@
 
 #include <meshoptimizer.h>
 
+// 重叠查询的世界原点（形状的 position 相对它）
+static const double kOrigin[3] = { 0, 0, 0 };
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -145,7 +148,7 @@ TEST_CASE("Physics box falls onto the floor")
 	ModuleScope module;
 	int32_t world = sn_physics_create(16, 0, nullptr);
 	REQUIRE(world > 0);
-	const float *positions = sn_physics_positions(world);
+	const double *positions = sn_physics_positions(world);
 	REQUIRE(positions != nullptr);
 
 	const TestBox boxes[] = { cFloor, DynamicBox(0, 5, 0) };
@@ -244,7 +247,7 @@ TEST_CASE("物理：角色站稳、按目标速度走、起跳后落回地面（
 	TestCharacter player(0, 0.05f, 0);
 	int32_t character = player.Add(world);
 	REQUIRE(character == 1);
-	const float *positions = sn_physics_positions(world);
+	const double *positions = sn_physics_positions(world);
 
 	Step(world, 30);
 	CHECK(sn_physics_character_grounded(world, character) == 1);
@@ -262,7 +265,7 @@ TEST_CASE("物理：角色站稳、按目标速度走、起跳后落回地面（
 	REQUIRE(sn_physics_character_move(world, character, 0.0f, 0.0f, 1) == SN_OK);
 	Step(world, 2);
 	CHECK(sn_physics_character_grounded(world, character) == 0);
-	float highest = 0.0f;
+	double highest = 0.0;
 	for (int i = 0; i < 30; ++i)
 	{
 		Step(world, 1);
@@ -306,7 +309,8 @@ TEST_CASE("物理：碰撞层的矩阵和查询的遮罩，射线和球体扫掠
 	const sn_body bodies[] = { Body(SN_MOTION_STATIC, 5, 0, 0, 0, 1, 0), Body(SN_MOTION_STATIC, 10, 0, 0, 1, 1, 1) };
 	REQUIRE(sn_physics_add_bodies(world, bodies, 2, walls, 2, nullptr, 0, nullptr) == 0);
 
-	const float origin[3] = { 0, 0, 0 }, along_x[3] = { 2, 0, 0 };
+	const double origin[3] = { 0, 0, 0 };
+	const float along_x[3] = { 2, 0, 0 };
 	sn_hit hit {};
 	REQUIRE(sn_physics_ray_cast(world, origin, along_x, 100, 1u << 0, &hit) == 1);
 	CHECK(hit.distance == doctest::Approx(4.5f));
@@ -339,7 +343,7 @@ TEST_CASE("物理：碰撞层的矩阵和查询的遮罩，射线和球体扫掠
 	REQUIRE(sn_physics_sphere_cast(world, 0.5f, origin, along_x, 100, 0xffffffffu, 0, &hit) == 1);
 	CHECK(hit.distance == doctest::Approx(4.0f).epsilon(0.01));
 	CHECK(hit.body == 0);
-	const float inside[3] = { 5, 0, 0 };
+	const double inside[3] = { 5, 0, 0 };
 	REQUIRE(sn_physics_sphere_cast(world, 0.5f, inside, along_x, 100, 1u << 0, 0, &hit) == 1);
 	CHECK(hit.distance == doctest::Approx(0.0f));
 	// 忽略起点就重叠的墙：打到 x = 10 的那面（球心停在 9）
@@ -353,31 +357,31 @@ TEST_CASE("物理：碰撞层的矩阵和查询的遮罩，射线和球体扫掠
 	sn_shape box = BoxShape(6, 1, 1);
 	box.position[0] = 7.5f;
 	int32_t found[4] = { -1, -1, -1, -1 };
-	REQUIRE(sn_physics_overlap(world, &box, 0xffffffffu, found, 4) == 2);
+	REQUIRE(sn_physics_overlap(world, kOrigin, &box, 0xffffffffu, found, 4) == 2);
 	CHECK(((found[0] == 0 && found[1] == 1) || (found[0] == 1 && found[1] == 0)));
-	REQUIRE(sn_physics_overlap(world, &box, 1u << 1, found, 4) == 1);
+	REQUIRE(sn_physics_overlap(world, kOrigin, &box, 1u << 1, found, 4) == 1);
 	CHECK(found[0] == 1);
-	CHECK(sn_physics_overlap(world, &box, 0xffffffffu, found, 1) == 2);
+	CHECK(sn_physics_overlap(world, kOrigin, &box, 0xffffffffu, found, 1) == 2);
 	sn_shape ball = BoxShape(1, 1, 1);
 	ball.type = SN_SHAPE_SPHERE;
 	ball.size[0] = 0.5f;
 	ball.position[0] = 7.5f;
-	CHECK(sn_physics_overlap(world, &ball, 0xffffffffu, found, 4) == 0);
+	CHECK(sn_physics_overlap(world, kOrigin, &ball, 0xffffffffu, found, 4) == 0);
 	// 旋转 90 度（绕 Y）的长盒子：沿 Z 摆，碰不到沿 X 的两面墙之间的空隙两边
 	sn_shape turned = BoxShape(6, 1, 1);
 	turned.position[0] = 7.5f;
 	turned.rotation[1] = 0.70710678f;
 	turned.rotation[3] = 0.70710678f;
-	CHECK(sn_physics_overlap(world, &turned, 0xffffffffu, found, 4) == 0);
+	CHECK(sn_physics_overlap(world, kOrigin, &turned, 0xffffffffu, found, 4) == 0);
 	sn_shape bad = BoxShape(0, 1, 1);
-	CHECK(sn_physics_overlap(world, &bad, 0xffffffffu, found, 4) == SN_ERROR_INVALID_ARGUMENT);
+	CHECK(sn_physics_overlap(world, kOrigin, &bad, 0xffffffffu, found, 4) == SN_ERROR_INVALID_ARGUMENT);
 
 	// 层 2 的箱子穿过层 0 的地面掉下去，层 1 的停在地面上
 	const sn_shape pieces[] = { BoxShape(100, 2, 100), BoxShape(1, 1, 1), BoxShape(1, 1, 1) };
 	const sn_body falling[] = { Body(SN_MOTION_STATIC, 0, -1, 30, 0, 1, 0), Body(SN_MOTION_DYNAMIC, 0, 3, 30, 1, 1, 2), Body(SN_MOTION_DYNAMIC, 3, 3, 30, 2, 1, 1) };
 	REQUIRE(sn_physics_add_bodies(world, falling, 3, pieces, 3, nullptr, 0, nullptr) == 2);
 	Step(world, 60);
-	const float *positions = sn_physics_positions(world);
+	const double *positions = sn_physics_positions(world);
 	CHECK(positions[3 * 3 + 1] < -2.0f);
 	CHECK(positions[4 * 3 + 1] == doctest::Approx(0.5f).epsilon(0.05));
 	sn_physics_destroy(world);
@@ -423,7 +427,8 @@ TEST_CASE("物理：网格碰撞体和带本地位姿的复合碰撞体")
 	compound.rotation[1] = std::sqrt(0.5f);
 	compound.rotation[3] = std::sqrt(0.5f);
 	REQUIRE(sn_physics_add_bodies(world, &compound, 1, parts, 2, nullptr, 0, nullptr) == 2);
-	const float down[3] = { 0, -1, 0 }, above_minus_z[3] = { 0, 25, -3 }, above_plus_x[3] = { 3, 25, 0 };
+	const float down[3] = { 0, -1, 0 };
+	const double above_minus_z[3] = { 0, 25, -3 }, above_plus_x[3] = { 3, 25, 0 };
 	sn_hit hit {};
 	REQUIRE(sn_physics_ray_cast(world, above_minus_z, down, 10, 0xffffffffu, &hit) == 1);
 	CHECK(hit.distance == doctest::Approx(4.5f));
@@ -460,7 +465,7 @@ TEST_CASE("物理：凸包和 BodyComponent 的控制（运动学切换、瞬移
 	crate.flags = SN_BODY_NEVER_SLEEP;
 	REQUIRE(sn_physics_add_bodies(world, &crate, 1, &hull_shape, 1, nullptr, 0, nullptr) == 1);
 	Step(world, 120);
-	const float *positions = sn_physics_positions(world);
+	const double *positions = sn_physics_positions(world);
 	CHECK(positions[4] == doctest::Approx(0.5f).epsilon(0.05));
 	CHECK(sn_physics_body_awake(world, 1) == 1);		// 一直醒着
 
@@ -473,7 +478,8 @@ TEST_CASE("物理：凸包和 BodyComponent 的控制（运动学切换、瞬移
 
 	// 运动学：不受重力和冲量，按速度走；瞬移立即生效
 	REQUIRE(sn_physics_body_set_kinematic(world, 1, 1) == SN_OK);
-	const float place[3] = { 0, 10, 0 }, identity[4] = { 0, 0, 0, 1 }, zero[3] = { 0, 0, 0 }, sideways[3] = { 1, 0, 0 };
+	const double place[3] = { 0, 10, 0 };
+	const float identity[4] = { 0, 0, 0, 1 }, zero[3] = { 0, 0, 0 }, sideways[3] = { 1, 0, 0 };
 	REQUIRE(sn_physics_body_teleport(world, 1, place, identity) == SN_OK);
 	CHECK(positions[4] == 10.0f);
 	// 只改朝向：位置不动
@@ -589,7 +595,7 @@ namespace
 
 	Vec3 PositionOf(int32_t inWorld, int32_t inBody)
 	{
-		const float *p = sn_physics_positions(inWorld) + inBody * 3;
+		const double *p = sn_physics_positions(inWorld) + inBody * 3;
 		return { p[0], p[1], p[2] };
 	}
 }
@@ -749,9 +755,9 @@ TEST_CASE("物理：插值的物体在两步之间写回插值的位姿")
 	body.flags = SN_BODY_INTERPOLATED;
 	REQUIRE(sn_physics_add_bodies(world, &body, 1, &box, 1, nullptr, 0, nullptr) == 0);
 	Step(world, 10);
-	float previous = sn_physics_positions(world)[1];
+	double previous = sn_physics_positions(world)[1];
 	Step(world, 1);
-	float current = sn_physics_positions(world)[1];
+	double current = sn_physics_positions(world)[1];
 	REQUIRE(current < previous);
 	CHECK(c.position[slot * 3 + 1] == doctest::Approx(current));
 	REQUIRE(sn_physics_interpolate(world, 0.25f) == SN_OK);
@@ -773,7 +779,7 @@ namespace
 		outRotation[3] = cHalfSqrt2;
 	}
 
-	void CheckTranslation(const float *inWorld, float inX, float inY, float inZ, double inEpsilon = 1e-4)
+	void CheckTranslation(const double *inWorld, double inX, double inY, double inZ, double inEpsilon = 1e-4)
 	{
 		CHECK(inWorld[12] == doctest::Approx(inX).epsilon(inEpsilon));
 		CHECK(inWorld[13] == doctest::Approx(inY).epsilon(inEpsilon));
@@ -964,7 +970,7 @@ TEST_CASE("物理：绑定变换的物体从槽位出发，步进后把位姿写
 	child_box.transform = child;
 	const TestBox boxes[] = { cFloor, root_box, child_box };
 	REQUIRE(AddBoxes(world, boxes, 3) == 0);
-	const float *positions = sn_physics_positions(world);
+	const double *positions = sn_physics_positions(world);
 	CHECK(positions[1 * 3 + 1] == doctest::Approx(5.0f));
 	CHECK(positions[2 * 3 + 0] == doctest::Approx(12.0f));
 	CHECK(positions[2 * 3 + 1] == doctest::Approx(4.0f));
@@ -1042,7 +1048,7 @@ TEST_CASE("物理：运动学物体跟着被改过的变换走（自己或父节
 	c.position[root * 3 + 1] = 6;
 	SetQuarterTurnAroundY(&c.rotation[root * 4]);
 	run(1);
-	const float *positions = sn_physics_positions(world);
+	const double *positions = sn_physics_positions(world);
 	CHECK(positions[0] == doctest::Approx(-3.0f));
 	CHECK(positions[1] == doctest::Approx(2.0f));
 	CHECK(positions[3] == doctest::Approx(5.0f));
@@ -1063,7 +1069,7 @@ TEST_CASE("物理：运动学物体跟着被改过的变换走（自己或父节
 	probe.position[0] = 7;
 	probe.position[1] = 2;
 	int32_t found[4] = {};
-	CHECK(sn_physics_overlap(world, &probe, 0xffffffffu, found, 4) == 1);
+	CHECK(sn_physics_overlap(world, kOrigin, &probe, 0xffffffffu, found, 4) == 1);
 	CHECK(found[0] == 0);
 
 	sn_physics_destroy(world);

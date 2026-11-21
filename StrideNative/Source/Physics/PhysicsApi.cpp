@@ -372,7 +372,7 @@ namespace
 		std::vector<RefConst<Shape>>	mMeshes;			///< 网格和凸包，句柄是下标加 1
 		std::vector<MeshVolume>			mMeshVolumes;		///< 和 mMeshes 对应；凸包的是空的（Jolt 自己算质量）
 		int32_t							mTransforms = 0;	///< 绑定用的变换存储句柄，0 表示没有
-		std::vector<float>				mPositions;			///< 每个物体的 xyz；只分配一次，调用方可以一直拿着视图
+		std::vector<double>				mPositions;			///< 每个物体的 xyz；只分配一次，调用方可以一直拿着视图
 		ContactCollector				mContacts;
 		/// 约束，句柄是下标加 1；移除后留空
 		struct ConstraintRecord
@@ -423,17 +423,17 @@ namespace
 			if (ioWorld.mBodies[i].mRemoved)
 				continue;
 			RVec3 position = bodies.GetPosition(ioWorld.mBodies[i].mID);
-			float *out = &ioWorld.mPositions[i * 3];
-			out[0] = float(position.GetX());
-			out[1] = float(position.GetY());
-			out[2] = float(position.GetZ());
+			double *out = &ioWorld.mPositions[i * 3];
+			out[0] = position.GetX();
+			out[1] = position.GetY();
+			out[2] = position.GetZ();
 		}
 	}
 
 	/// 把世界位姿写进物体绑定的槽位，并记下写了什么
 	void WritePose(StrideNative::TransformStore &ioStore, BodyRecord &ioRecord, RVec3Arg inPosition, QuatArg inRotation)
 	{
-		ioStore.SetWorldPose(ioRecord.mSlot, Vec3(inPosition), inRotation);
+		ioStore.SetWorldPose(ioRecord.mSlot, inPosition, inRotation);
 		ioRecord.mWrittenPosition = inPosition;
 		ioRecord.mWrittenRotation = inRotation;
 	}
@@ -452,8 +452,8 @@ namespace
 			if (record.mMotion != SN_MOTION_KINEMATIC || record.mSlot == 0 || record.mRemoved)
 				continue;
 			Vec3 scale;
-			Mat44 world = inStore.ComputeWorldMatrix(record.mSlot);
-			RVec3 position(world.GetTranslation());
+			RMat44 world = inStore.ComputeWorldMatrix(record.mSlot);
+			RVec3 position = world.GetTranslation();
 			Quat rotation = world.Decompose(scale).GetQuaternion().Normalized();
 			// 写进去再算出来的世界矩阵有舍入误差：位置按大小放宽，旋转差不到约 0.2 度算没动（没动的部分会累积，超过就跟上）
 			float tolerance = 1.0e-5f * (1.0f + Vec3(position).Length());
@@ -505,6 +505,19 @@ namespace
 	Vec3 Load3(const float *inValues)
 	{
 		return Vec3(inValues[0], inValues[1], inValues[2]);
+	}
+
+	/// 双精度的世界位置
+	RVec3 LoadR3(const double *inValues)
+	{
+		return RVec3(inValues[0], inValues[1], inValues[2]);
+	}
+
+	void StoreR3(RVec3Arg inValue, double *outValues)
+	{
+		outValues[0] = inValue.GetX();
+		outValues[1] = inValue.GetY();
+		outValues[2] = inValue.GetZ();
 	}
 
 	Quat LoadQuat(const float *inValues)
@@ -985,7 +998,7 @@ SN_API int32_t sn_physics_add_bodies(int32_t world, const sn_body *bodies, uint3
 		if (body.motion == SN_MOTION_CHARACTER && (characters == nullptr || body.character >= character_count))
 			return SetLastError(SN_ERROR_INVALID_ARGUMENT, where + "character settings are out of range");
 		Vec3 scale = Vec3::sOne();
-		RMat44 pose = RMat44::sRotationTranslation(LoadQuat(body.rotation), RVec3(Load3(body.position)));
+		RMat44 pose = RMat44::sRotationTranslation(LoadQuat(body.rotation), LoadR3(body.position));
 		if (body.transform != 0)
 		{
 			if (w->mTransforms == 0)
@@ -995,8 +1008,8 @@ SN_API int32_t sn_physics_add_bodies(int32_t world, const sn_body *bodies, uint3
 			if (!store->IsAlive(body.transform))
 				return SetLastError(SN_ERROR_INVALID_ARGUMENT, where + "transform slot " + std::to_string(body.transform) + " is not allocated");
 			// 槽位现在的世界位姿；缩放只作用到网格形状（同 Stride：复合碰撞体按绝对尺寸）
-			Mat44 matrix = store->ComputeWorldMatrix(body.transform);
-			pose = RMat44::sRotationTranslation(matrix.Decompose(scale).GetQuaternion().Normalized(), RVec3(matrix.GetTranslation()));
+			RMat44 matrix = store->ComputeWorldMatrix(body.transform);
+			pose = RMat44::sRotationTranslation(matrix.GetRotation().Decompose(scale).GetQuaternion().Normalized(), matrix.GetTranslation());
 			// 世界矩阵不是旋转（比如某一级的四元数接近 0，或是 (0, 0.5, 0.5, 0) 这种按公式得到奇异矩阵的）时分解出 NaN；
 			// NaN 的物体会让 Jolt 的宽相卡死，这里直接报错
 			if (!pose.GetQuaternion().IsNormalized() || matrix.GetTranslation().IsNaN())
@@ -1211,7 +1224,7 @@ SN_API int32_t sn_physics_interpolate(int32_t world, float alpha)
 	return SN_OK;
 }
 
-SN_API const float *sn_physics_positions(int32_t world)
+SN_API const double *sn_physics_positions(int32_t world)
 {
 	World *w = GetWorld(world);
 	return w != nullptr ? w->mPositions.data() : nullptr;
@@ -1634,7 +1647,7 @@ SN_API int32_t sn_physics_body_awake(int32_t world, int32_t body)
 	return w->mSystem.GetBodyInterface().IsActive(record->mID) ? 1 : 0;
 }
 
-SN_API int32_t sn_physics_body_teleport(int32_t world, int32_t body, const float *position, const float *rotation)
+SN_API int32_t sn_physics_body_teleport(int32_t world, int32_t body, const double *position, const float *rotation)
 {
 	World *w = GetWorld(world);
 	BodyRecord *record = GetMovableBody(w, body, "sn_physics_body_teleport", true);
@@ -1642,13 +1655,10 @@ SN_API int32_t sn_physics_body_teleport(int32_t world, int32_t body, const float
 		return w == nullptr ? SN_ERROR_INVALID_HANDLE : SN_ERROR_INVALID_ARGUMENT;
 	if (position == nullptr || rotation == nullptr)
 		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "sn_physics_body_teleport: position and rotation are required");
-	record->mPosition = record->mPreviousPosition = RVec3(Load3(position));
+	record->mPosition = record->mPreviousPosition = LoadR3(position);
 	record->mRotation = record->mPreviousRotation = LoadQuat(rotation);
 	w->mSystem.GetBodyInterface().SetPositionAndRotation(record->mID, record->mPosition, record->mRotation, EActivation::Activate);
-	float *out = &w->mPositions[size_t(body) * 3];
-	out[0] = position[0];
-	out[1] = position[1];
-	out[2] = position[2];
+	StoreR3(record->mPosition, &w->mPositions[size_t(body) * 3]);
 	if (record->mSlot != 0)
 	{
 		TransformStore *store = BoundStore(*w);
@@ -1781,7 +1791,7 @@ SN_API int32_t sn_physics_character_grounded(int32_t world, int32_t body)
 	return character->mCharacter->GetGroundState() == CharacterBase::EGroundState::OnGround ? 1 : 0;
 }
 
-SN_API int32_t sn_physics_ray_cast(int32_t world, const float *origin, const float *direction, float max_distance, uint32_t mask, sn_hit *hit)
+SN_API int32_t sn_physics_ray_cast(int32_t world, const double *origin, const float *direction, float max_distance, uint32_t mask, sn_hit *hit)
 {
 	World *w = GetWorld(world);
 	if (w == nullptr)
@@ -1791,7 +1801,7 @@ SN_API int32_t sn_physics_ray_cast(int32_t world, const float *origin, const flo
 	Vec3 unit;
 	if (!QueryDirection(direction, max_distance, unit))
 		return SN_ERROR_INVALID_ARGUMENT;
-	RRayCast ray(RVec3(Load3(origin)), unit * max_distance);
+	RRayCast ray(LoadR3(origin), unit * max_distance);
 	RayCastResult result;
 	MaskFilter filter(mask);
 	if (!w->mSystem.GetNarrowPhaseQuery().CastRay(ray, result, {}, filter))
@@ -1803,13 +1813,13 @@ SN_API int32_t sn_physics_ray_cast(int32_t world, const float *origin, const flo
 		normal = lock.GetBody().GetWorldSpaceSurfaceNormal(result.mSubShapeID2, point);
 	}
 	hit->distance = result.mFraction * max_distance;
-	Vec3(point).StoreFloat3(reinterpret_cast<Float3 *>(hit->point));
+	StoreR3(point, hit->point);
 	normal.StoreFloat3(reinterpret_cast<Float3 *>(hit->normal));
 	hit->body = BodyIndexOf(*w, result.mBodyID);
 	return 1;
 }
 
-SN_API int32_t sn_physics_ray_cast_all(int32_t world, const float *origin, const float *direction, float max_distance, uint32_t mask, sn_hit *out_hits, int32_t capacity)
+SN_API int32_t sn_physics_ray_cast_all(int32_t world, const double *origin, const float *direction, float max_distance, uint32_t mask, sn_hit *out_hits, int32_t capacity)
 {
 	World *w = GetWorld(world);
 	if (w == nullptr)
@@ -1819,7 +1829,7 @@ SN_API int32_t sn_physics_ray_cast_all(int32_t world, const float *origin, const
 	Vec3 unit;
 	if (!QueryDirection(direction, max_distance, unit))
 		return SN_ERROR_INVALID_ARGUMENT;
-	RRayCast ray(RVec3(Load3(origin)), unit * max_distance);
+	RRayCast ray(LoadR3(origin), unit * max_distance);
 	RayCastSettings settings;
 	AllHitCollisionCollector<CastRayCollector> collector;
 	MaskFilter filter(mask);
@@ -1843,7 +1853,7 @@ SN_API int32_t sn_physics_ray_cast_all(int32_t world, const float *origin, const
 				normal = lock.GetBody().GetWorldSpaceSurfaceNormal(result.mSubShapeID2, point);
 			}
 			hit.distance = result.mFraction * max_distance;
-			Vec3(point).StoreFloat3(reinterpret_cast<Float3 *>(hit.point));
+			StoreR3(point, hit.point);
 			normal.StoreFloat3(reinterpret_cast<Float3 *>(hit.normal));
 			hit.body = BodyIndexOf(*w, result.mBodyID);
 		}
@@ -1894,23 +1904,23 @@ SN_API int32_t sn_physics_static_triangles(int32_t world, uint32_t mask, float *
 	return int32_t(vertices.size() / 3);
 }
 
-SN_API int32_t sn_physics_overlap(int32_t world, const sn_shape *shape, uint32_t mask, int32_t *out_bodies, int32_t capacity)
+SN_API int32_t sn_physics_overlap(int32_t world, const double *origin, const sn_shape *shape, uint32_t mask, int32_t *out_bodies, int32_t capacity)
 {
 	World *w = GetWorld(world);
 	if (w == nullptr)
 		return SN_ERROR_INVALID_HANDLE;
-	if (shape == nullptr || capacity < 0 || (capacity > 0 && out_bodies == nullptr))
-		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "sn_physics_overlap: shape is required, and out_bodies when capacity > 0");
+	if (origin == nullptr || shape == nullptr || capacity < 0 || (capacity > 0 && out_bodies == nullptr))
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "sn_physics_overlap: origin and shape are required, and out_bodies when capacity > 0");
 	std::string error;
 	RefConst<Shape> query = MakeShape(*w, *shape, Vec3::sOne(), error);
 	if (query == nullptr)
 		return SetLastError(SN_ERROR_INVALID_ARGUMENT, error.empty() ? "sn_physics_overlap: invalid shape size" : error);
-	RMat44 pose = RMat44::sRotationTranslation(LoadQuat(shape->rotation), RVec3(Load3(shape->position)));
+	RMat44 pose = RMat44::sRotationTranslation(LoadQuat(shape->rotation), LoadR3(origin) + Load3(shape->position));
 	CollideShapeSettings settings;
 	AllHitCollisionCollector<CollideShapeCollector> collector;
 	MaskFilter filter(mask);
 	// 形状的质心不在原点时（网格、凸包），查询的变换是质心的
-	w->mSystem.GetNarrowPhaseQuery().CollideShape(query, Vec3::sOne(), pose * Mat44::sTranslation(query->GetCenterOfMass()), settings, RVec3::sZero(), collector, {}, filter);
+	w->mSystem.GetNarrowPhaseQuery().CollideShape(query, Vec3::sOne(), pose * Mat44::sTranslation(query->GetCenterOfMass()), settings, LoadR3(origin), collector, {}, filter);
 	std::vector<int32_t> bodies;
 	for (const CollideShapeResult &hit : collector.mHits)
 	{
@@ -1922,7 +1932,7 @@ SN_API int32_t sn_physics_overlap(int32_t world, const sn_shape *shape, uint32_t
 	return int32_t(bodies.size());
 }
 
-SN_API int32_t sn_physics_sphere_cast(int32_t world, float radius, const float *origin, const float *direction, float max_distance, uint32_t mask, uint32_t flags, sn_hit *hit)
+SN_API int32_t sn_physics_sphere_cast(int32_t world, float radius, const double *origin, const float *direction, float max_distance, uint32_t mask, uint32_t flags, sn_hit *hit)
 {
 	World *w = GetWorld(world);
 	if (w == nullptr)
@@ -1935,17 +1945,18 @@ SN_API int32_t sn_physics_sphere_cast(int32_t world, float radius, const float *
 	if (!(radius > 0.0f))
 		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "radius must be positive");
 	RefConst<Shape> sphere = new SphereShape(radius);
-	RShapeCast cast(sphere, Vec3::sOne(), RMat44::sTranslation(RVec3(Load3(origin))), unit * max_distance);
+	RVec3 start = LoadR3(origin);
+	RShapeCast cast(sphere, Vec3::sOne(), RMat44::sTranslation(start), unit * max_distance);
 	ShapeCastSettings settings;
 	ClosestCastHit collector((flags & SN_CAST_IGNORE_INITIAL_OVERLAP) != 0);
 	MaskFilter filter(mask);
-	w->mSystem.GetNarrowPhaseQuery().CastShape(cast, settings, RVec3::sZero(), collector, {}, filter);
+	// 结果的点相对 base offset（起点）：远处也只差几米，单精度够
+	w->mSystem.GetNarrowPhaseQuery().CastShape(cast, settings, start, collector, {}, filter);
 	if (!collector.mHadHit)
 		return 0;
 	const ShapeCastResult &result = collector.mHit;
 	hit->distance = result.mFraction * max_distance;
-	Vec3 point(result.mContactPointOn2);
-	point.StoreFloat3(reinterpret_cast<Float3 *>(hit->point));
+	StoreR3(start + result.mContactPointOn2, hit->point);
 	Vec3 normal = result.mPenetrationAxis.IsNearZero() ? -unit : -result.mPenetrationAxis.Normalized();
 	normal.StoreFloat3(reinterpret_cast<Float3 *>(hit->normal));
 	hit->body = BodyIndexOf(*w, result.mBodyID2);

@@ -4,6 +4,7 @@
 #include <Core/Core.h>
 
 #include <Jolt/Math/Mat44.h>
+#include <Jolt/Math/DMat44.h>
 
 #include <vector>
 
@@ -11,6 +12,9 @@ namespace StrideNative
 {
 	/// 结构数组布局的变换。槽位从 1 开始，0 是空槽位（parent 为 0 表示根），各列都有 capacity + 1 项。
 	/// 列在创建时一次分配好，指针不变，JS 可以一直保留视图。
+	///
+	/// 大世界（D18）：本地位置和世界矩阵是双精度（几十公里外也不抖）；另有一份单精度的"渲染用世界矩阵"，平移是相对渲染原点
+	/// （相机附近、按格对齐，见 SetRenderOrigin）的，GPU 和剔除用它。旋转、缩放仍是单精度。
 	class TransformStore
 	{
 	public:
@@ -37,27 +41,34 @@ namespace StrideNative
 		const std::vector<int32_t> &Changed() const { return mPublished; }
 
 		/// 本地矩阵 T * R * S。
-		JPH::Mat44 LocalMatrix(int32_t inSlot) const;
+		JPH::DMat44 LocalMatrix(int32_t inSlot) const;
 		/// 沿父链现算世界矩阵，不依赖上一次 Update（加物体时用：槽位可能刚设好位姿）。
-		JPH::Mat44 ComputeWorldMatrix(int32_t inSlot) const;
+		JPH::DMat44 ComputeWorldMatrix(int32_t inSlot) const;
 		/// 把世界空间的位姿写成本地位置和旋转；有父节点时用父节点上一次 Update 的世界矩阵换算。
-		void SetWorldPose(int32_t inSlot, JPH::Vec3Arg inPosition, JPH::QuatArg inRotation);
+		void SetWorldPose(int32_t inSlot, JPH::DVec3Arg inPosition, JPH::QuatArg inRotation);
+		/// 渲染原点：渲染用世界矩阵的平移减去它。变了时所有活着的槽位的渲染用矩阵重算、都记成变了（GPU 上的要全部重传一次），
+		/// 所以调用方按格对齐、只在相机走出一格时才换。
+		void SetRenderOrigin(JPH::DVec3Arg inOrigin);
+		JPH::DVec3 RenderOrigin() const { return mRenderOrigin; }
 
-		std::vector<float>		mPosition;			///< xyz
+		std::vector<double>		mPosition;			///< xyz
 		std::vector<float>		mRotation;			///< xyzw
 		std::vector<float>		mScale;				///< xyz
 		std::vector<int32_t>	mParent;			///< 0 表示根
-		std::vector<float>		mWorld;				///< 列主序 4x4
+		std::vector<double>		mWorld;				///< 列主序 4x4
+		std::vector<float>		mRenderWorld;		///< 列主序 4x4，平移相对渲染原点
 
 	private:
-		JPH::Mat44				LoadWorld(int32_t inSlot) const;
+		JPH::DMat44				LoadWorld(int32_t inSlot) const;
 		/// 算世界矩阵时的"父"：有链接时是链接的槽位，否则是父节点
 		int32_t					EffectiveParent(int32_t inSlot) const { return mLinkSlot[inSlot] != 0 ? mLinkSlot[inSlot] : mParent[inSlot]; }
 		/// 父的世界矩阵乘到本地矩阵前面的那部分：有链接时是 链接槽位的 world * 链接矩阵，没有父时是单位矩阵
-		JPH::Mat44				ParentWorld(int32_t inSlot) const;
+		JPH::DMat44				ParentWorld(int32_t inSlot) const;
 		void					RebuildOrder();
 		/// 写世界矩阵：和原来的不一样才写，并记下这个槽位变了
-		void					StoreWorld(int32_t inSlot, JPH::Mat44Arg inWorld);
+		void					StoreWorld(int32_t inSlot, JPH::DMat44Arg inWorld);
+		/// 由世界矩阵写渲染用的那份（平移减渲染原点）
+		void					StoreRenderWorld(int32_t inSlot);
 		/// 记下槽位变了（这一轮还没记过才加进列表）
 		void					MarkChanged(int32_t inSlot);
 
@@ -78,6 +89,7 @@ namespace StrideNative
 		uint32_t				mStamp = 1;			///< 这一轮（下一次 Update 之前）的轮次
 		std::vector<int32_t>	mChanged;			///< 这一轮变了的槽位
 		std::vector<int32_t>	mPublished;			///< 上一次 Update 交出去的
+		JPH::DVec3				mRenderOrigin = JPH::DVec3::sZero();
 	};
 
 	/// 按句柄找变换存储，找不到时记下错误（提到 inWhat）。别的模块（物理）必须通过它找：句柄表是模板里的静态变量，

@@ -87,7 +87,7 @@ typedef struct sn_body
 	/// 绑定的变换槽位，0 表示不绑定。绑定后初始位姿取槽位当前的世界位姿（缩放只作用到网格形状），
 	/// 动态物体和角色每步把位姿写回槽位（有父节点时换算到父节点空间）。
 	int32_t transform;
-	float position[3];				///< 没有绑定变换时的位姿
+	double position[3];				///< 没有绑定变换时的位姿（世界位置是双精度）
 	float rotation[4];
 	uint32_t first_shape;			///< shapes 表里的下标
 	uint32_t shape_count;
@@ -116,7 +116,7 @@ SN_API int32_t sn_physics_step(int32_t world, float delta_time, int32_t collisio
 /// 插值的物体写回 alpha（0 是上一步，1 是这一步）处的位姿。
 SN_API int32_t sn_physics_interpolate(int32_t world, float alpha);
 /// 每个物体的位置 xyz，按编号排，能放 max_bodies 个；地址在世界销毁前不变，add_bodies 和 step 原地改写。
-SN_API const float *sn_physics_positions(int32_t world);
+SN_API const double *sn_physics_positions(int32_t world);
 
 // ---------------------------------------------------------------------------------------------
 // 动态和运动学物体（Stride 的 BodyComponent）。body 是物体编号；成功返回 SN_OK。
@@ -130,7 +130,7 @@ SN_API int32_t sn_physics_body_set_awake(int32_t world, int32_t body, int32_t aw
 SN_API int32_t sn_physics_body_awake(int32_t world, int32_t body);
 /// 瞬移到世界位姿（Stride 的 Teleport），并唤醒；绑定了变换的立即写回槽位，插值也从这里重新开始。角色也可以（转身改朝向，
 /// Stride 的 CharacterComponent.Orientation），之后的 MoveVector 按新的朝向换到世界。
-SN_API int32_t sn_physics_body_teleport(int32_t world, int32_t body, const float *position, const float *rotation);
+SN_API int32_t sn_physics_body_teleport(int32_t world, int32_t body, const double *position, const float *rotation);
 /// 只改朝向（Stride 的 SetTargetPose(Quaternion)、CharacterComponent.Orientation），并唤醒：位置和它的插值不动，所以可以每帧调
 /// （鼠标转视角带着角色转）。绑定了变换的立即写回旋转。角色之后的 MoveVector 按新的朝向换到世界。
 SN_API int32_t sn_physics_body_set_rotation(int32_t world, int32_t body, const float *rotation);
@@ -237,18 +237,18 @@ SN_API int32_t sn_physics_character_grounded(int32_t world, int32_t body);
 
 typedef struct sn_hit
 {
+	double point[3];				///< 世界位置（双精度）
 	float distance;					///< 沿方向的距离
-	float point[3];
 	float normal[3];
 	int32_t body;					///< 命中的物体编号
 } sn_hit;
 
 /// 射线（Stride 的 RayCast）：direction 不用归一化，max_distance 是米。mask 的第 n 位为 1 表示层 n 的物体参与。
 /// 返回 1 命中（写 hit），0 没有，负数是错误。
-SN_API int32_t sn_physics_ray_cast(int32_t world, const float *origin, const float *direction, float max_distance, uint32_t mask, sn_hit *hit);
+SN_API int32_t sn_physics_ray_cast(int32_t world, const double *origin, const float *direction, float max_distance, uint32_t mask, sn_hit *hit);
 /// 穿透的射线（Stride 的 RayCastPenetrating）：射线穿过的每个物体各一个命中（取进入它的那一处），从近到远写进 out_hits，
 /// 最多 capacity 个；返回命中的物体总数（可能比 capacity 多），负数是错误。参数同 sn_physics_ray_cast。
-SN_API int32_t sn_physics_ray_cast_all(int32_t world, const float *origin, const float *direction, float max_distance, uint32_t mask, sn_hit *out_hits, int32_t capacity);
+SN_API int32_t sn_physics_ray_cast_all(int32_t world, const double *origin, const float *direction, float max_distance, uint32_t mask, sn_hit *out_hits, int32_t capacity);
 enum
 {
 	/// 球体扫掠忽略起点就和球重叠的物体（默认它们算距离 0 的命中，同 Bepu）。比如第三人称相机：贴着旁边的箱子时
@@ -257,12 +257,12 @@ enum
 };
 
 /// 球体扫掠（Stride 的 SweepCast 加 Sphere），同 sn_physics_ray_cast；flags 是 SN_CAST_*。
-SN_API int32_t sn_physics_sphere_cast(int32_t world, float radius, const float *origin, const float *direction, float max_distance, uint32_t mask, uint32_t flags, sn_hit *hit);
+SN_API int32_t sn_physics_sphere_cast(int32_t world, float radius, const double *origin, const float *direction, float max_distance, uint32_t mask, uint32_t flags, sn_hit *hit);
 
-/// 形状的重叠查询（Stride 的 BepuSimulation.Overlap）：shape 的 position、rotation 是查询的世界位姿（size、mesh 同 sn_shape，网格
-/// 不缩放），mask 同射线。和它重叠的物体编号（去掉重复）写进 out_bodies，最多 capacity 个；返回重叠的物体总数（可能比 capacity 多），
+/// 形状的重叠查询（Stride 的 BepuSimulation.Overlap）：查询的世界位置是 origin（双精度），shape 的 position、rotation 是相对它的
+/// 位姿（size、mesh 同 sn_shape，网格不缩放），mask 同射线。和它重叠的物体编号（去掉重复）写进 out_bodies，最多 capacity 个；返回重叠的物体总数（可能比 capacity 多），
 /// 负数是错误。触发器也算（同 Bepu）。
-SN_API int32_t sn_physics_overlap(int32_t world, const sn_shape *shape, uint32_t mask, int32_t *out_bodies, int32_t capacity);
+SN_API int32_t sn_physics_overlap(int32_t world, const double *origin, const sn_shape *shape, uint32_t mask, int32_t *out_bodies, int32_t capacity);
 
 /// 静态物体表面的三角形（导航网格的输入，同 Stride 的 RecastMeshSystem 收集静态碰撞体）：mask 的第 n 位为 1 表示层 n 的物体参与，
 /// 传感器（触发器）不算。三角形按世界坐标连续写，每个 9 个 float，从外面看是逆时针（法线朝外）。各种形状（盒、球、网格、

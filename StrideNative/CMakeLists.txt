@@ -44,6 +44,8 @@ set(JPH_USE_VK OFF)
 set(JPH_USE_MTL OFF)
 set(JPH_USE_CPU_COMPUTE OFF)
 set(USE_WASM_SIMD ON)
+# 大世界（stride-ts 的 D18，用户 2026-11-21 定：全换双精度）：位置用双精度，实测 Jolt 的性能测试和单精度一样快
+set(DOUBLE_PRECISION ON)
 set(INTERPROCEDURAL_OPTIMIZATION OFF)
 # 调试版运行时（stride-native-core-debug）：打开 Jolt 的断言，链接时再加上 Emscripten 的运行时检查，见下面的 wasm 目标
 option(STRIDE_NATIVE_DEBUG_CHECKS "Build only the runtime module, as stride-native-core-debug, with Jolt asserts and Emscripten runtime checks" OFF)

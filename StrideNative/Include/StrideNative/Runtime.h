@@ -11,13 +11,16 @@
 
 /// 一个变换存储的各列。每个实体占一个槽位，槽位从 1 开始：0 是空槽位，所以 parent 为 0 表示根，
 /// 结构体清零就是"没有变换"。指针在存储销毁前不变，JS 保留视图直接读写。
+/// 位置和世界矩阵是双精度（大世界几十公里外也不抖）；render_world 是给 GPU 和剔除的单精度那份，平移相对渲染原点
+/// （sn_transforms_set_render_origin）。
 typedef struct sn_transform_columns
 {
-	float *position;				///< 本地位置，每个槽位 xyz
+	double *position;				///< 本地位置，每个槽位 xyz
 	float *rotation;				///< 本地旋转，每个槽位一个单位四元数 xyzw
 	float *scale;					///< 本地缩放，每个槽位 xyz
 	const int32_t *parent;			///< 父槽位，0 表示根；只能用 sn_transforms_set_parent 改
-	const float *world;				///< 世界矩阵，每个槽位 16 个 float，列主序（平移在 12..14），由 sn_transforms_update 写
+	const double *world;			///< 世界矩阵，每个槽位 16 个 double，列主序（平移在 12..14），由 sn_transforms_update 写
+	const float *render_world;		///< 渲染用世界矩阵，每个槽位 16 个 float，平移减了渲染原点；和 world 一起写
 	uint32_t capacity;				///< 最大槽位号；各列都有 capacity + 1 项（含槽位 0）
 } sn_transform_columns;
 
@@ -44,6 +47,9 @@ SN_API int32_t sn_transforms_changed(int32_t transforms, const int32_t **out_slo
 /// 只算 slot 和它的祖先的世界矩阵（Stride 的 TransformComponent.UpdateWorldMatrix）：脚本在这一帧的 sn_transforms_update
 /// 之前要用世界位姿时调用。
 SN_API int32_t sn_transforms_update_slot(int32_t transforms, int32_t slot);
+/// 渲染原点：render_world 的平移减去它。变了时所有槽位的 render_world 重算、都算"变了"（GPU 上的全部重传一次），所以按格
+/// 对齐、相机走出一格才换（渲染器的做法）。
+SN_API int32_t sn_transforms_set_render_origin(int32_t transforms, double x, double y, double z);
 /// 发出去过的最大槽位号（释放了也不降）：用到的槽位都在 1..它 之内，上传世界矩阵时只传这一段。
 SN_API int32_t sn_transforms_slot_limit(int32_t transforms);
 
@@ -62,7 +68,7 @@ typedef struct sn_cull_view
 	float max_distance;				///< 输出；没有可见物体时是 -inf
 } sn_cull_view;
 
-/// 视锥剔除：实例的变换槽位按批次连续排在 slots 里，batch_ends[b] 是第 b 批的结束下标；同一批（同一个网格）共用一个本地
+/// 视锥剔除（在渲染空间里：平面相对渲染原点，用 render_world）：实例的变换槽位按批次连续排在 slots 里，batch_ends[b] 是第 b 批的结束下标；同一批（同一个网格）共用一个本地
 /// 包围盒，bounds 每批 6 个 float（中心 xyz、半长 xyz）。包围盒用槽位的世界矩阵变换（中心按点变换，半长按矩阵分量的绝对值
 /// 变换，同 Stride 的 BoundingBoxExt.Transform），半长为 0 的包围盒总是可见、不参与量距离。第 v 个视图的结果写进
 /// out_slots 的第 v * slot_count 段：每批可见的槽位按原顺序紧凑地放在这批原来的起点，个数写进 out_counts[v * batch_count + b]。

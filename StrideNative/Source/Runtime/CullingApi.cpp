@@ -28,7 +28,7 @@ namespace
 	/// 包围盒按世界矩阵变换：中心按点变换，半长按矩阵 3x3 部分各分量的绝对值变换。
 	WorldBox TransformBox(const TransformStore &inStore, int32_t inSlot, Vec3Arg inCenter, Vec3Arg inExtent)
 	{
-		Mat44 world = Mat44::sLoadFloat4x4(reinterpret_cast<const Float4 *>(&inStore.mWorld[size_t(inSlot) * 16]));
+		Mat44 world = Mat44::sLoadFloat4x4(reinterpret_cast<const Float4 *>(&inStore.mRenderWorld[size_t(inSlot) * 16]));
 		Vec3 extent = world.GetAxisX().Abs() * inExtent.GetX() + world.GetAxisY().Abs() * inExtent.GetY() + world.GetAxisZ().Abs() * inExtent.GetZ();
 		return { world * inCenter, extent };
 	}

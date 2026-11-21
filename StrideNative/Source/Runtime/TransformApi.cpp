@@ -1,21 +1,50 @@
-// 变换存储和它的 C API。世界矩阵用 Jolt 的 Mat44（SIMD）算，按父节点在前的顺序一遍算完。
+// 变换存储和它的 C API。世界矩阵用 Jolt 的 DMat44（旋转缩放单精度、平移双精度）算，按父节点在前的顺序一遍算完。
 #include <Core/Debug.h>
 #include <Core/HandleTable.h>
 #include <Runtime/Transforms.h>
 #include <StrideNative/Runtime.h>
 
 #include <algorithm>
+#include <cmath>
 
 using namespace JPH;
 
 namespace StrideNative
 {
+	namespace
+	{
+		/// 列主序的 4x4 双精度矩阵（JS 读的布局）和 DMat44 互换
+		void StoreDMat44(DMat44Arg inMatrix, double *outValues)
+		{
+			for (uint col = 0; col < 3; ++col)
+			{
+				Vec4 c = inMatrix.GetColumn4(col);
+				outValues[col * 4] = c.GetX();
+				outValues[col * 4 + 1] = c.GetY();
+				outValues[col * 4 + 2] = c.GetZ();
+				outValues[col * 4 + 3] = 0.0;
+			}
+			DVec3 t = inMatrix.GetTranslation();
+			outValues[12] = t.GetX();
+			outValues[13] = t.GetY();
+			outValues[14] = t.GetZ();
+			outValues[15] = 1.0;
+		}
+
+		DMat44 LoadDMat44(const double *inValues)
+		{
+			auto column = [inValues](uint inCol) { return Vec4(float(inValues[inCol * 4]), float(inValues[inCol * 4 + 1]), float(inValues[inCol * 4 + 2]), 0.0f); };
+			return DMat44(column(0), column(1), column(2), DVec3(inValues[12], inValues[13], inValues[14]));
+		}
+	}
+
 	TransformStore::TransformStore(uint32_t inCapacity) :
-		mPosition(size_t(inCapacity + 1) * 3, 0.0f),
+		mPosition(size_t(inCapacity + 1) * 3, 0.0),
 		mRotation(size_t(inCapacity + 1) * 4, 0.0f),
 		mScale(size_t(inCapacity + 1) * 3, 1.0f),
 		mParent(inCapacity + 1, 0),
-		mWorld(size_t(inCapacity + 1) * 16, 0.0f),
+		mWorld(size_t(inCapacity + 1) * 16, 0.0),
+		mRenderWorld(size_t(inCapacity + 1) * 16, 0.0f),
 		mCapacity(inCapacity),
 		mAlive(inCapacity + 1, 0),
 		mChildCount(inCapacity + 1, 0),
@@ -26,7 +55,8 @@ namespace StrideNative
 		for (uint32_t slot = 0; slot <= inCapacity; ++slot)
 		{
 			mRotation[slot * 4 + 3] = 1.0f;
-			Mat44::sIdentity().StoreFloat4x4(reinterpret_cast<Float4 *>(&mWorld[slot * 16]));
+			StoreDMat44(DMat44::sIdentity(), &mWorld[slot * 16]);
+			Mat44::sIdentity().StoreFloat4x4(reinterpret_cast<Float4 *>(&mRenderWorld[slot * 16]));
 		}
 	}
 
@@ -45,14 +75,15 @@ namespace StrideNative
 			else
 				slot = int32_t(++mHighWater);
 
-			std::fill_n(&mPosition[slot * 3], 3, 0.0f);
+			std::fill_n(&mPosition[slot * 3], 3, 0.0);
 			std::fill_n(&mRotation[slot * 4], 3, 0.0f);
 			mRotation[slot * 4 + 3] = 1.0f;
 			std::fill_n(&mScale[slot * 3], 3, 1.0f);
 			mParent[slot] = 0;
 			mChildCount[slot] = 0;
 			mLinkSlot[slot] = 0;
-			Mat44::sIdentity().StoreFloat4x4(reinterpret_cast<Float4 *>(&mWorld[slot * 16]));
+			StoreDMat44(DMat44::sIdentity(), &mWorld[slot * 16]);
+			StoreRenderWorld(slot);
 			mAlive[slot] = 1;
 			MarkChanged(slot);
 			outSlots[i] = slot;
@@ -191,13 +222,13 @@ namespace StrideNative
 		return true;
 	}
 
-	Mat44 TransformStore::ParentWorld(int32_t inSlot) const
+	DMat44 TransformStore::ParentWorld(int32_t inSlot) const
 	{
 		if (int32_t link = mLinkSlot[inSlot]; link != 0)
 			return LoadWorld(link) * Mat44::sLoadFloat4x4(reinterpret_cast<const Float4 *>(&mLinkMatrix[inSlot * 16]));
 		if (int32_t parent = mParent[inSlot]; parent != 0)
 			return LoadWorld(parent);
-		return Mat44::sIdentity();
+		return DMat44::sIdentity();
 	}
 
 	void TransformStore::RebuildOrder()
@@ -237,9 +268,10 @@ namespace StrideNative
 		mOrderDirty = false;
 	}
 
-	Mat44 TransformStore::LocalMatrix(int32_t inSlot) const
+	DMat44 TransformStore::LocalMatrix(int32_t inSlot) const
 	{
-		const float *p = &mPosition[inSlot * 3], *r = &mRotation[inSlot * 4], *s = &mScale[inSlot * 3];
+		const double *p = &mPosition[inSlot * 3];
+		const float *r = &mRotation[inSlot * 4], *s = &mScale[inSlot * 3];
 		// 四元数直接按标准公式变成矩阵（同 Stride 的 Matrix.RotationQuaternion），不要求归一化：场景里手填的旋转常常
 		// 不是单位长度，Stride 也不归一化（Jolt 的 sRotation 在调试版里会断言）
 		const float x = r[0], y = r[1], z = r[2], w = r[3];
@@ -248,22 +280,22 @@ namespace StrideNative
 			Vec4(1.0f - 2.0f * (yy + zz), 2.0f * (xy + zw), 2.0f * (zx - yw), 0.0f),
 			Vec4(2.0f * (xy - zw), 1.0f - 2.0f * (zz + xx), 2.0f * (yz + xw), 0.0f),
 			Vec4(2.0f * (zx + yw), 2.0f * (yz - xw), 1.0f - 2.0f * (yy + xx), 0.0f),
-			Vec4(p[0], p[1], p[2], 1.0f));
-		return rotation.PreScaled(Vec3(s[0], s[1], s[2]));
+			Vec4(0.0f, 0.0f, 0.0f, 1.0f));
+		return DMat44(rotation.PreScaled(Vec3(s[0], s[1], s[2])), DVec3(p[0], p[1], p[2]));
 	}
 
-	Mat44 TransformStore::LoadWorld(int32_t inSlot) const
+	DMat44 TransformStore::LoadWorld(int32_t inSlot) const
 	{
-		return Mat44::sLoadFloat4x4(reinterpret_cast<const Float4 *>(&mWorld[inSlot * 16]));
+		return LoadDMat44(&mWorld[inSlot * 16]);
 	}
 
-	Mat44 TransformStore::ComputeWorldMatrix(int32_t inSlot) const
+	DMat44 TransformStore::ComputeWorldMatrix(int32_t inSlot) const
 	{
-		Mat44 world = LocalMatrix(inSlot);
+		DMat44 world = LocalMatrix(inSlot);
 		for (int32_t slot = inSlot; EffectiveParent(slot) != 0; slot = EffectiveParent(slot))
 		{
 			if (mLinkSlot[slot] != 0)
-				world = Mat44::sLoadFloat4x4(reinterpret_cast<const Float4 *>(&mLinkMatrix[slot * 16])) * world;
+				world = DMat44(Mat44::sLoadFloat4x4(reinterpret_cast<const Float4 *>(&mLinkMatrix[slot * 16]))) * world;
 			world = LocalMatrix(EffectiveParent(slot)) * world;
 		}
 		return world;
@@ -281,13 +313,40 @@ namespace StrideNative
 		++mStamp;
 	}
 
-	void TransformStore::StoreWorld(int32_t inSlot, Mat44Arg inWorld)
+	void TransformStore::StoreWorld(int32_t inSlot, DMat44Arg inWorld)
 	{
-		Float4 *stored = reinterpret_cast<Float4 *>(&mWorld[inSlot * 16]);
-		if (Mat44::sLoadFloat4x4(stored) == inWorld)
+		double *stored = &mWorld[inSlot * 16];
+		if (LoadDMat44(stored) == inWorld)
 			return;
-		inWorld.StoreFloat4x4(stored);
+		StoreDMat44(inWorld, stored);
+		StoreRenderWorld(inSlot);
 		MarkChanged(inSlot);
+	}
+
+	void TransformStore::StoreRenderWorld(int32_t inSlot)
+	{
+		const double *world = &mWorld[inSlot * 16];
+		float *render = &mRenderWorld[inSlot * 16];
+		for (int i = 0; i < 12; ++i)
+			render[i] = float(world[i]);
+		// 先在双精度里减再转单精度：远处的平移减掉渲染原点以后是小数，精度留在相机附近
+		render[12] = float(world[12] - mRenderOrigin.GetX());
+		render[13] = float(world[13] - mRenderOrigin.GetY());
+		render[14] = float(world[14] - mRenderOrigin.GetZ());
+		render[15] = 1.0f;
+	}
+
+	void TransformStore::SetRenderOrigin(DVec3Arg inOrigin)
+	{
+		if (inOrigin == mRenderOrigin)
+			return;
+		mRenderOrigin = inOrigin;
+		for (int32_t slot = 1; slot <= int32_t(mHighWater); ++slot)
+			if (mAlive[slot] != 0)
+			{
+				StoreRenderWorld(slot);
+				MarkChanged(slot);
+			}
 	}
 
 	void TransformStore::MarkChanged(int32_t inSlot)
@@ -307,21 +366,23 @@ namespace StrideNative
 			StoreWorld(*it, EffectiveParent(*it) != 0 ? ParentWorld(*it) * LocalMatrix(*it) : LocalMatrix(*it));
 	}
 
-	void TransformStore::SetWorldPose(int32_t inSlot, Vec3Arg inPosition, QuatArg inRotation)
+	void TransformStore::SetWorldPose(int32_t inSlot, DVec3Arg inPosition, QuatArg inRotation)
 	{
-		Vec3 position = inPosition;
+		DVec3 position = inPosition;
 		Quat rotation = inRotation;
 		if (int32_t parent = EffectiveParent(inSlot); parent != 0)
 		{
 			// 父节点的世界矩阵现算，不用缓存：这一帧脚本可能刚改过父节点（还没 Update），物理写回时父物体也可能刚写过
-			Mat44 parent_world = ComputeWorldMatrix(parent);
+			DMat44 parent_world = ComputeWorldMatrix(parent);
 			if (int32_t link = mLinkSlot[inSlot]; link != 0)
 				parent_world = parent_world * Mat44::sLoadFloat4x4(reinterpret_cast<const Float4 *>(&mLinkMatrix[inSlot * 16]));
 			Vec3 parent_scale;
 			position = parent_world.Inversed() * inPosition;
 			rotation = (parent_world.Decompose(parent_scale).GetQuaternion().Conjugated() * inRotation).Normalized();
 		}
-		position.StoreFloat3(reinterpret_cast<Float3 *>(&mPosition[inSlot * 3]));
+		mPosition[inSlot * 3] = position.GetX();
+		mPosition[inSlot * 3 + 1] = position.GetY();
+		mPosition[inSlot * 3 + 2] = position.GetZ();
 		rotation.GetXYZW().StoreFloat4(reinterpret_cast<Float4 *>(&mRotation[inSlot * 4]));
 	}
 }
@@ -364,7 +425,7 @@ SN_API int32_t sn_transforms_columns(int32_t transforms, sn_transform_columns *o
 		return SN_ERROR_INVALID_HANDLE;
 	if (out_columns == nullptr)
 		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "out_columns is required");
-	*out_columns = { store->mPosition.data(), store->mRotation.data(), store->mScale.data(), store->mParent.data(), store->mWorld.data(), store->Capacity() };
+	*out_columns = { store->mPosition.data(), store->mRotation.data(), store->mScale.data(), store->mParent.data(), store->mWorld.data(), store->mRenderWorld.data(), store->Capacity() };
 	return SN_OK;
 }
 
@@ -407,6 +468,17 @@ SN_API int32_t sn_transforms_set_link(int32_t transforms, int32_t slot, int32_t 
 		return SN_ERROR_INVALID_HANDLE;
 	std::string error;
 	return store->SetLink(slot, link_slot, matrix, error) ? SN_OK : SetLastError(SN_ERROR_INVALID_ARGUMENT, error);
+}
+
+SN_API int32_t sn_transforms_set_render_origin(int32_t transforms, double x, double y, double z)
+{
+	TransformStore *store = GetStore(transforms);
+	if (store == nullptr)
+		return SN_ERROR_INVALID_HANDLE;
+	if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z))
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "the render origin must be finite");
+	store->SetRenderOrigin(DVec3(x, y, z));
+	return SN_OK;
 }
 
 SN_API int32_t sn_transforms_slot_limit(int32_t transforms)
