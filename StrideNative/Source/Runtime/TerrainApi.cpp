@@ -213,11 +213,12 @@ namespace StrideNative
 				const float strength = noise.gully_strength;
 				if (!(strength > 0.0f) || noise.gully_octaves == 0)
 					return inHeight;
-				// 走向只看大的起伏：一半的层数（坡度要算三次底，层少省得多）
-				const uint32_t octaves = std::max(2u, noise.octaves / 2);
-				const double e = std::max(0.01, double(noise.gully_scale) * 0.02);
-				const float h0 = Base(inX, inZ, octaves);
-				float gx = float(double(Base(inX + e, inZ, octaves) - h0) / e), gz = float(double(Base(inX, inZ + e, octaves) - h0) / e);
+				// 走向只看大的起伏：三层的底、隔四分之一个冲沟间距的中心差分——方向场要平滑，底上的棱（山脊噪声、扭曲）会让方向
+				// 突然转个角度，条纹跟着断开，地上出一道道小坎
+				const uint32_t octaves = std::min(3u, std::max(1u, noise.octaves));
+				const double e = std::max(0.01, double(noise.gully_scale) * 0.25);
+				float gx = float(double(Base(inX + e, inZ, octaves) - Base(inX - e, inZ, octaves)) / (2.0 * e));
+				float gz = float(double(Base(inX, inZ + e, octaves) - Base(inX, inZ - e, octaves)) / (2.0 * e));
 				float slope = std::sqrt(gx * gx + gz * gz);
 				if (slope < 1e-6f)
 				{
@@ -244,8 +245,8 @@ namespace StrideNative
 					norm += amplitude;
 					fade = faded;
 					mask = PowInv(mask, noise.gully_detail) * EaseOut(std::fabs(s) * 2.0f);
-					// 这一层条纹的坡（米每米，按符号）加到走向上
-					float gullySlope = strength * amplitude * TWO_PI * float(frequency) * (s >= 0.0f ? 1.0f : -1.0f);
+					// 这一层条纹的坡（米每米）加到走向上：用 sin 本身（连续的），按符号的话正负交界处下一层的方向跳一下，地上出坎
+					float gullySlope = strength * amplitude * TWO_PI * float(frequency) * s;
 					sx += px * gullySlope;
 					sz += pz * gullySlope;
 					amplitude *= 0.5f;
