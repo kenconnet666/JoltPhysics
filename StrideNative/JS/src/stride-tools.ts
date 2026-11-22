@@ -162,6 +162,12 @@ export type SdfShape = {
 	/** 环在 XZ 平面上。 */
 	| { readonly kind: 'torus'; readonly ringRadius: number; readonly tubeRadius: number }
 	| { readonly kind: 'ellipsoid'; readonly radii: readonly [number, number, number] }
+	/** 圆台（顶半径 0 是圆锥）：轴是 Y，底面在 -halfHeight。 */
+	| { readonly kind: 'cone'; readonly halfHeight: number; readonly bottomRadius: number; readonly topRadius: number }
+	/** 两头是球的圆锥（四肢、角）：两个球心相距 height（沿 Y、中心在原点），半径差要小于 height。 */
+	| { readonly kind: 'roundCone'; readonly height: number; readonly bottomRadius: number; readonly topRadius: number }
+	/** 六棱柱：六边形在 XZ 平面上，radius 是中心到边的距离，轴是 Y。 */
+	| { readonly kind: 'hexPrism'; readonly halfHeight: number; readonly radius: number }
 );
 
 /** SDF 建模的结果：光滑的法线（距离场的梯度），每个三角形离哪个形状的表面最近。 */
@@ -397,7 +403,7 @@ export class StrideTools extends NativeModule<ToolsExport> {
 
 	/** SDF 建模：形状按顺序平滑合成，按大约 edgeLength 的边长网格化（Manifold 的等值面）。 */
 	sdfMesh(shapes: readonly SdfShape[], edgeLength: number): Promise<SdfSolid> {
-		const KINDS = { sphere: 0, box: 1, capsule: 2, cylinder: 3, torus: 4, ellipsoid: 5 } as const;
+		const KINDS = { sphere: 0, box: 1, capsule: 2, cylinder: 3, torus: 4, ellipsoid: 5, cone: 6, roundCone: 7, hexPrism: 8 } as const;
 		const OPERATIONS = { add: 0, subtract: 1, intersect: 2 } as const;
 		const stream: number[] = [];
 		for (const shape of shapes) {
@@ -410,6 +416,9 @@ export class StrideTools extends NativeModule<ToolsExport> {
 				case 'cylinder': stream.push(shape.halfHeight, shape.radius, shape.edgeRadius); break;
 				case 'torus': stream.push(shape.ringRadius, shape.tubeRadius); break;
 				case 'ellipsoid': stream.push(...shape.radii); break;
+				case 'cone': stream.push(shape.halfHeight, shape.bottomRadius, shape.topRadius); break;
+				case 'roundCone': stream.push(shape.height, shape.bottomRadius, shape.topRadius); break;
+				case 'hexPrism': stream.push(shape.halfHeight, shape.radius); break;
 			}
 		}
 		const floats = Float32Array.from(stream);

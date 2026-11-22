@@ -171,6 +171,9 @@ enum
 	ST_SDF_CYLINDER = 3,			///< params: half height (along Y), radius, edge radius (the rounding is inside the size)
 	ST_SDF_TORUS = 4,				///< params: ring radius (in the XZ plane), tube radius
 	ST_SDF_ELLIPSOID = 5,			///< params: radii x, y, z (approximate distance)
+	ST_SDF_CONE = 6,				///< params: half height (along Y), bottom radius, top radius (0 is a pointed cone)
+	ST_SDF_ROUND_CONE = 7,			///< params: distance between the two sphere centers (along Y, centered), bottom radius, top radius
+	ST_SDF_HEX_PRISM = 8,			///< params: half height (along Y), radius to the middle of a side (hexagon in the XZ plane)
 };
 
 /// Signed-distance modelling (Womp-style blobs): shapes are combined in order with smooth union / difference / intersection (the

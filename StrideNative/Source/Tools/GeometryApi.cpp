@@ -374,6 +374,43 @@ namespace
 			const double k0 = manifold::la::length(p / r), k1 = manifold::la::length(p / (r * r));
 			return k1 > 0 ? k0 * (k0 - 1.0) / k1 : -std::min(a[0], std::min(a[1], a[2]));
 		}
+		case ST_SDF_CONE:
+		{
+			// Inigo Quilez's exact capped cone: bottom radius a[1] at y = -h, top radius a[2] at y = +h
+			const double h = a[0], r1 = a[1], r2 = a[2];
+			const double qx = Length2(p.x, p.z), qy = p.y;
+			const double k2x = r2 - r1, k2y = 2.0 * h;
+			const double cax = qx - std::min(qx, qy < 0.0 ? r1 : r2), cay = std::abs(qy) - h;
+			const double t = std::clamp(((r2 - qx) * k2x + (h - qy) * k2y) / (k2x * k2x + k2y * k2y), 0.0, 1.0);
+			const double cbx = qx - r2 + k2x * t, cby = qy - h + k2y * t;
+			const double s = (cbx < 0.0 && cay < 0.0) ? -1.0 : 1.0;
+			return s * std::sqrt(std::min(cax * cax + cay * cay, cbx * cbx + cby * cby));
+		}
+		case ST_SDF_ROUND_CONE:
+		{
+			// Inigo Quilez's round cone: spheres of radius a[1] at y = -a[0]/2 and a[2] at y = +a[0]/2, joined by their tangent cone
+			const double h = a[0], r1 = a[1], r2 = a[2];
+			const double b = (r1 - r2) / h, c = std::sqrt(std::max(0.0, 1.0 - b * b));
+			const double qx = Length2(p.x, p.z), qy = p.y + h * 0.5;
+			const double k = -b * qx + c * qy;
+			if (k < 0.0)
+				return Length2(qx, qy) - r1;
+			if (k > c * h)
+				return Length2(qx, qy - h) - r2;
+			return qx * c + qy * b - r1;
+		}
+		case ST_SDF_HEX_PRISM:
+		{
+			// Inigo Quilez's hexagonal prism with the hexagon in XZ (a[1] is the apothem) and the height along Y
+			const double kx = -0.8660254037844386, ky = 0.5, kz = 0.5773502691896258;
+			double x = std::abs(p.x), z = std::abs(p.z);
+			const double fold = 2.0 * std::min(kx * x + ky * z, 0.0);
+			x -= fold * kx;
+			z -= fold * ky;
+			const double edge = std::clamp(x, -kz * a[1], kz * a[1]);
+			const double dx = Length2(x - edge, z - a[1]) * (z - a[1] < 0.0 ? -1.0 : 1.0), dy = std::abs(p.y) - a[0];
+			return std::min(std::max(dx, dy), 0.0) + Length2(std::max(dx, 0.0), std::max(dy, 0.0));
+		}
 		}
 		return 1e9;
 	}
@@ -422,8 +459,8 @@ namespace
 		outShape.smoothness = std::max(0.0, double(ioCursor[2]));
 		const float *m = ioCursor + 3;
 		ioCursor += 19;
-		static constexpr int PARAM_COUNTS[] = { 1, 4, 2, 3, 2, 3 };
-		if (outShape.kind < 0 || outShape.kind > ST_SDF_ELLIPSOID)
+		static constexpr int PARAM_COUNTS[] = { 1, 4, 2, 3, 2, 3, 3, 3, 2 };
+		if (outShape.kind < 0 || outShape.kind > ST_SDF_HEX_PRISM)
 		{
 			outError = name + ": unknown kind " + std::to_string(outShape.kind);
 			return false;
@@ -451,6 +488,9 @@ namespace
 		case ST_SDF_CYLINDER: outShape.bound = Length2(a[0], a[1]); break;
 		case ST_SDF_TORUS: outShape.bound = a[0] + a[1]; break;
 		case ST_SDF_ELLIPSOID: outShape.bound = std::max(a[0], std::max(a[1], a[2])); break;
+		case ST_SDF_CONE: outShape.bound = Length2(a[0], std::max(a[1], a[2])); break;
+		case ST_SDF_ROUND_CONE: outShape.bound = a[0] * 0.5 + std::max(a[1], a[2]); break;
+		case ST_SDF_HEX_PRISM: outShape.bound = Length2(a[0], a[1] * 1.1547005383792515); break;
 		}
 		for (int i = 0; i < count; ++i)
 			if (!(a[i] >= 0) || (i == 0 && a[i] <= 0))
@@ -458,6 +498,16 @@ namespace
 				outError = name + ": its sizes must be positive";
 				return false;
 			}
+		if (outShape.kind == ST_SDF_ROUND_CONE && std::abs(a[1] - a[2]) >= a[0])
+		{
+			outError = name + ": a round cone's radii must differ by less than its height (otherwise one sphere swallows the other)";
+			return false;
+		}
+		if (outShape.kind == ST_SDF_CONE && a[1] <= 0 && a[2] <= 0)
+		{
+			outError = name + ": a cone needs a bottom or a top radius";
+			return false;
+		}
 		manifold::mat3x4 transform;
 		for (int column = 0; column < 4; ++column)
 			for (int row = 0; row < 3; ++row)
