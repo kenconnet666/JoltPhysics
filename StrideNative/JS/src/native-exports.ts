@@ -64,12 +64,14 @@ export interface NativeExports {
 	_sn_bvh_build_boxes(boxes: number, count: number): number;
 	/**
 	 * 三角网格的 BVH（异步任务）：按表面积启发式（SAH，每个轴 16 个桶）建二叉树，叶子最多 4 个三角形。positions 是 vertex_count × 3 个
-	 * float，indices 是 triangle_count × 3 个顶点下标。
-	 * 输出 [0]：节点；输出 [1]：按叶子排好的三角形，每个 12 个 32 位——v0（3 float）、原来的三角形下标（uint32）、e1 = v1 − v0
-	 * （3 float）、0、e2 = v2 − v0（3 float）、0（Möller–Trumbore 直接用）。结果 [0]：节点数。
+	 * float，indices 是 triangle_count × 3 个顶点下标。max_triangles 不是 0 且三角形比它多时先简化：连通的小块（包围盒对角线不到
+	 * 整个网格的 5%、多于 12 个三角形）换成它的包围盒，大块原样留着（简化后仍可能多于 max_triangles）。光追只要大致的形状——货架
+	 * 连同几千件商品几十万个三角形，商品换成盒子 BVH 小几倍；sloppy 简化会把小东西整个合没，不用。
+	 * 输出 [0]：节点；输出 [1]：按叶子排好的三角形，每个 12 个 32 位——v0（3 float）、三角形下标（简化过的是简化后的，uint32）、
+	 * e1 = v1 − v0（3 float）、0、e2 = v2 − v0（3 float）、0（Möller–Trumbore 直接用）。结果 [0]：节点数；结果 [1]：用了几个三角形。
 	 * C: Runtime.h
 	 */
-	_sn_bvh_build_triangles(positions: number, vertexCount: number, indices: number, triangleCount: number): number;
+	_sn_bvh_build_triangles(positions: number, vertexCount: number, indices: number, triangleCount: number, maxTriangles: number): number;
 	/**
 	 * Returns the agent index.
 	 * C: Navigation.h
@@ -768,7 +770,7 @@ export const POINTER_SIGNATURES: Readonly<Record<string, string>> = {
 	sn_anim_skin_batch: '_p_',
 	sn_anim_skin_create: '_pp_',
 	sn_bvh_build_boxes: '_p_',
-	sn_bvh_build_triangles: '_p_p_',
+	sn_bvh_build_triangles: '_p_p__',
 	sn_crowd_add_agent: '__p____',
 	sn_crowd_positions: 'p_',
 	sn_crowd_request_move: '___p',

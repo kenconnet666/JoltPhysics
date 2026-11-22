@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cfloat>
+#include <cmath>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -209,25 +210,126 @@ namespace StrideNative
 
 using namespace StrideNative;
 
-SN_API int32_t sn_bvh_build_triangles(const float *positions, uint32_t vertex_count, const uint32_t *indices, uint32_t triangle_count)
+namespace
+{
+	/// 连通的部分（共用顶点的三角形连成一块）里小的（包围盒对角线不到整个网格的 SMALL_PART，三角形多于 12 个）换成它的包围盒：
+	/// 货架合并的模型里一件件商品就是这样的小块，层板、立柱是大块原样留着。sloppy 简化会把小东西整个合没，光追里就没了商品。
+	/// 输出是新的顶点（原来的全留着，后面接各个盒子的 8 个角）和三角形；没有可换的时返回 false。
+	constexpr float SMALL_PART = 0.05f;
+
+	bool BoxSmallParts(const float *inPositions, uint32_t inVertexCount, const uint32_t *inIndices, uint32_t inTriangleCount, std::vector<float> &outPositions, std::vector<uint32_t> &outIndices)
+	{
+		std::vector<uint32_t> parent(inVertexCount);
+		for (uint32_t v = 0; v < inVertexCount; ++v)
+			parent[v] = v;
+		auto find = [&parent](uint32_t v)
+		{
+			while (parent[v] != v)
+			{
+				parent[v] = parent[parent[v]];
+				v = parent[v];
+			}
+			return v;
+		};
+		for (size_t t = 0; t < size_t(inTriangleCount); ++t)
+		{
+			uint32_t a = find(inIndices[t * 3]);
+			for (int k = 1; k < 3; ++k)
+			{
+				uint32_t b = find(inIndices[t * 3 + k]);
+				if (a != b)
+					parent[b] = a;
+			}
+		}
+		// 每块的包围盒和三角形数，整个网格的包围盒
+		std::vector<Box> parts(inVertexCount);
+		std::vector<uint32_t> triangles(inVertexCount, 0);
+		Box whole;
+		for (size_t t = 0; t < size_t(inTriangleCount); ++t)
+		{
+			uint32_t part = find(inIndices[t * 3]);
+			++triangles[part];
+			for (int k = 0; k < 3; ++k)
+			{
+				const float *p = &inPositions[size_t(inIndices[t * 3 + k]) * 3];
+				parts[part].GrowPoint(p);
+				whole.GrowPoint(p);
+			}
+		}
+		auto diagonal = [](const Box &box)
+		{
+			float sum = 0.0f;
+			for (int c = 0; c < 3; ++c)
+				sum += (box.mMax[c] - box.mMin[c]) * (box.mMax[c] - box.mMin[c]);
+			return std::sqrt(sum);
+		};
+		const float limit = diagonal(whole) * SMALL_PART;
+		std::vector<int32_t> boxed(inVertexCount, -1);
+		uint32_t boxCount = 0;
+		for (uint32_t v = 0; v < inVertexCount; ++v)
+			if (parent[v] == v && triangles[v] > 12 && diagonal(parts[v]) < limit)
+				boxed[v] = int32_t(boxCount++);
+		if (boxCount == 0)
+			return false;
+		outPositions.assign(inPositions, inPositions + size_t(inVertexCount) * 3);
+		outPositions.resize((size_t(inVertexCount) + size_t(boxCount) * 8) * 3);
+		for (uint32_t v = 0; v < inVertexCount; ++v)
+		{
+			if (boxed[v] < 0)
+				continue;
+			const Box &box = parts[v];
+			float *corner = &outPositions[(size_t(inVertexCount) + size_t(boxed[v]) * 8) * 3];
+			for (int k = 0; k < 8; ++k)
+			{
+				corner[k * 3] = (k & 1) ? box.mMax[0] : box.mMin[0];
+				corner[k * 3 + 1] = (k & 2) ? box.mMax[1] : box.mMin[1];
+				corner[k * 3 + 2] = (k & 4) ? box.mMax[2] : box.mMin[2];
+			}
+		}
+		outIndices.clear();
+		outIndices.reserve(size_t(inTriangleCount) * 3);
+		for (size_t t = 0; t < size_t(inTriangleCount); ++t)
+			if (boxed[find(inIndices[t * 3])] < 0)
+				outIndices.insert(outIndices.end(), inIndices + t * 3, inIndices + t * 3 + 3);
+		// 盒子的 12 个三角形（朝外；光追里单面的判断按材质，商品的材质是双面的也没关系）
+		static constexpr uint32_t faces[36] = { 0, 2, 1, 1, 2, 3, 4, 5, 6, 5, 7, 6, 0, 1, 4, 1, 5, 4, 2, 6, 3, 3, 6, 7, 0, 4, 2, 2, 4, 6, 1, 3, 5, 3, 7, 5 };
+		for (uint32_t b = 0; b < boxCount; ++b)
+			for (uint32_t f : faces)
+				outIndices.push_back(inVertexCount + b * 8 + f);
+		return true;
+	}
+}
+
+SN_API int32_t sn_bvh_build_triangles(const float *positions, uint32_t vertex_count, const uint32_t *indices, uint32_t triangle_count, uint32_t max_triangles)
 {
 	SN_REQUIRE_INIT(SN_ERROR_NOT_INITIALIZED);
 	if ((vertex_count > 0 && positions == nullptr) || (triangle_count > 0 && indices == nullptr))
 		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "sn_bvh_build_triangles: positions and indices are required");
-	return RunTask("sn_bvh_build_triangles", [positions, vertex_count, indices, triangle_count](Task &ioTask)
+	return RunTask("sn_bvh_build_triangles", [inPositions = positions, vertex_count, inIndices = indices, inCount = triangle_count, max_triangles](Task &ioTask)
 	{
+		// 简化过时换成简化后的
+		const float *positions = inPositions;
+		const uint32_t *indices = inIndices;
+		uint32_t triangle_count = inCount;
+		for (size_t i = 0; i < size_t(triangle_count) * 3; ++i)
+			if (indices[i] >= vertex_count)
+			{
+				ioTask.Fail("sn_bvh_build_triangles: triangle " + std::to_string(i / 3) + " uses vertex " + std::to_string(indices[i]) + " of " + std::to_string(vertex_count));
+				return false;
+			}
+		// 三角形太多时先简化（见头文件）：小物件换成包围盒
+		std::vector<float> proxyPositions;
+		std::vector<uint32_t> proxyIndices;
+		if (max_triangles > 0 && triangle_count > max_triangles && BoxSmallParts(positions, vertex_count, indices, triangle_count, proxyPositions, proxyIndices))
+		{
+			positions = proxyPositions.data();
+			indices = proxyIndices.data();
+			triangle_count = uint32_t(proxyIndices.size() / 3);
+		}
 		std::vector<Box> boxes(triangle_count);
 		for (uint32_t t = 0; t < triangle_count; ++t)
 			for (int k = 0; k < 3; ++k)
-			{
-				uint32_t v = indices[size_t(t) * 3 + k];
-				if (v >= vertex_count)
-				{
-					ioTask.Fail("sn_bvh_build_triangles: triangle " + std::to_string(t) + " uses vertex " + std::to_string(v) + " of " + std::to_string(vertex_count));
-					return false;
-				}
-				boxes[t].GrowPoint(&positions[size_t(v) * 3]);
-			}
+				boxes[t].GrowPoint(&positions[size_t(indices[size_t(t) * 3 + k]) * 3]);
 		std::vector<uint32_t> order;
 		std::vector<Node> nodes = Build(boxes, order, 4);
 		std::memcpy(ioTask.AddOutput(uint32_t(nodes.size() * sizeof(Node))), nodes.data(), nodes.size() * sizeof(Node));
@@ -245,6 +347,7 @@ SN_API int32_t sn_bvh_build_triangles(const float *positions, uint32_t vertex_co
 			out[8] = p2[0] - p0[0]; out[9] = p2[1] - p0[1]; out[10] = p2[2] - p0[2]; out[11] = 0.0f;
 		}
 		ioTask.SetResult(0, int32_t(nodes.size()));
+		ioTask.SetResult(1, int32_t(triangle_count));
 		return true;
 	});
 }

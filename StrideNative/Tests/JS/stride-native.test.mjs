@@ -745,6 +745,31 @@ describe('stride-native and stride-tools', () => {
 			for (let i = first; i < first + leafCount; i++) seen.add(new Uint32Array(triangles.buffer, triangles.byteOffset)[i * 12 + 3]);
 		}
 		assert.equal(seen.size, count);
+		// 三角形太多时先简化：10 米的地板上 2000 件 2 厘米的"商品"（每件是共一个角的两个小方块，24 个三角形连成一块），限到 2000 个；
+		// 小的一件件换成包围盒（12 个三角形），地板（大块）原样留着
+		const items = 2000, itemPositions = new Float32Array((items * 15 + 4) * 3), itemIndices = [];
+		const corners = [[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0], [0, 0, 1], [1, 0, 1], [0, 1, 1], [1, 1, 1]];
+		const faces = [0, 2, 1, 1, 2, 3, 4, 5, 6, 5, 7, 6, 0, 1, 4, 1, 5, 4, 2, 6, 3, 3, 6, 7, 0, 4, 2, 2, 4, 6, 1, 3, 5, 3, 7, 5];
+		for (let c = 0; c < items; c++) {
+			const x = (c % 50) / 5, y = Math.floor(c / 500) * 0.5, z = Math.floor(c / 50) % 10, base = c * 15;
+			// 第一个方块 8 个角；第二个方块的第 0 个角是第一个的第 7 个（共用），另外 7 个接在后面
+			corners.forEach(([a, b, d], k) => itemPositions.set([x + a * 0.02, y + b * 0.02, z + d * 0.02], (base + k) * 3));
+			corners.slice(1).forEach(([a, b, d], k) => itemPositions.set([x + 0.02 + a * 0.02, y + 0.02 + b * 0.02, z + 0.02 + d * 0.02], (base + 8 + k) * 3));
+			for (const f of faces) itemIndices.push(base + f);
+			for (const f of faces) itemIndices.push(f === 0 ? base + 7 : base + 7 + f);
+		}
+		const floor = items * 15;
+		itemPositions.set([0, -0.1, 0, 10, -0.1, 0, 0, -0.1, 10, 10, -0.1, 10], floor * 3);
+		itemIndices.push(floor, floor + 2, floor + 1, floor + 1, floor + 2, floor + 3);
+		const full = await native.buildTriangleBvh(itemPositions, new Uint32Array(itemIndices));
+		assert.equal(full.triangleCount, items * 24 + 2);
+		const reduced = await native.buildTriangleBvh(itemPositions, new Uint32Array(itemIndices), { maxTriangles: 2000 });
+		assert.equal(reduced.triangleCount, items * 12 + 2);
+		assert.equal(reduced.triangles.length, reduced.triangleCount * 12);
+		const root = new Float32Array(reduced.nodes.buffer, reduced.nodes.byteOffset, 8);
+		assert.ok(root[0] <= 0 && root[4] >= 10 && root[1] <= -0.1 && root[5] > 1, `still spans the floor and the items: ${[...root]}`);
+		// 没超过上限的不动
+		assert.equal((await native.buildTriangleBvh(itemPositions, new Uint32Array(itemIndices), { maxTriangles: 100000 })).triangleCount, items * 24 + 2);
 		const boxes = new Float32Array([0, 0, 0, 1, 1, 1, 5, 0, 0, 6, 1, 1, 10, 0, 0, 11, 1, 1]);
 		const tlas = await native.buildBoxBvh(boxes);
 		assert.deepEqual([...tlas.order].sort(), [0, 1, 2]);
