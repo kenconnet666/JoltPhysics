@@ -619,8 +619,8 @@ namespace
 		return std::min(cDefaultConvexRadius, inSmallestHalfExtent * 0.5f);
 	}
 
-	/// 一个形状，不含本地位姿；网格按 inMeshScale 缩放
-	RefConst<Shape> MakeShape(const World &inWorld, const sn_shape &inShape, Vec3Arg inMeshScale, std::string &outError)
+	/// 一个形状，不含本地位姿，也不缩放（物体的缩放在 MakeBodyShape 外面整个套一层）
+	RefConst<Shape> MakeShape(const World &inWorld, const sn_shape &inShape, std::string &outError)
 	{
 		const float *s = inShape.size;
 		switch (inShape.type)
@@ -652,8 +652,7 @@ namespace
 				outError = "mesh or hull handle " + std::to_string(inShape.mesh) + " does not exist";
 				return nullptr;
 			}
-			const RefConst<Shape> &mesh = inWorld.mMeshes[inShape.mesh - 1];
-			return inMeshScale.IsClose(Vec3::sOne()) ? mesh : RefConst<Shape>(new ScaledShape(mesh, inMeshScale));
+			return inWorld.mMeshes[inShape.mesh - 1];
 		}
 		default:
 			outError = "unknown shape type " + std::to_string(inShape.type);
@@ -664,7 +663,7 @@ namespace
 	}
 
 	/// 物体的形状：一个形状且没有本地位姿时就是它本身，否则是复合形状（Stride 的 CompoundCollider）
-	RefConst<Shape> MakeBodyShape(const World &inWorld, const sn_shape *inShapes, uint32_t inCount, Vec3Arg inMeshScale, std::string &outError)
+	RefConst<Shape> MakeBodyShape(const World &inWorld, const sn_shape *inShapes, uint32_t inCount, std::string &outError)
 	{
 		if (inCount == 0)
 		{
@@ -674,7 +673,7 @@ namespace
 		auto local = [](const sn_shape &inShape) { return std::pair(Load3(inShape.position), LoadQuat(inShape.rotation)); };
 		if (inCount == 1)
 		{
-			RefConst<Shape> shape = MakeShape(inWorld, inShapes[0], inMeshScale, outError);
+			RefConst<Shape> shape = MakeShape(inWorld, inShapes[0], outError);
 			if (shape == nullptr)
 				return nullptr;
 			auto [position, rotation] = local(inShapes[0]);
@@ -690,7 +689,7 @@ namespace
 				outError = "an empty shape cannot be part of a compound";
 				return nullptr;
 			}
-			RefConst<Shape> shape = MakeShape(inWorld, inShapes[i], inMeshScale, outError);
+			RefConst<Shape> shape = MakeShape(inWorld, inShapes[i], outError);
 			if (shape == nullptr)
 				return nullptr;
 			auto [position, rotation] = local(inShapes[i]);
@@ -1046,7 +1045,8 @@ SN_API int32_t sn_physics_add_bodies(int32_t world, const sn_body *bodies, uint3
 				return SN_ERROR_INVALID_HANDLE;
 			if (!store->IsAlive(body.transform))
 				return SetLastError(SN_ERROR_INVALID_ARGUMENT, where + "transform slot " + std::to_string(body.transform) + " is not allocated");
-			// 槽位现在的世界位姿；缩放只作用到网格形状（同 Stride：复合碰撞体按绝对尺寸）
+			// 槽位现在的世界位姿；缩放作用到整个形状（和 Stride 不同：Stride 只缩放网格，方块、球这些按绝对尺寸，实体缩放了
+			// 碰撞体却不变；这里形状的尺寸和本地位置都跟着实体的世界缩放）
 			RMat44 matrix = store->ComputeWorldMatrix(body.transform);
 			pose = RMat44::sRotationTranslation(matrix.GetRotation().Decompose(scale).GetQuaternion().Normalized(), matrix.GetTranslation());
 			// 世界矩阵不是旋转（比如某一级的四元数接近 0，或是 (0, 0.5, 0.5, 0) 这种按公式得到奇异矩阵的）时分解出 NaN；
@@ -1063,10 +1063,14 @@ SN_API int32_t sn_physics_add_bodies(int32_t world, const sn_body *bodies, uint3
 				return SetLastError(SN_ERROR_INVALID_ARGUMENT, where + "a height field shape can only be used on a static body");
 		}
 		std::string error;
-		body_shapes[i] = MakeBodyShape(*w, own, body.shape_count, scale, error);
+		body_shapes[i] = MakeBodyShape(*w, own, body.shape_count, error);
 		mesh_scales[i] = scale;
 		if (body_shapes[i] == nullptr)
 			return SetLastError(SN_ERROR_INVALID_ARGUMENT, where + error);
+		// 整个形状按世界缩放：球、胶囊这类只能均匀缩放的形状由 MakeScaleValid 换成最接近的合法缩放（Jolt 的规则），
+		// 复合形状的子形状的本地位置也跟着缩放
+		if (!scale.IsClose(Vec3::sOne()) && body_shapes[i]->GetSubType() != EShapeSubType::Empty)
+			body_shapes[i] = new ScaledShape(body_shapes[i], body_shapes[i]->MakeScaleValid(scale));
 		poses[i] = pose;
 	}
 
@@ -1978,7 +1982,7 @@ SN_API int32_t sn_physics_overlap(int32_t world, const double *origin, const sn_
 	if (origin == nullptr || shape == nullptr || capacity < 0 || (capacity > 0 && out_bodies == nullptr))
 		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "sn_physics_overlap: origin and shape are required, and out_bodies when capacity > 0");
 	std::string error;
-	RefConst<Shape> query = MakeShape(*w, *shape, Vec3::sOne(), error);
+	RefConst<Shape> query = MakeShape(*w, *shape, error);
 	if (query == nullptr)
 		return SetLastError(SN_ERROR_INVALID_ARGUMENT, error.empty() ? "sn_physics_overlap: invalid shape size" : error);
 	RMat44 pose = RMat44::sRotationTranslation(LoadQuat(shape->rotation), LoadR3(origin) + Load3(shape->position));
