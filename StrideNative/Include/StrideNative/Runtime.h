@@ -158,6 +158,23 @@ SN_API float sn_terrain_height(int32_t terrain, double x, double z);
 SN_API int32_t sn_terrain_heights(int32_t terrain, double x0, double z0, double spacing, uint32_t count_x, uint32_t count_z);
 
 // ---------------------------------------------------------------------------------------------
+// BVH（光追用的包围盒层次，stride-ts 路线图 R2）
+// ---------------------------------------------------------------------------------------------
+
+/// 节点的布局（输出 [0]）：每个 8 个 32 位，[0..2] 最小角（float）、[3] 内部节点是左孩子的下标（右孩子紧跟着，= 左 + 1）、叶子是
+/// 第一个图元在输出 [1] 里的下标（uint32）、[4..6] 最大角（float）、[7] 叶子的图元数（0 是内部节点）。根是第 0 个。
+/// GPU 上直接当存储缓冲用（stride-ts 的 rendering/raytracing）。
+
+/// 三角网格的 BVH（异步任务）：按表面积启发式（SAH，每个轴 16 个桶）建二叉树，叶子最多 4 个三角形。positions 是 vertex_count × 3 个
+/// float，indices 是 triangle_count × 3 个顶点下标。
+/// 输出 [0]：节点；输出 [1]：按叶子排好的三角形，每个 12 个 32 位——v0（3 float）、原来的三角形下标（uint32）、e1 = v1 − v0
+/// （3 float）、0、e2 = v2 − v0（3 float）、0（Möller–Trumbore 直接用）。结果 [0]：节点数。
+SN_API int32_t sn_bvh_build_triangles(const float *positions, uint32_t vertex_count, const uint32_t *indices, uint32_t triangle_count);
+/// 包围盒的 BVH（异步任务，实例的顶层 BVH 用）：boxes 是 count × 6 个 float（最小角、最大角），叶子最多 2 个。
+/// 输出 [0]：节点；输出 [1]：按叶子排好的图元下标（uint32）。结果 [0]：节点数。
+SN_API int32_t sn_bvh_build_boxes(const float *boxes, uint32_t count);
+
+// ---------------------------------------------------------------------------------------------
 // Mesh decoding (EXT_meshopt_compression / KHR_meshopt_compression)
 // ---------------------------------------------------------------------------------------------
 

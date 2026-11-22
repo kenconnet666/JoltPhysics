@@ -194,6 +194,30 @@ export class StrideNative extends NativeModule<RuntimeExport> {
 		return this.withArrays([joints, inverseBinds], (j, b) => new Skin(this, this.check(this.module._sn_anim_skin_create(j, b, joints.length), 'sn_anim_skin_create'), joints.length));
 	}
 
+	/**
+	 * 三角网格的 BVH（光追用，工作线程上建，按表面积启发式）：nodes 每个节点 8 个 32 位（最小角、左孩子或第一个三角形、最大角、
+	 * 三角形数，0 是内部节点，右孩子 = 左孩子 + 1；布局见 Runtime.h，GPU 上直接用），triangles 按叶子排好、每个 12 个 32 位
+	 * （v0、原来的三角形下标、e1、0、e2、0）。
+	 */
+	buildTriangleBvh(positions: Float32Array, indices: Uint32Array): Promise<{ nodes: Uint32Array; triangles: Float32Array; nodeCount: number }> {
+		return this.withArraysAsync([positions, indices], (p, i) =>
+			this.awaitTask(this.module._sn_bvh_build_triangles(p, positions.length / 3, i, indices.length / 3), 'sn_bvh_build_triangles', (task) => ({
+				nodes: task.output(Uint32Array, 0),
+				triangles: task.output(Float32Array, 1),
+				nodeCount: task.result(0),
+			})));
+	}
+
+	/** 包围盒的 BVH（实例的顶层 BVH 用，工作线程上建）：boxes 每个 6 个 float（最小角、最大角）；order 是叶子里图元的顺序。 */
+	buildBoxBvh(boxes: Float32Array): Promise<{ nodes: Uint32Array; order: Uint32Array; nodeCount: number }> {
+		return this.withArraysAsync([boxes], (b) =>
+			this.awaitTask(this.module._sn_bvh_build_boxes(b, boxes.length / 6), 'sn_bvh_build_boxes', (task) => ({
+				nodes: task.output(Uint32Array, 0),
+				order: task.output(Uint32Array, 1),
+				nodeCount: task.result(0),
+			})));
+	}
+
 	/** 按描述建地形求值器（见 TerrainDescription）：同样的描述在任何机器上求出逐位相同的高度。 */
 	createTerrain(description: TerrainDescription): TerrainEvaluator {
 		const features = description.features ?? [], strokes = description.strokes ?? [];

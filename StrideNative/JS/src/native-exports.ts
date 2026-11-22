@@ -57,6 +57,20 @@ export interface NativeExports {
 	/** C: Runtime.h */
 	_sn_anim_skin_joint_count(skin: number): number;
 	/**
+	 * 包围盒的 BVH（异步任务，实例的顶层 BVH 用）：boxes 是 count × 6 个 float（最小角、最大角），叶子最多 2 个。
+	 * 输出 [0]：节点；输出 [1]：按叶子排好的图元下标（uint32）。结果 [0]：节点数。
+	 * C: Runtime.h
+	 */
+	_sn_bvh_build_boxes(boxes: number, count: number): number;
+	/**
+	 * 三角网格的 BVH（异步任务）：按表面积启发式（SAH，每个轴 16 个桶）建二叉树，叶子最多 4 个三角形。positions 是 vertex_count × 3 个
+	 * float，indices 是 triangle_count × 3 个顶点下标。
+	 * 输出 [0]：节点；输出 [1]：按叶子排好的三角形，每个 12 个 32 位——v0（3 float）、原来的三角形下标（uint32）、e1 = v1 − v0
+	 * （3 float）、0、e2 = v2 − v0（3 float）、0（Möller–Trumbore 直接用）。结果 [0]：节点数。
+	 * C: Runtime.h
+	 */
+	_sn_bvh_build_triangles(positions: number, vertexCount: number, indices: number, triangleCount: number): number;
+	/**
 	 * Returns the agent index.
 	 * C: Navigation.h
 	 */
@@ -753,6 +767,8 @@ export const POINTER_SIGNATURES: Readonly<Record<string, string>> = {
 	sn_anim_load_skeleton: '_p_',
 	sn_anim_skin_batch: '_p_',
 	sn_anim_skin_create: '_pp_',
+	sn_bvh_build_boxes: '_p_',
+	sn_bvh_build_triangles: '_p_p_',
 	sn_crowd_add_agent: '__p____',
 	sn_crowd_positions: 'p_',
 	sn_crowd_request_move: '___p',
@@ -945,6 +961,8 @@ export type RuntimeExport =
 	| 'sn_terrain_destroy'
 	| 'sn_terrain_height'
 	| 'sn_terrain_heights'
+	| 'sn_bvh_build_triangles'
+	| 'sn_bvh_build_boxes'
 	| 'sn_meshopt_decode'
 	| 'sn_meshopt_decode_batch'
 	| 'sn_anim_load_skeleton'

@@ -719,6 +719,37 @@ describe('stride-native and stride-tools', () => {
 		assert.ok(hit && Math.abs(hit.point[1] - 1) < 0.05 && Math.abs(hit.point[0] - 20000000.501) < 1e-3);
 	});
 
+	it('builds BVHs for ray tracing: every triangle in one leaf, children inside their parents, box BVH orders every primitive', async () => {
+		const count = 500, positions = new Float32Array(count * 9), indices = new Uint32Array(count * 3);
+		let seed = 7;
+		const random = () => ((seed = (seed * 1103515245 + 12345) >>> 0) / 4294967296);
+		for (let t = 0; t < count; t++) {
+			const cx = random() * 100, cy = random() * 10, cz = random() * 100;
+			for (let k = 0; k < 3; k++) {
+				positions.set([cx + random(), cy + random(), cz + random()], (t * 3 + k) * 3);
+				indices[t * 3 + k] = t * 3 + k;
+			}
+		}
+		const { nodes, triangles, nodeCount } = await native.buildTriangleBvh(positions, indices);
+		const floats = new Float32Array(nodes.buffer, nodes.byteOffset, nodes.length);
+		assert.equal(nodes.length, nodeCount * 8);
+		const seen = new Set();
+		const contains = (outer, inner) => [0, 1, 2].every((c) => floats[outer * 8 + c] <= floats[inner * 8 + c] && floats[outer * 8 + 4 + c] >= floats[inner * 8 + 4 + c]);
+		for (let n = 0; n < nodeCount; n++) {
+			const first = nodes[n * 8 + 3], leafCount = nodes[n * 8 + 7];
+			if (leafCount === 0) {
+				assert.ok(contains(n, first) && contains(n, first + 1), `node ${n} contains its children`);
+				continue;
+			}
+			assert.ok(leafCount <= 4);
+			for (let i = first; i < first + leafCount; i++) seen.add(new Uint32Array(triangles.buffer, triangles.byteOffset)[i * 12 + 3]);
+		}
+		assert.equal(seen.size, count);
+		const boxes = new Float32Array([0, 0, 0, 1, 1, 1, 5, 0, 0, 6, 1, 1, 10, 0, 0, 11, 1, 1]);
+		const tlas = await native.buildBoxBvh(boxes);
+		assert.deepEqual([...tlas.order].sort(), [0, 1, 2]);
+	});
+
 	it('evaluates vector terrain: noise base, flatten polygons and strokes, seamless pages far from the origin', async () => {
 		using terrain = native.createTerrain({
 			noise: { seed: 7, octaves: 8, scale: 800, height: 150, erosion: 0.3, ridged: 0.3, warp: 200 },
