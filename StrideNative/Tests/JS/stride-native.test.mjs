@@ -746,7 +746,7 @@ describe('stride-native and stride-tools', () => {
 		}
 		assert.equal(seen.size, count);
 		// 三角形太多时先简化：10 米的地板上 2000 件 2 厘米的"商品"（每件是共一个角的两个小方块，24 个三角形连成一块），限到 2000 个；
-		// 小的一件件换成包围盒（12 个三角形），地板（大块）原样留着
+		// 小的按中心分格、每格换成一个盒子（12 个三角形，一格一两件），地板（大块）原样留着
 		const items = 2000, itemPositions = new Float32Array((items * 15 + 4) * 3), itemIndices = [];
 		const corners = [[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0], [0, 0, 1], [1, 0, 1], [0, 1, 1], [1, 1, 1]];
 		const faces = [0, 2, 1, 1, 2, 3, 4, 5, 6, 5, 7, 6, 0, 1, 4, 1, 5, 4, 2, 6, 3, 3, 6, 7, 0, 4, 2, 2, 4, 6, 1, 3, 5, 3, 7, 5];
@@ -764,7 +764,7 @@ describe('stride-native and stride-tools', () => {
 		const full = await native.buildTriangleBvh(itemPositions, new Uint32Array(itemIndices));
 		assert.equal(full.triangleCount, items * 24 + 2);
 		const reduced = await native.buildTriangleBvh(itemPositions, new Uint32Array(itemIndices), { maxTriangles: 2000 });
-		assert.equal(reduced.triangleCount, items * 12 + 2);
+		assert.ok(reduced.triangleCount > 2 && reduced.triangleCount <= items * 12 + 2, `simplified to ${reduced.triangleCount}`);
 		assert.equal(reduced.triangles.length, reduced.triangleCount * 12);
 		const root = new Float32Array(reduced.nodes.buffer, reduced.nodes.byteOffset, 8);
 		assert.ok(root[0] <= 0 && root[4] >= 10 && root[1] <= -0.1 && root[5] > 1, `still spans the floor and the items: ${[...root]}`);

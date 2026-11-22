@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstring>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace StrideNative
@@ -212,9 +213,10 @@ using namespace StrideNative;
 
 namespace
 {
-	/// 连通的部分（共用顶点的三角形连成一块）里小的（包围盒对角线不到整个网格的 SMALL_PART，三角形多于 12 个）换成它的包围盒：
-	/// 货架合并的模型里一件件商品就是这样的小块，层板、立柱是大块原样留着。sloppy 简化会把小东西整个合没，光追里就没了商品。
-	/// 输出是新的顶点（原来的全留着，后面接各个盒子的 8 个角）和三角形；没有可换的时返回 false。
+	/// 连通的部分（共用顶点的三角形连成一块）里小的（包围盒对角线不到整个网格的 SMALL_PART）按中心分进边长 SMALL_PART / 2 倍
+	/// 对角线的格子，每格换成这一格里各块合起来的包围盒（12 个三角形）：货架合并的模型里一件商品是几个小块（瓶身、瓶盖、标签），
+	/// 一格大约一件；层板、立柱是大块原样留着。sloppy 简化会把小东西整个合没，光追里就没了商品。
+	/// 输出是新的顶点（原来的全留着，后面接各个盒子的 8 个角）和三角形；换了以后三角形没变少时返回 false。
 	constexpr float SMALL_PART = 0.05f;
 
 	bool BoxSmallParts(const float *inPositions, uint32_t inVertexCount, const uint32_t *inIndices, uint32_t inTriangleCount, std::vector<float> &outPositions, std::vector<uint32_t> &outIndices)
@@ -263,22 +265,38 @@ namespace
 				sum += (box.mMax[c] - box.mMin[c]) * (box.mMax[c] - box.mMin[c]);
 			return std::sqrt(sum);
 		};
-		const float limit = diagonal(whole) * SMALL_PART;
+		const float limit = diagonal(whole) * SMALL_PART, cell = limit * 0.5f;
+		// 小块按中心分格：格子的编号 → 第几个盒子
 		std::vector<int32_t> boxed(inVertexCount, -1);
-		uint32_t boxCount = 0;
-		for (uint32_t v = 0; v < inVertexCount; ++v)
-			if (parent[v] == v && triangles[v] > 12 && diagonal(parts[v]) < limit)
-				boxed[v] = int32_t(boxCount++);
-		if (boxCount == 0)
-			return false;
-		outPositions.assign(inPositions, inPositions + size_t(inVertexCount) * 3);
-		outPositions.resize((size_t(inVertexCount) + size_t(boxCount) * 8) * 3);
+		std::unordered_map<uint64_t, uint32_t> cells;
+		std::vector<Box> merged;
+		size_t replaced = 0;
 		for (uint32_t v = 0; v < inVertexCount; ++v)
 		{
-			if (boxed[v] < 0)
+			if (parent[v] != v || triangles[v] == 0 || diagonal(parts[v]) >= limit)
 				continue;
-			const Box &box = parts[v];
-			float *corner = &outPositions[(size_t(inVertexCount) + size_t(boxed[v]) * 8) * 3];
+			uint64_t key = 0;
+			for (int c = 0; c < 3; ++c)
+			{
+				float center = 0.5f * (parts[v].mMin[c] + parts[v].mMax[c]);
+				key = (key << 21) | (uint64_t(std::max(0.0f, (center - whole.mMin[c]) / cell)) & 0x1fffff);
+			}
+			auto [it, added] = cells.try_emplace(key, uint32_t(merged.size()));
+			if (added)
+				merged.emplace_back();
+			merged[it->second].Grow(parts[v]);
+			boxed[v] = int32_t(it->second);
+			replaced += triangles[v];
+		}
+		if (merged.size() * 12 >= replaced)
+			return false;
+		const uint32_t boxCount = uint32_t(merged.size());
+		outPositions.assign(inPositions, inPositions + size_t(inVertexCount) * 3);
+		outPositions.resize((size_t(inVertexCount) + size_t(boxCount) * 8) * 3);
+		for (uint32_t b = 0; b < boxCount; ++b)
+		{
+			const Box &box = merged[b];
+			float *corner = &outPositions[(size_t(inVertexCount) + size_t(b) * 8) * 3];
 			for (int k = 0; k < 8; ++k)
 			{
 				corner[k * 3] = (k & 1) ? box.mMax[0] : box.mMin[0];

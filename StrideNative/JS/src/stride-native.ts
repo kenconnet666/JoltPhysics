@@ -197,7 +197,7 @@ export class StrideNative extends NativeModule<RuntimeExport> {
 	/**
 	 * 三角网格的 BVH（光追用，工作线程上建，按表面积启发式）：nodes 每个节点 8 个 32 位（最小角、左孩子或第一个三角形、最大角、
 	 * 三角形数，0 是内部节点，右孩子 = 左孩子 + 1；布局见 Runtime.h，GPU 上直接用），triangles 按叶子排好、每个 12 个 32 位
-	 * （v0、三角形下标、e1、0、e2、0）。maxTriangles 给了且三角形比它多时先简化（连通的小块换成包围盒，见 Runtime.h）；
+	 * （v0、三角形下标、e1、0、e2、0）。maxTriangles 给了且三角形比它多时先简化（连通的小块按格子换成包围盒，见 Runtime.h）；
 	 * triangleCount 是实际用了几个三角形。
 	 */
 	buildTriangleBvh(positions: Float32Array, indices: Uint32Array, { maxTriangles = 0 }: { maxTriangles?: number } = {}): Promise<{ nodes: Uint32Array; triangles: Float32Array; nodeCount: number; triangleCount: number }> {
