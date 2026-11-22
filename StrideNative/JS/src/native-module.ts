@@ -148,11 +148,12 @@ function withNumberPointers(fn: (...args: unknown[]) => unknown, signature: stri
 }
 
 /**
- * 默认工作线程数的上限，和 C 侧 sn_init 的默认值一致。Tests/Bench/threads.mjs 在 18 核 36 线程的机器上量过：物理步进到
- * 8～12 个线程就不再变快，导航网格这类并行任务 8 个最快，再多只是多占 CPU（35 个时占着 24 个核、反而慢一倍）；
- * 浏览器里每个线程启动时还要把核心和侧模块各实例化一遍。要更多线程的游戏自己传 workerThreads。
+ * 默认工作线程数的上限，和 C 侧 sn_init 的默认值一致。用户 2026-11-22 定 16（原来是 8）：目标机器是 18 核 36 线程，
+ * 以后的大世界、群演、交通模拟要更多并行的任务。Tests/Bench/threads.mjs 量过：物理步进到 8～12 个线程就不再变快，
+ * 导航网格这类任务 8 个最快，太多只是多占 CPU（35 个时占着 24 个核、反而慢一倍）；浏览器里每个线程启动时还要把核心和侧模块
+ * 各实例化一遍。要别的线程数的游戏自己传 workerThreads。
  */
-export const MAX_DEFAULT_WORKER_THREADS = 8;
+export const MAX_DEFAULT_WORKER_THREADS = 16;
 
 /** 默认开的工作线程数：每个核一个，减去当前线程，最多 MAX_DEFAULT_WORKER_THREADS 个。 */
 export function defaultWorkerThreads(): number {

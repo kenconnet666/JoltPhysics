@@ -77,7 +77,7 @@ describe('stride-native and stride-tools', () => {
 	});
 
 	it('defaults to one worker per core minus the caller, at most 8', () => {
-		assert.equal(defaultWorkerThreads(), Math.min(8, Math.max(1, navigator.hardwareConcurrency - 1)));
+		assert.equal(defaultWorkerThreads(), Math.min(16, Math.max(1, navigator.hardwareConcurrency - 1)));
 	});
 
 	it('loads the debug runtime (Jolt asserts, Emscripten checks) and steps physics with it', async () => {

@@ -21,7 +21,7 @@ namespace
 	constexpr JPH::uint cMaxJobs = 4096;
 	constexpr JPH::uint cMaxBarriers = 64;
 	/// sn_init 不给线程数时最多开几个工作线程（和 JS 的 MAX_DEFAULT_WORKER_THREADS 一致）
-	constexpr int32_t cMaxDefaultWorkerThreads = 8;
+	constexpr int32_t cMaxDefaultWorkerThreads = 16;
 	// 固定块够一般的世界用；物体多（大容量的物理世界一步要上百 MB）时超出的部分退回 malloc，不再 abort
 	constexpr JPH::uint cTempAllocatorSize = 32 * 1024 * 1024;
 
