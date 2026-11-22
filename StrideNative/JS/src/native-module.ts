@@ -190,9 +190,9 @@ export async function instantiate<E extends string>(factory: CoreFactory<E>, { w
 			'"Cross-Origin-Opener-Policy: same-origin" and "Cross-Origin-Embedder-Policy: require-corp"', -4);
 	}
 	// Node 的每个工作线程都把自己的 stdout、stderr 接到主进程的输出流上（每接一次给它加一个 error 监听）：线程多于 10 个时
-	// Node 报 MaxListenersExceededWarning，其实不是泄漏
+	// Node 报 MaxListenersExceededWarning，其实不是泄漏。一个进程里可以有几个实例（导入工具和运行时），上限按实例累加
 	if (isNode) {
-		for (const stream of [process.stdout, process.stderr]) stream.setMaxListeners(Math.max(stream.getMaxListeners(), workerThreads + 10));
+		for (const stream of [process.stdout, process.stderr]) stream.setMaxListeners(stream.getMaxListeners() + workerThreads);
 	}
 	// 侧模块在启动时加载（主线程和线程池里的每个线程都加载，之后才运行任何代码）。Emscripten 按 <名字>.wasm
 	// 登记它们，实际地址由 locateFile 给出
