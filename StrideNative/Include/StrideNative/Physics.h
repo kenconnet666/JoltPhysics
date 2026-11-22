@@ -148,6 +148,11 @@ SN_API int32_t sn_physics_body_velocity(int32_t world, int32_t body, float *line
 SN_API int32_t sn_physics_body_set_velocity(int32_t world, int32_t body, const float *linear, const float *angular);
 /// 在质心加冲量（Stride 的 ApplyLinearImpulse、ApplyAngularImpulse）；传 null 的不加。运动学物体忽略；角色受（击退），水平速度之后由角色逻辑拉回移动目标。
 SN_API int32_t sn_physics_body_apply_impulse(int32_t world, int32_t body, const float *linear, const float *angular);
+/// 浮力（Jolt 的 ApplyBuoyancyImpulse）：水面是过 surface_position（世界坐标，双精度）、法线 surface_normal 的平面，按物体的形状
+/// 算出水下的体积和浮心，加浮力和水的阻力（linear_drag、angular_drag），水按 fluid_velocity（米每秒）流；buoyancy 是浮力系数
+/// （1 是中性，大于 1 浮起来），delta_time 是这一步的时长。每个物理步之前调。运动学物体忽略；*submerged 写 1（有部分在水下）或 0，
+/// 不要时传 null。
+SN_API int32_t sn_physics_body_apply_buoyancy(int32_t world, int32_t body, const double *surface_position, const float *surface_normal, float buoyancy, float linear_drag, float angular_drag, const float *fluid_velocity, float delta_time, int32_t *submerged);
 /// 受不受重力（Stride 的 Gravity）。
 SN_API int32_t sn_physics_body_set_gravity(int32_t world, int32_t body, int32_t enabled);
 /// 一直醒着（SN_BODY_NEVER_SLEEP，Stride 的 SleepThreshold 为负）；打开时顺便唤醒。

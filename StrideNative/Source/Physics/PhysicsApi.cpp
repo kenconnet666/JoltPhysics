@@ -1779,6 +1779,29 @@ SN_API int32_t sn_physics_body_apply_impulse(int32_t world, int32_t body, const 
 	return SN_OK;
 }
 
+SN_API int32_t sn_physics_body_apply_buoyancy(int32_t world, int32_t body, const double *surface_position, const float *surface_normal, float buoyancy, float linear_drag, float angular_drag, const float *fluid_velocity, float delta_time, int32_t *submerged)
+{
+	if (submerged != nullptr)
+		*submerged = 0;
+	World *w = GetWorld(world);
+	BodyRecord *record = GetMovableBody(w, body, "sn_physics_body_apply_buoyancy", true);
+	if (record == nullptr)
+		return w == nullptr ? SN_ERROR_INVALID_HANDLE : SN_ERROR_INVALID_ARGUMENT;
+	if (surface_position == nullptr || surface_normal == nullptr || !(delta_time > 0.0f))
+		return SN_ERROR_INVALID_ARGUMENT;
+	if (record->mMotion == SN_MOTION_KINEMATIC)
+		return SN_OK;
+	Vec3 normal = Load3(surface_normal);
+	if (normal.LengthSq() < 1.0e-12f)
+		return SN_ERROR_INVALID_ARGUMENT;
+	Vec3 velocity = fluid_velocity != nullptr ? Load3(fluid_velocity) : Vec3::sZero();
+	BodyInterface &bodies = w->mSystem.GetBodyInterface();
+	bool wet = bodies.ApplyBuoyancyImpulse(record->mID, LoadR3(surface_position), normal.Normalized(), buoyancy, linear_drag, angular_drag, velocity, w->mSystem.GetGravity(), delta_time);
+	if (submerged != nullptr)
+		*submerged = wet ? 1 : 0;
+	return SN_OK;
+}
+
 SN_API int32_t sn_physics_body_set_gravity(int32_t world, int32_t body, int32_t enabled)
 {
 	World *w = GetWorld(world);

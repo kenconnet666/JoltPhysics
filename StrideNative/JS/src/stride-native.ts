@@ -691,6 +691,19 @@ export class PhysicsWorld extends NativeObject<StrideNative> {
 		this.#pair(linear, angular, (l, a) => this.native.module._sn_physics_body_apply_impulse(this[HANDLE], body, l, a), 'sn_physics_body_apply_impulse');
 	}
 
+	/**
+	 * 浮力（Jolt 的 ApplyBuoyancyImpulse）：水面是过 surface（世界坐标）、法线 normal 的平面，按形状算水下的体积和浮心，加浮力和阻力，
+	 * 水按 flow（米每秒）流。buoyancy 是浮力系数（1 中性，大于 1 浮起来）；每个物理步之前调。返回有没有部分在水下。
+	 */
+	applyBuoyancy(body: BodyId, surface: Vec3, normal: Vec3, buoyancy: number, linearDrag: number, angularDrag: number, flow: Vec3 | undefined, deltaTime: number): boolean {
+		// 查询缓冲：水面的点（3 个 double，0..24 字节）、法线（float 6..8）、流速（float 9..11）、结果（int 12）
+		this.#queryDoubles.set([surface[0]!, surface[1]!, surface[2]!]);
+		this.#queryFloats.set([normal[0]!, normal[1]!, normal[2]!, flow?.[0] ?? 0, flow?.[1] ?? 0, flow?.[2] ?? 0], 6);
+		const q = this.#query;
+		this.native.check(this.native.module._sn_physics_body_apply_buoyancy(this[HANDLE], body, q, q + 24, buoyancy, linearDrag, angularDrag, q + 36, deltaTime, q + 48), 'sn_physics_body_apply_buoyancy');
+		return this.native.i32(q + 48, 1)[0] === 1;
+	}
+
 	/** 一直醒着（Stride 的 SleepThreshold 为负）；打开时顺便唤醒。 */
 	setNeverSleep(body: BodyId, neverSleep: boolean): void {
 		this.native.check(this.native.module._sn_physics_body_set_never_sleep(this[HANDLE], body, neverSleep ? 1 : 0), 'sn_physics_body_set_never_sleep');

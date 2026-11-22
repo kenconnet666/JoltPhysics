@@ -198,6 +198,14 @@ export interface NativeExports {
 	 */
 	_sn_physics_add_constraint(world: number, constraint: number): number;
 	/**
+	 * 浮力（Jolt 的 ApplyBuoyancyImpulse）：水面是过 surface_position（世界坐标，双精度）、法线 surface_normal 的平面，按物体的形状
+	 * 算出水下的体积和浮心，加浮力和水的阻力（linear_drag、angular_drag），水按 fluid_velocity（米每秒）流；buoyancy 是浮力系数
+	 * （1 是中性，大于 1 浮起来），delta_time 是这一步的时长。每个物理步之前调。运动学物体忽略；*submerged 写 1（有部分在水下）或 0，
+	 * 不要时传 null。
+	 * C: Physics.h
+	 */
+	_sn_physics_body_apply_buoyancy(world: number, body: number, surfacePosition: number, surfaceNormal: number, buoyancy: number, linearDrag: number, angularDrag: number, fluidVelocity: number, deltaTime: number, submerged: number): number;
+	/**
 	 * 在质心加冲量（Stride 的 ApplyLinearImpulse、ApplyAngularImpulse）；传 null 的不加。运动学物体忽略；角色受（击退），水平速度之后由角色逻辑拉回移动目标。
 	 * C: Physics.h
 	 */
@@ -768,6 +776,7 @@ export const POINTER_SIGNATURES: Readonly<Record<string, string>> = {
 	sn_parallel_for: '___p',
 	sn_physics_add_bodies: '__p_p_p_p',
 	sn_physics_add_constraint: '__p',
+	sn_physics_body_apply_buoyancy: '___pp___p_p',
 	sn_physics_body_apply_impulse: '___pp',
 	sn_physics_body_set_rotation: '___p',
 	sn_physics_body_set_velocity: '___pp',
@@ -896,6 +905,7 @@ export type RuntimeExport =
 	| 'sn_physics_body_velocity'
 	| 'sn_physics_body_set_velocity'
 	| 'sn_physics_body_apply_impulse'
+	| 'sn_physics_body_apply_buoyancy'
 	| 'sn_physics_body_set_gravity'
 	| 'sn_physics_body_set_never_sleep'
 	| 'sn_physics_add_constraint'
