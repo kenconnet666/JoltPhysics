@@ -1699,6 +1699,38 @@ export class Animation extends NativeObject<StrideNative> {
 	}
 }
 
+/** 一个 sn_anim_ik 占的 32 位字数（88 字节）。 */
+const IK_WORDS = 22;
+
+/** 两段骨的 IK：end 关节够到 target，mid 关节（膝、肘）朝 pole 弯，绕 midAxis（mid 关节本地的轴）转。 */
+export interface TwoBoneIk {
+	readonly type: 'twoBone';
+	readonly joints: readonly [number, number, number];
+	readonly target: readonly [number, number, number];
+	readonly pole?: readonly [number, number, number];
+	readonly midAxis?: readonly [number, number, number];
+	readonly weight?: number;
+	/** 1 不软化；小于 1 时链快伸直时放慢，膝盖不突然弹直。 */
+	readonly soften?: number;
+	readonly twist?: number;
+}
+
+/** 看向：joint 转到它的 forward 轴（本地）指向 target，up 轴（本地）尽量朝 pole（模型空间的上）。 */
+export interface AimIk {
+	readonly type: 'aim';
+	readonly joint: number;
+	readonly target: readonly [number, number, number];
+	readonly forward?: readonly [number, number, number];
+	readonly up?: readonly [number, number, number];
+	readonly pole?: readonly [number, number, number];
+	/** 瞄准点相对关节的偏移（本地；眼睛在头骨前上方）。 */
+	readonly offset?: readonly [number, number, number];
+	readonly weight?: number;
+	readonly twist?: number;
+}
+
+export type AnimationIk = TwoBoneIk | AimIk;
+
 export class AnimationInstance extends NativeObject<StrideNative> {
 	readonly jointCount: number;
 
@@ -1706,6 +1738,31 @@ export class AnimationInstance extends NativeObject<StrideNative> {
 	constructor(native: StrideNative, handle: number, jointCount: number) {
 		super(native, handle);
 		this.jointCount = jointCount;
+	}
+
+	/**
+	 * 每次求值以后按顺序做的 IK（ozz 的两段骨、看向）：目标、极向量在模型空间；换掉原来的一组，空数组是不做。关节下标越界时报错。
+	 */
+	setIk(iks: readonly AnimationIk[]): void {
+		const n = this.native;
+		n.withScratch(Math.max(1, iks.length) * IK_WORDS * 4, (address) => {
+			const floats = n.f32(address, iks.length * IK_WORDS), ints = n.i32(address, iks.length * IK_WORDS);
+			iks.forEach((ik, k) => {
+				const o = k * IK_WORDS;
+				ints[o] = ik.type === 'twoBone' ? 0 : 1;
+				const joints = ik.type === 'twoBone' ? ik.joints : [ik.joint, 0, 0];
+				ints.set(joints, o + 1);
+				floats.set(ik.target, o + 4);
+				floats.set(ik.pole ?? [0, 1, 0], o + 7);
+				floats.set(ik.type === 'twoBone' ? (ik.midAxis ?? [0, 0, 1]) : (ik.forward ?? [1, 0, 0]), o + 10);
+				floats.set(ik.type === 'aim' ? (ik.up ?? [0, 1, 0]) : [0, 1, 0], o + 13);
+				floats.set(ik.type === 'aim' ? (ik.offset ?? [0, 0, 0]) : [0, 0, 0], o + 16);
+				floats[o + 19] = ik.weight ?? 1;
+				floats[o + 20] = ik.type === 'twoBone' ? (ik.soften ?? 1) : 1;
+				floats[o + 21] = ik.twist ?? 0;
+			});
+			n.check(n.module._sn_anim_instance_set_ik(this[HANDLE], address, iks.length), 'sn_anim_instance_set_ik');
+		});
 	}
 
 	/** 模型空间的关节矩阵（每个是列主序 4x4），原生内存上的视图，不拷贝，可以直接交给 GPUQueue.writeBuffer。实例销毁后失效。 */

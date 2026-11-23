@@ -32,6 +32,12 @@ export interface NativeExports {
 	 * C: Runtime.h
 	 */
 	_sn_anim_instance_model_matrices(instance: number): number;
+	/**
+	 * Sets the IK applied after every evaluation of this instance (copied; count 0 clears it). Returns the
+	 * count, or an error when a joint index is out of range.
+	 * C: Runtime.h
+	 */
+	_sn_anim_instance_set_ik(instance: number, iks: number, count: number): number;
 	/** C: Runtime.h */
 	_sn_anim_load_animation(data: number, size: number): number;
 	/**
@@ -865,6 +871,7 @@ export const POINTER_SIGNATURES: Readonly<Record<string, string>> = {
 	sn_alloc: 'p_',
 	sn_anim_evaluate_batch: '_pp_',
 	sn_anim_instance_model_matrices: 'p_',
+	sn_anim_instance_set_ik: '__p_',
 	sn_anim_load_animation: '_p_',
 	sn_anim_load_skeleton: '_p_',
 	sn_anim_skin_batch: '_p_',
@@ -1105,6 +1112,7 @@ export type RuntimeExport =
 	| 'sn_anim_instance_destroy'
 	| 'sn_anim_instance_model_matrices'
 	| 'sn_anim_evaluate_batch'
+	| 'sn_anim_instance_set_ik'
 	| 'sn_anim_skin_create'
 	| 'sn_anim_skin_destroy'
 	| 'sn_anim_skin_joint_count'

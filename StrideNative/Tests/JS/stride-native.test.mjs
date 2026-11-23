@@ -1357,6 +1357,45 @@ describe('stride-native and stride-tools', () => {
 		}
 	});
 
+	it('applies two-bone and aim IK after evaluation (foot reaches a target, knee bends toward the pole, head looks at a point)', () => {
+		// 髋 → 大腿根 → 膝（往下 0.5）→ 脚（再往下 0.5）；髋 → 头（往上 0.7）
+		const skeleton = native.loadSkeleton(tools.buildSkeleton([
+			{ parent: -1, name: 'hips' },
+			{ parent: 0, translation: [0.1, 0, 0], name: 'thigh' },
+			{ parent: 1, translation: [0, -0.5, 0], name: 'knee' },
+			{ parent: 2, translation: [0, -0.5, 0], name: 'foot' },
+			{ parent: 0, translation: [0, 0.7, 0], name: 'head' },
+		]));
+		const instance = skeleton.createInstance();
+		using batch = new AnimationBatch(native);
+		const position = (joint) => { const m = instance.modelMatrices(); return [m[joint * 16 + 12], m[joint * 16 + 13], m[joint * 16 + 14]]; };
+		const evaluate = () => { batch.clear().instance(instance); batch.evaluate(); };
+		evaluate();
+		assert.deepEqual(position(3).map((v) => +v.toFixed(4)), [0.1, -1, 0]);
+		// 脚抬到 (0.1, -0.7, 0.2)：膝朝前（+z）弯，脚正好到目标，两段骨的长度不变
+		instance.setIk([{ type: 'twoBone', joints: [1, 2, 3], target: [0.1, -0.7, 0.2], pole: [0, 0, 1], midAxis: [1, 0, 0] }]);
+		evaluate();
+		const foot = position(3), knee = position(2), thigh = position(1);
+		assert.ok(Math.hypot(foot[0] - 0.1, foot[1] + 0.7, foot[2] - 0.2) < 1e-3, `foot at ${foot}`);
+		assert.ok(knee[2] > 0.05, `knee bends forward: ${knee}`);
+		assert.ok(Math.abs(Math.hypot(knee[0] - thigh[0], knee[1] - thigh[1], knee[2] - thigh[2]) - 0.5) < 1e-3);
+		assert.ok(Math.abs(Math.hypot(foot[0] - knee[0], foot[1] - knee[1], foot[2] - knee[2]) - 0.5) < 1e-3);
+		// 加一个看向：头的 +z 转向 (1, 0.7, 0)（右边）
+		instance.setIk([{ type: 'aim', joint: 4, target: [1, 0.7, 0], forward: [0, 0, 1], up: [0, 1, 0] }]);
+		evaluate();
+		const m = instance.modelMatrices();
+		const forward = [m[4 * 16 + 8], m[4 * 16 + 9], m[4 * 16 + 10]];
+		assert.ok(forward[0] > 0.99, `head looks along +x: ${forward}`);
+		// 权重 0：不改；清掉：回到静止姿势
+		instance.setIk([{ type: 'aim', joint: 4, target: [1, 0.7, 0], forward: [0, 0, 1], weight: 0 }]);
+		evaluate();
+		assert.ok(instance.modelMatrices()[4 * 16 + 10] > 0.99);
+		instance.setIk([]);
+		evaluate();
+		assert.deepEqual(position(3).map((v) => +v.toFixed(4)), [0.1, -1, 0]);
+		assert.throws(() => instance.setIk([{ type: 'twoBone', joints: [1, 2, 9], target: [0, 0, 0] }]), /out of range/);
+	});
+
 	it('builds ozz assets (tools) and samples characters in parallel (runtime)', () => {
 		const skeletonBytes = tools.buildSkeleton([
 			{ parent: -1, name: 'root' },

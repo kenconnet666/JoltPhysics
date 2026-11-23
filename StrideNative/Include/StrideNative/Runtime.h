@@ -270,6 +270,33 @@ typedef struct sn_anim_evaluate_request
 /// parallel; returns when all are done.
 SN_API int32_t sn_anim_evaluate_batch(const sn_anim_op *ops, sn_anim_evaluate_request *requests, uint32_t count);
 
+/// Inverse kinematics applied after an instance's program, in order, each on the result of the previous
+/// (ozz's IKTwoBoneJob and IKAimJob): the corrected local rotations are written back and the model-space
+/// matrices of the chain and everything below it are recomputed. Targets and poles are in model space.
+enum
+{
+	SN_ANIM_IK_TWO_BONE = 0,		///< joints: start (thigh), mid (knee), end (foot); the end reaches target
+	SN_ANIM_IK_AIM = 1,				///< joints[0] turns so that its forward axis points at target (head look-at)
+};
+
+typedef struct sn_anim_ik
+{
+	int32_t type;					///< SN_ANIM_IK_*
+	int32_t joints[3];				///< two-bone: start, mid, end; aim: joints[0]
+	float target[3];				///< model space
+	float pole[3];					///< model space: two-bone, where the mid joint (knee, elbow) points; aim, the model's up
+	float axis[3];					///< two-bone: the mid joint's hinge axis (its local space); aim: the joint's forward axis (local)
+	float up[3];					///< aim: the joint's up axis (local)
+	float offset[3];				///< aim: the aiming point's offset from the joint (local)
+	float weight;					///< 0 no correction, 1 full
+	float soften;					///< two-bone: 1 is no softening, below 1 slows down when the chain is nearly straight
+	float twist;					///< radians around the target direction
+} sn_anim_ik;
+
+/// Sets the IK applied after every evaluation of this instance (copied; count 0 clears it). Returns the
+/// count, or an error when a joint index is out of range.
+SN_API int32_t sn_anim_instance_set_ik(int32_t instance, const sn_anim_ik *iks, uint32_t count);
+
 /// A skin binds a mesh to joints of a skeleton: joints are skeleton joint indices, inverse_binds one
 /// column-major 4x4 matrix per joint (mesh to joint space at bind time).
 SN_API int32_t sn_anim_skin_create(const uint32_t *joints, const float *inverse_binds, uint32_t joint_count);

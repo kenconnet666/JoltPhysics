@@ -6,6 +6,8 @@
 #include <StrideNative/Runtime.h>
 
 #include <ozz/animation/runtime/animation.h>
+#include <ozz/animation/runtime/ik_aim_job.h>
+#include <ozz/animation/runtime/ik_two_bone_job.h>
 #include <ozz/animation/runtime/local_to_model_job.h>
 #include <ozz/animation/runtime/sampling_job.h>
 #include <ozz/animation/runtime/skeleton.h>
@@ -13,6 +15,7 @@
 #include <ozz/base/io/archive.h>
 #include <ozz/base/io/stream.h>
 #include <ozz/base/maths/simd_math.h>
+#include <ozz/base/maths/simd_quaternion.h>
 #include <ozz/base/maths/soa_transform.h>
 #include <ozz/base/span.h>
 
@@ -49,6 +52,7 @@ namespace
 		std::vector<std::pair<const Animation *, std::unique_ptr<ozz::animation::SamplingJob::Context>>> mContexts;
 		std::vector<ozz::vector<SoaTransform>>	mStack;
 		ozz::vector<ozz::math::Float4x4>		mModels;
+		std::vector<sn_anim_ik>					mIks;		///< 每次求值以后按顺序做
 
 		ozz::animation::SamplingJob::Context &ContextFor(const Animation &inAnimation)
 		{
@@ -217,6 +221,79 @@ namespace
 
 	// ---------------------------------------------------------------------------------------------
 
+	/// 局部（SoA）姿势里第 inJoint 个关节的旋转右乘 inCorrection（同 ozz 样例的 MultiplySoATransformQuaternion）
+	void MultiplyLocalRotation(ozz::vector<SoaTransform> &ioLocals, int inJoint, const ozz::math::SimdQuaternion &inCorrection)
+	{
+		SoaTransform &soa = ioLocals[size_t(inJoint) / 4];
+		ozz::math::SimdQuaternion quaternions[4];
+		ozz::math::Transpose4x4(&soa.rotation.x, &quaternions->xyzw);
+		quaternions[inJoint & 3] = quaternions[inJoint & 3] * inCorrection;
+		ozz::math::Transpose4x4(&quaternions->xyzw, &soa.rotation.x);
+	}
+
+	ozz::math::SimdFloat4 Load3(const float *inValues, float inW)
+	{
+		return ozz::math::simd_float4::Load(inValues[0], inValues[1], inValues[2], inW);
+	}
+
+	/// 按顺序做实例的 IK：局部姿势在 mStack[0]、模型空间的在 mModels，改完从链的起点往下重算
+	bool ApplyIk(Instance &ioInstance)
+	{
+		const Skeleton &skeleton = *ioInstance.mSkeleton;
+		ozz::vector<SoaTransform> &locals = ioInstance.mStack[0];
+		for (const sn_anim_ik &ik : ioInstance.mIks)
+		{
+			if (ik.weight <= 0.0f)
+				continue;
+			int from = ik.joints[0];
+			if (ik.type == SN_ANIM_IK_TWO_BONE)
+			{
+				ozz::animation::IKTwoBoneJob job;
+				job.target = Load3(ik.target, 1.0f);
+				job.pole_vector = Load3(ik.pole, 0.0f);
+				job.mid_axis = Load3(ik.axis, 0.0f);
+				job.weight = std::min(ik.weight, 1.0f);
+				job.soften = ik.soften;
+				job.twist_angle = ik.twist;
+				job.start_joint = &ioInstance.mModels[size_t(ik.joints[0])];
+				job.mid_joint = &ioInstance.mModels[size_t(ik.joints[1])];
+				job.end_joint = &ioInstance.mModels[size_t(ik.joints[2])];
+				ozz::math::SimdQuaternion start_correction, mid_correction;
+				job.start_joint_correction = &start_correction;
+				job.mid_joint_correction = &mid_correction;
+				if (!job.Run())
+					return false;
+				MultiplyLocalRotation(locals, ik.joints[0], start_correction);
+				MultiplyLocalRotation(locals, ik.joints[1], mid_correction);
+			}
+			else
+			{
+				ozz::animation::IKAimJob job;
+				job.target = Load3(ik.target, 1.0f);
+				job.forward = Load3(ik.axis, 0.0f);
+				job.up = Load3(ik.up, 0.0f);
+				job.offset = Load3(ik.offset, 1.0f);
+				job.pole_vector = Load3(ik.pole, 0.0f);
+				job.weight = std::min(ik.weight, 1.0f);
+				job.twist_angle = ik.twist;
+				job.joint = &ioInstance.mModels[size_t(ik.joints[0])];
+				ozz::math::SimdQuaternion correction;
+				job.joint_correction = &correction;
+				if (!job.Run())
+					return false;
+				MultiplyLocalRotation(locals, ik.joints[0], correction);
+			}
+			ozz::animation::LocalToModelJob to_model;
+			to_model.skeleton = &skeleton;
+			to_model.input = ozz::make_span(locals);
+			to_model.output = ozz::make_span(ioInstance.mModels);
+			to_model.from = from;
+			if (!to_model.Run())
+				return false;
+		}
+		return true;
+	}
+
 	int32_t Evaluate(const sn_anim_op *inOps, const sn_anim_evaluate_request &inRequest)
 	{
 		Instance *instance = GetTable<Instance>().Get(inRequest.instance);
@@ -268,7 +345,16 @@ namespace
 		else
 			to_model.input = ozz::make_span(instance->mStack[0]);
 		to_model.output = ozz::make_span(instance->mModels);
-		return to_model.Run() ? SN_OK : SN_ERROR_FAILED;
+		if (!to_model.Run())
+			return SN_ERROR_FAILED;
+		if (instance->mIks.empty())
+			return SN_OK;
+		// IK 改局部旋转：静止姿势时先拷一份到栈底
+		if (depth == 0)
+		{
+			std::copy(skeleton.joint_rest_poses().begin(), skeleton.joint_rest_poses().end(), instance->mStack[0].begin());
+		}
+		return ApplyIk(*instance) ? SN_OK : SN_ERROR_FAILED;
 	}
 
 	int32_t SkinMatrices(const sn_anim_skin_request &inRequest)
@@ -367,6 +453,28 @@ SN_API int32_t sn_anim_instance_create(int32_t skeleton)
 SN_API void sn_anim_instance_destroy(int32_t instance)
 {
 	GetTable<Instance>().Remove(instance);
+}
+
+SN_API int32_t sn_anim_instance_set_ik(int32_t instance, const sn_anim_ik *iks, uint32_t count)
+{
+	Instance *i = GetTable<Instance>().Get(instance);
+	if (i == nullptr)
+		return SN_ERROR_INVALID_HANDLE;
+	if (count > 0 && iks == nullptr)
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "sn_anim_instance_set_ik: iks are required");
+	int joints = i->mSkeleton->num_joints();
+	for (uint32_t k = 0; k < count; ++k)
+	{
+		const sn_anim_ik &ik = iks[k];
+		if (ik.type != SN_ANIM_IK_TWO_BONE && ik.type != SN_ANIM_IK_AIM)
+			return SetLastError(SN_ERROR_INVALID_ARGUMENT, "ik " + std::to_string(k) + ": unknown type " + std::to_string(ik.type));
+		int used = ik.type == SN_ANIM_IK_TWO_BONE ? 3 : 1;
+		for (int j = 0; j < used; ++j)
+			if (ik.joints[j] < 0 || ik.joints[j] >= joints)
+				return SetLastError(SN_ERROR_INVALID_ARGUMENT, "ik " + std::to_string(k) + ": joint " + std::to_string(ik.joints[j]) + " is out of range (the skeleton has " + std::to_string(joints) + ")");
+	}
+	i->mIks.assign(iks, iks + count);
+	return int32_t(count);
 }
 
 SN_API const float *sn_anim_instance_model_matrices(int32_t instance)
