@@ -39,6 +39,9 @@
 #include <Jolt/Physics/Collision/Shape/SphereShape.h>
 #include <Jolt/Physics/Collision/Shape/StaticCompoundShape.h>
 #include <Jolt/Physics/PhysicsSystem.h>
+#include <Jolt/Physics/Constraints/SwingTwistConstraint.h>
+#include <Jolt/Physics/Ragdoll/Ragdoll.h>
+#include <Jolt/Skeleton/Skeleton.h>
 #include <Jolt/Physics/Vehicle/VehicleCollisionTester.h>
 #include <Jolt/Physics/Vehicle/VehicleConstraint.h>
 #include <Jolt/Physics/Vehicle/WheeledVehicleController.h>
@@ -414,6 +417,14 @@ namespace
 			Vec3						mForward = Vec3::sAxisZ();	///< 车头方向（车身本地）：报速度用
 		};
 		std::vector<VehicleRecord>		mVehicles;
+		struct RagdollRecord
+		{
+			Ref<Ragdoll>					mRagdoll;			///< 移除了是 nullptr
+			std::vector<sn_ragdoll_part>	mParts;
+		};
+		std::vector<RagdollRecord>		mRagdolls;
+		/// 每个布娃娃一个碰撞组（组里相邻的部分互不碰撞）
+		uint32_t						mRagdollGroups = 0;
 	};
 
 	World *GetWorld(int32_t inHandle)
@@ -933,6 +944,10 @@ SN_API void sn_physics_destroy(int32_t world)
 		if (record.mCharacter != nullptr)
 			record.mCharacter->RemoveFromPhysicsSystem(false);
 	removed->mCharacters.clear();	// 角色自己销毁它的物体
+	for (World::RagdollRecord &record : removed->mRagdolls)
+		if (record.mRagdoll != nullptr)
+			record.mRagdoll->RemoveFromPhysicsSystem();
+	removed->mRagdolls.clear();	// 布娃娃自己销毁它的物体
 	std::vector<BodyID> ids;
 	for (const BodyRecord &record : removed->mBodies)
 		if (record.mCharacter < 0 && !record.mRemoved)
@@ -1815,6 +1830,225 @@ SN_API int32_t sn_physics_vehicle_state(int32_t world, int32_t vehicle, float *o
 		wheel[6] = rotation.GetW();
 		wheel[7] = wheels[i]->GetSuspensionLength();
 	}
+	return SN_OK;
+}
+
+namespace
+{
+	/// 布娃娃的句柄换成记录；没有、移除过的是 nullptr。
+	World::RagdollRecord *GetRagdoll(World &w, int32_t ragdoll)
+	{
+		if (ragdoll <= 0 || size_t(ragdoll) > w.mRagdolls.size())
+			return nullptr;
+		World::RagdollRecord &record = w.mRagdolls[ragdoll - 1];
+		return record.mRagdoll == nullptr ? nullptr : &record;
+	}
+
+	/// 双精度、列主序的模型到世界的矩阵。
+	RMat44 LoadModelToWorld(const double *m)
+	{
+		return RMat44(Vec4(float(m[0]), float(m[1]), float(m[2]), float(m[3])), Vec4(float(m[4]), float(m[5]), float(m[6]), float(m[7])),
+			Vec4(float(m[8]), float(m[9]), float(m[10]), float(m[11])), RVec3(m[12], m[13], m[14]));
+	}
+
+	Mat44 LoadMatrix(const float *m)
+	{
+		return Mat44::sLoadFloat4x4(reinterpret_cast<const Float4 *>(m));
+	}
+
+	void StoreMatrix(Mat44Arg matrix, float *m)
+	{
+		matrix.StoreFloat4x4(reinterpret_cast<Float4 *>(m));
+	}
+
+	/// 矩阵每一列的长度（关节的缩放）：物体没有缩放，写回骨架时按原来的缩放乘回去。
+	Vec3 ColumnScale(Mat44Arg matrix)
+	{
+		return Vec3(matrix.GetAxisX().Length(), matrix.GetAxisY().Length(), matrix.GetAxisZ().Length());
+	}
+}
+
+SN_API int32_t sn_physics_add_ragdoll(int32_t world, const sn_ragdoll_part *parts, uint32_t part_count, const float *model_matrices, uint32_t joint_count, const double *model_to_world, uint32_t layer)
+{
+	World *w = GetWorld(world);
+	if (w == nullptr)
+		return SN_ERROR_INVALID_HANDLE;
+	if (parts == nullptr || part_count == 0 || model_matrices == nullptr || model_to_world == nullptr)
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "a ragdoll needs parts, the joint matrices and the model to world matrix");
+	if (layer >= cLayerCount)
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "ragdoll layer " + std::to_string(layer) + " is not 0..31");
+	for (uint32_t p = 0; p < part_count; ++p)
+	{
+		const sn_ragdoll_part &part = parts[p];
+		std::string where = "ragdoll part " + std::to_string(p);
+		if (part.joint < 0 || uint32_t(part.joint) >= joint_count)
+			return SetLastError(SN_ERROR_INVALID_ARGUMENT, where + ": joint " + std::to_string(part.joint) + " is not in the skeleton");
+		if ((p == 0) != (part.parent < 0) || (p > 0 && uint32_t(part.parent) >= p))
+			return SetLastError(SN_ERROR_INVALID_ARGUMENT, where + ": the first part is the only root and every other part's parent comes before it");
+		if (!(part.radius > 0.0f) || !(part.mass > 0.0f))
+			return SetLastError(SN_ERROR_INVALID_ARGUMENT, where + ": radius and mass must be positive");
+	}
+
+	RMat44 model = LoadModelToWorld(model_to_world);
+	Ref<Skeleton> skeleton = new Skeleton;
+	Ref<RagdollSettings> settings = new RagdollSettings;
+	settings->mSkeleton = skeleton;
+	settings->mParts.resize(part_count);
+	ObjectLayer object_layer = ToObjectLayer(layer, true);
+	std::vector<RVec3> positions(part_count);
+	std::vector<Vec3> bones(part_count);
+	for (uint32_t p = 0; p < part_count; ++p)
+	{
+		const sn_ragdoll_part &in = parts[p];
+		skeleton->AddJoint("part" + std::to_string(p), in.parent);
+		// 关节的世界位姿（去掉缩放：物体没有缩放）；骨头的另一头按带缩放的矩阵换到世界，再换回物体的本地
+		RMat44 joint = model * LoadMatrix(model_matrices + 16 * in.joint);
+		Quat rotation = joint.GetRotation().GetRotationSafe().GetQuaternion().Normalized();
+		positions[p] = joint.GetTranslation();
+		Vec3 end = rotation.Conjugated() * Vec3(joint * Vec3(in.bone_end[0], in.bone_end[1], in.bone_end[2]) - positions[p]);
+		float length = end.Length();
+		bones[p] = length > 1.0e-4f ? rotation * (end / length) : rotation * Vec3::sAxisY();
+		Ref<Shape> shape;
+		if (length > 2.0f * in.radius)
+		{
+			// 胶囊沿本地 Y：转到骨头的方向，挪到骨头的中点
+			Ref<Shape> capsule = new CapsuleShape(0.5f * length - in.radius, in.radius);
+			shape = new RotatedTranslatedShape(0.5f * end, Quat::sFromTo(Vec3::sAxisY(), end / length), capsule);
+		}
+		else
+			shape = new RotatedTranslatedShape(0.5f * end, Quat::sIdentity(), new SphereShape(in.radius));
+		RagdollSettings::Part &part = settings->mParts[p];
+		part.SetShape(shape);
+		part.mPosition = positions[p];
+		part.mRotation = rotation;
+		part.mMotionType = EMotionType::Dynamic;
+		part.mObjectLayer = object_layer;
+		part.mOverrideMassProperties = EOverrideMassProperties::CalculateInertia;
+		part.mMassPropertiesOverride.mMass = in.mass;
+		if (in.parent >= 0)
+		{
+			// 和父部分连在这个关节上，扭转轴是这一段骨头
+			Ref<SwingTwistConstraintSettings> constraint = new SwingTwistConstraintSettings;
+			constraint->mPosition1 = constraint->mPosition2 = positions[p];
+			constraint->mTwistAxis1 = constraint->mTwistAxis2 = bones[p];
+			constraint->mPlaneAxis1 = constraint->mPlaneAxis2 = bones[p].GetNormalizedPerpendicular();
+			constraint->mNormalHalfConeAngle = constraint->mPlaneHalfConeAngle = std::clamp(in.swing, 0.0f, JPH_PI);
+			constraint->mTwistMinAngle = -std::clamp(in.twist, 0.0f, JPH_PI);
+			constraint->mTwistMaxAngle = std::clamp(in.twist, 0.0f, JPH_PI);
+			part.mToParent = constraint;
+		}
+	}
+	settings->Stabilize();
+	settings->CalculateConstraintPriorities();
+	settings->DisableParentChildCollisions();
+	settings->CalculateBodyIndexToConstraintIndex();
+
+	Ref<Ragdoll> ragdoll = settings->CreateRagdoll(CollisionGroup::GroupID(++w->mRagdollGroups), 0, &w->mSystem);
+	if (ragdoll == nullptr)
+		return SetLastError(SN_ERROR_FAILED, "out of bodies for the ragdoll (raise max_bodies)");
+	ragdoll->AddToPhysicsSystem(EActivation::Activate);
+	World::RagdollRecord record;
+	record.mRagdoll = ragdoll;
+	record.mParts.assign(parts, parts + part_count);
+	w->mRagdolls.push_back(record);
+	return int32_t(w->mRagdolls.size());
+}
+
+SN_API int32_t sn_physics_remove_ragdoll(int32_t world, int32_t ragdoll)
+{
+	World *w = GetWorld(world);
+	if (w == nullptr)
+		return SN_ERROR_INVALID_HANDLE;
+	World::RagdollRecord *record = GetRagdoll(*w, ragdoll);
+	if (record == nullptr)
+		return SN_OK;
+	record->mRagdoll->RemoveFromPhysicsSystem();
+	record->mRagdoll = nullptr;
+	return SN_OK;
+}
+
+SN_API int32_t sn_physics_ragdoll_root(int32_t world, int32_t ragdoll, double *position, float *rotation)
+{
+	World *w = GetWorld(world);
+	if (w == nullptr)
+		return SN_ERROR_INVALID_HANDLE;
+	World::RagdollRecord *record = GetRagdoll(*w, ragdoll);
+	if (record == nullptr || position == nullptr || rotation == nullptr)
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "ragdoll " + std::to_string(ragdoll) + " does not exist");
+	RVec3 root_position;
+	Quat root_rotation;
+	record->mRagdoll->GetRootTransform(root_position, root_rotation);
+	position[0] = double(root_position.GetX());
+	position[1] = double(root_position.GetY());
+	position[2] = double(root_position.GetZ());
+	rotation[0] = root_rotation.GetX();
+	rotation[1] = root_rotation.GetY();
+	rotation[2] = root_rotation.GetZ();
+	rotation[3] = root_rotation.GetW();
+	return SN_OK;
+}
+
+SN_API int32_t sn_physics_ragdoll_pose(int32_t world, int32_t ragdoll, const double *model_to_world, float *model_matrices, const int32_t *parents, uint32_t joint_count)
+{
+	World *w = GetWorld(world);
+	if (w == nullptr)
+		return SN_ERROR_INVALID_HANDLE;
+	World::RagdollRecord *record = GetRagdoll(*w, ragdoll);
+	if (record == nullptr)
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "ragdoll " + std::to_string(ragdoll) + " does not exist");
+	if (model_to_world == nullptr || model_matrices == nullptr || parents == nullptr)
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "the ragdoll pose needs the model to world matrix, the joint matrices and the joint parents");
+	for (const sn_ragdoll_part &part : record->mParts)
+		if (uint32_t(part.joint) >= joint_count)
+			return SetLastError(SN_ERROR_INVALID_ARGUMENT, "the skeleton has fewer joints than the ragdoll was built with");
+	std::vector<Mat44> previous(joint_count);
+	for (uint32_t j = 0; j < joint_count; ++j)
+		previous[j] = LoadMatrix(model_matrices + 16 * j);
+	std::vector<Mat44> next = previous;
+	std::vector<bool> simulated(joint_count, false);
+
+	// 物体的世界位姿换到模型空间（先在双精度里减，再转单精度），乘回关节原来的缩放
+	RMat44 world_to_model = LoadModelToWorld(model_to_world).Inversed();
+	size_t count = record->mParts.size();
+	std::vector<Mat44> joints(count);
+	RVec3 root_offset;
+	record->mRagdoll->GetPose(root_offset, joints.data());
+	for (size_t p = 0; p < count; ++p)
+	{
+		int32_t joint = record->mParts[p].joint;
+		RMat44 body = RMat44(joints[p].GetColumn4(0), joints[p].GetColumn4(1), joints[p].GetColumn4(2), root_offset + joints[p].GetTranslation());
+		Mat44 in_model = (world_to_model * body).ToMat44();
+		next[joint] = in_model * Mat44::sScale(ColumnScale(previous[joint]));
+		simulated[joint] = true;
+	}
+	// 别的关节跟着父关节：和父关节原来的相对位姿不变（父在前，按顺序走一遍就够）
+	for (uint32_t j = 0; j < joint_count; ++j)
+	{
+		int32_t parent = parents[j];
+		if (simulated[j] || parent < 0 || uint32_t(parent) >= j)
+			continue;
+		next[j] = next[parent] * previous[parent].Inversed() * previous[j];
+	}
+	for (uint32_t j = 0; j < joint_count; ++j)
+		StoreMatrix(next[j], model_matrices + 16 * j);
+	return SN_OK;
+}
+
+SN_API int32_t sn_physics_ragdoll_impulse(int32_t world, int32_t ragdoll, int32_t part, const float *impulse)
+{
+	World *w = GetWorld(world);
+	if (w == nullptr)
+		return SN_ERROR_INVALID_HANDLE;
+	World::RagdollRecord *record = GetRagdoll(*w, ragdoll);
+	if (record == nullptr || impulse == nullptr)
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "ragdoll " + std::to_string(ragdoll) + " does not exist");
+	Vec3 value = Load3(impulse);
+	if (part < 0)
+		record->mRagdoll->AddImpulse(value);
+	else if (size_t(part) < record->mParts.size())
+		w->mSystem.GetBodyInterface().AddImpulse(record->mRagdoll->GetBodyID(part), value);
+	else
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "ragdoll part " + std::to_string(part) + " does not exist");
 	return SN_OK;
 }
 

@@ -1182,6 +1182,49 @@ describe('stride-native and stride-tools', () => {
 		}
 	});
 
+	it('ragdolls a skeleton: parts fall onto the ground, the pose is written back into the joint matrices, unsimulated joints follow', () => {
+		// 髋（根）往上脊椎、头，往下一条腿；腿不进布娃娃，跟着髋
+		const skeleton = native.loadSkeleton(tools.buildSkeleton([
+			{ parent: -1, name: 'hips' },
+			{ parent: 0, translation: [0, 0.5, 0], name: 'spine' },
+			{ parent: 1, translation: [0, 0.4, 0], name: 'head' },
+			{ parent: 0, translation: [0, -0.9, 0], name: 'leg' },
+		]));
+		const parents = Int32Array.from([-1, 0, 1, 0]);
+		const instance = skeleton.createInstance();
+		using batch = new AnimationBatch(native);
+		batch.instance(instance);
+		batch.evaluate();
+		const modelToWorld = Float64Array.from([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 2, 0, 1]);
+		const world = native.createPhysicsWorld(32);
+		try {
+			world.addBody({ shapes: [{ type: 'box', size: [20, 1, 20] }], position: [0, -0.5, 0] });
+			const part = (joint, parent, end) => ({ joint, parent, boneEnd: end, radius: 0.12, mass: 10, swing: 0.6, twist: 0.3 });
+			const ragdoll = world.addRagdoll([part(0, -1, [0, 0.5, 0]), part(1, 0, [0, 0.4, 0]), part(2, 1, [0, 0.25, 0])], instance, modelToWorld);
+			const legBefore = instance.modelMatrices().slice(48, 64);
+			// 推一下，让它倒下而不是直直地落
+			world.ragdollImpulse(ragdoll, 2, [20, 0, 0]);
+			for (let i = 0; i < 180; i++) world.step(1 / 60);
+			const root = world.ragdollRoot(ragdoll);
+			assert.ok(root.position[1] > 0 && root.position[1] < 1, `the hips lie on the ground: y ${root.position[1]}`);
+			world.ragdollPose(ragdoll, instance, modelToWorld, parents);
+			const m = instance.modelMatrices();
+			// 头掉下来了（模型空间里比开始的 0.9 低得多），腿跟着髋：腿到髋的相对位姿不变
+			assert.ok(m[32 + 13] < 0, `the head fell below where the model was: y ${m[32 + 13]}`);
+			const hips = m.slice(0, 16), leg = m.slice(48, 64);
+			const legFromHips = [leg[12] - hips[12], leg[13] - hips[13], leg[14] - hips[14]];
+			const length = Math.hypot(...legFromHips);
+			assert.ok(Math.abs(length - 0.9) < 1e-3, `the leg keeps its offset from the hips: ${length}`);
+			assert.notDeepEqual([...leg], [...legBefore]);
+			assert.throws(() => world.addRagdoll([part(0, 0, [0, 1, 0])], instance, modelToWorld), /only root/);
+			world.removeRagdoll(ragdoll);
+			assert.throws(() => world.ragdollRoot(ragdoll), /does not exist/);
+		} finally {
+			world.destroy();
+			instance.dispose?.();
+		}
+	});
+
 	it('builds ozz assets (tools) and samples characters in parallel (runtime)', () => {
 		const skeletonBytes = tools.buildSkeleton([
 			{ parent: -1, name: 'root' },

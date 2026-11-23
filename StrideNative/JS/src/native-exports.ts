@@ -214,6 +214,12 @@ export interface NativeExports {
 	 */
 	_sn_physics_add_constraint(world: number, constraint: number): number;
 	/**
+	 * 按骨架现在的姿势建布娃娃：model_matrices 是全部 joint_count 个关节的关节到模型的矩阵，model_to_world 是模型到世界的
+	 * 矩阵（双精度、列主序），layer 是碰撞层。返回句柄（> 0）。
+	 * C: Physics.h
+	 */
+	_sn_physics_add_ragdoll(world: number, parts: number, partCount: number, modelMatrices: number, jointCount: number, modelToWorld: number, layer: number): number;
+	/**
 	 * 加一辆车，返回车的句柄（> 0）。车身被移除时车一起移除。轮子至少 2 个、个数是偶数。
 	 * C: Physics.h
 	 */
@@ -344,6 +350,22 @@ export interface NativeExports {
 	 */
 	_sn_physics_positions(world: number): number;
 	/**
+	 * 给一部分加冲量（世界空间，牛·秒），比如被撞的那一下；part 是 -1 时加在所有部分上（按质量分）。
+	 * C: Physics.h
+	 */
+	_sn_physics_ragdoll_impulse(world: number, ragdoll: number, part: number, impulse: number): number;
+	/**
+	 * 物理的姿势写回骨架：model_to_world 是模型现在的位姿，model_matrices（joint_count 个，进来是上一次的姿势）里布娃娃的关节
+	 * 换成物体的位姿，别的关节跟着父关节（保持和父关节原来的相对位姿）；parents 是骨架每个关节的父关节（-1 是根，父在前）。
+	 * C: Physics.h
+	 */
+	_sn_physics_ragdoll_pose(world: number, ragdoll: number, modelToWorld: number, modelMatrices: number, parents: number, jointCount: number): number;
+	/**
+	 * 根部分的世界位姿：position（双精度 xyz）、rotation（xyzw）。
+	 * C: Physics.h
+	 */
+	_sn_physics_ragdoll_root(world: number, ragdoll: number, position: number, rotation: number): number;
+	/**
 	 * 射线（Stride 的 RayCast）：direction 不用归一化，max_distance 是米。mask 的第 n 位为 1 表示层 n 的物体参与。
 	 * 返回 1 命中（写 hit），0 没有，负数是错误。
 	 * C: Physics.h
@@ -367,6 +389,11 @@ export interface NativeExports {
 	 * C: Physics.h
 	 */
 	_sn_physics_remove_constraint(world: number, constraint: number): number;
+	/**
+	 * 移除布娃娃（它的物体一起移除）；移除过的忽略。
+	 * C: Physics.h
+	 */
+	_sn_physics_remove_ragdoll(world: number, ragdoll: number): number;
 	/**
 	 * 移除车（车身留着）；移除过的忽略。
 	 * C: Physics.h
@@ -821,6 +848,7 @@ export const POINTER_SIGNATURES: Readonly<Record<string, string>> = {
 	sn_parallel_for: '___p',
 	sn_physics_add_bodies: '__p_p_p_p',
 	sn_physics_add_constraint: '__p',
+	sn_physics_add_ragdoll: '__p_p_p_',
 	sn_physics_add_vehicle: '__pp_',
 	sn_physics_body_apply_buoyancy: '___pp___p_p',
 	sn_physics_body_apply_impulse: '___pp',
@@ -835,6 +863,9 @@ export const POINTER_SIGNATURES: Readonly<Record<string, string>> = {
 	sn_physics_create_mesh: '__p_p_',
 	sn_physics_overlap: '__pp_p_',
 	sn_physics_positions: 'p_',
+	sn_physics_ragdoll_impulse: '____p',
+	sn_physics_ragdoll_pose: '___ppp_',
+	sn_physics_ragdoll_root: '___pp',
 	sn_physics_ray_cast: '__pp__p',
 	sn_physics_ray_cast_all: '__pp__p_',
 	sn_physics_remove_bodies: '__p_',
@@ -961,6 +992,11 @@ export type RuntimeExport =
 	| 'sn_physics_remove_vehicle'
 	| 'sn_physics_vehicle_input'
 	| 'sn_physics_vehicle_state'
+	| 'sn_physics_add_ragdoll'
+	| 'sn_physics_remove_ragdoll'
+	| 'sn_physics_ragdoll_root'
+	| 'sn_physics_ragdoll_pose'
+	| 'sn_physics_ragdoll_impulse'
 	| 'sn_physics_body_set_contact_events'
 	| 'sn_physics_body_set_sensor'
 	| 'sn_physics_contact_events'

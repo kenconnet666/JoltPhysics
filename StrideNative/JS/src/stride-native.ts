@@ -481,6 +481,27 @@ export interface VehicleState {
 }
 
 const VEHICLE_DRIVES = { front: 0, rear: 1, all: 2 } as const;
+
+/** 用 PhysicsWorld.addRagdoll 建的布娃娃。 */
+export type PhysicsRagdoll = Branded<number, 'PhysicsRagdoll'>;
+
+/** 布娃娃的一部分（骨架的一个关节）；部分按父在前排，第一个是根。 */
+export interface RagdollPartDesc {
+	/** 骨架里的关节下标。 */
+	joint: number;
+	/** 父部分在 parts 里的下标；根是 -1。 */
+	parent: number;
+	/** 骨头的另一头（这个关节的本地空间）：胶囊从关节到这里。 */
+	boneEnd: Vec3;
+	radius: number;
+	/** 千克。 */
+	mass: number;
+	/** 和父部分之间摆动、绕骨头扭转的最大角（弧度）。 */
+	swing: number;
+	twist: number;
+}
+
+const RAGDOLL_PART_WORDS = 9;
 const VEHICLE_WORDS = 9;
 const WHEEL_WORDS = 12;
 
@@ -644,6 +665,57 @@ export class PhysicsWorld extends NativeObject<StrideNative> {
 				}),
 			};
 		});
+	}
+
+	/**
+	 * 按骨架现在的姿势建布娃娃：instance 的关节矩阵是现在的姿势，modelToWorld 是模型到世界的矩阵（双精度、列主序）。
+	 */
+	addRagdoll(parts: readonly RagdollPartDesc[], instance: AnimationInstance, modelToWorld: Float64Array, layer = 0): PhysicsRagdoll {
+		const n = this.native;
+		return n.withArrays([modelToWorld], (matrix) => n.withScratch(parts.length * RAGDOLL_PART_WORDS * 4, (address) => {
+			const floats = n.f32(address, parts.length * RAGDOLL_PART_WORDS), ints = n.i32(address, parts.length * RAGDOLL_PART_WORDS);
+			parts.forEach((part, i) => {
+				const at = i * RAGDOLL_PART_WORDS;
+				ints[at] = part.joint;
+				ints[at + 1] = part.parent;
+				floats.set([part.boneEnd[0]!, part.boneEnd[1]!, part.boneEnd[2]!, part.radius, part.mass, part.swing, part.twist], at + 2);
+			});
+			const matrices = n.module._sn_anim_instance_model_matrices(instance[HANDLE]);
+			return n.check(n.module._sn_physics_add_ragdoll(this[HANDLE], address, parts.length, matrices, instance.jointCount, matrix, layer), 'sn_physics_add_ragdoll') as PhysicsRagdoll;
+		}));
+	}
+
+	/** 移除布娃娃（它的物体一起移除）；移除过的忽略。 */
+	removeRagdoll(ragdoll: PhysicsRagdoll): void {
+		this.native.check(this.native.module._sn_physics_remove_ragdoll(this[HANDLE], ragdoll), 'sn_physics_remove_ragdoll');
+	}
+
+	/** 根部分的世界位姿：位置（双精度）、旋转 xyzw。 */
+	ragdollRoot(ragdoll: PhysicsRagdoll): { position: [number, number, number]; rotation: [number, number, number, number] } {
+		const n = this.native;
+		return n.withScratch(48, (address) => {
+			n.check(n.module._sn_physics_ragdoll_root(this[HANDLE], ragdoll, address, address + 24), 'sn_physics_ragdoll_root');
+			const p = n.f64(address, 3), r = n.f32(address + 24, 4);
+			return { position: [p[0]!, p[1]!, p[2]!], rotation: [r[0]!, r[1]!, r[2]!, r[3]!] };
+		});
+	}
+
+	/**
+	 * 物理的姿势写进 instance 的关节矩阵（原地改，交给蒙皮）：布娃娃的关节换成物体的位姿，别的关节跟着父关节。modelToWorld 是
+	 * 模型现在的位姿，parents 是骨架每个关节的父关节（-1 是根）。
+	 */
+	ragdollPose(ragdoll: PhysicsRagdoll, instance: AnimationInstance, modelToWorld: Float64Array, parents: Int32Array): void {
+		const n = this.native;
+		n.withArrays([modelToWorld, parents], (matrix, joints) => {
+			const matrices = n.module._sn_anim_instance_model_matrices(instance[HANDLE]);
+			n.check(n.module._sn_physics_ragdoll_pose(this[HANDLE], ragdoll, matrix, matrices, joints, instance.jointCount), 'sn_physics_ragdoll_pose');
+		});
+	}
+
+	/** 给一部分加冲量（世界空间）；part 是 -1 时加在所有部分上。 */
+	ragdollImpulse(ragdoll: PhysicsRagdoll, part: number, impulse: Vec3): void {
+		const n = this.native;
+		n.withArrays([Float32Array.from([impulse[0]!, impulse[1]!, impulse[2]!])], (value) => n.check(n.module._sn_physics_ragdoll_impulse(this[HANDLE], ragdoll, part, value), 'sn_physics_ragdoll_impulse'));
 	}
 
 	/** 移除约束（两个物体都会唤醒）；移除过的忽略。物体被移除时连着它的约束一起移除。 */
