@@ -888,8 +888,14 @@ SN_API int32_t sn_physics_create(uint32_t max_bodies, int32_t transforms, const 
 
 	// Resting bodies touch several others (a box in a stack has up to four neighbours and the
 	// ground), so pairs and contacts need headroom over the body count.
+	// Jolt reserves every pair and contact up front (~0.6 KB each), and most bodies in a big world are static
+	// and never touch each other, so the reservation is capped at 65536 (8 contacts for each of 8192 touching
+	// bodies): with 8 per body a million bodies took a 4.9 GB heap, capped it is 577 MB (65536 bodies: 111 MB).
+	// Running out only drops the contacts that don't fit, it never fails.
 	constexpr uint32_t cContactsPerBody = 8;
-	world->mSystem.Init(max_bodies, 0, max_bodies * cContactsPerBody, max_bodies * cContactsPerBody,
+	constexpr uint32_t cMaxContacts = 1u << 16;
+	const uint32_t maxContacts = uint32_t(std::min<uint64_t>(uint64_t(max_bodies) * cContactsPerBody, cMaxContacts));
+	world->mSystem.Init(max_bodies, 0, maxContacts, maxContacts,
 		world->mBroadPhaseLayers, world->mObjectVsBroadPhase, world->mObjectPairs);
 	world->mSystem.SetGravity(Load3(world->mSettings.gravity));
 	// Bepu 的接触是软约束，静止时几乎不陷进去（30 Hz 的弹簧在重力下只压下去零点几毫米）；Jolt 默认允许陷进 2 cm 才往外推

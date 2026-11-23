@@ -14,7 +14,10 @@ param(
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 
+# emsdk_env 重写 PATH，会把装 Node、pnpm 的目录丢掉：之后把原来的接在后面（emsdk 的工具仍然优先）
+$originalPath = $env:PATH
 . (Join-Path $Emsdk 'emsdk_env.ps1') *> $null
+$env:PATH = "$env:PATH;$originalPath"
 # CMake and Ninja are not installed system-wide; use the copies bundled with CLion.
 $clionBin = Join-Path $env:LOCALAPPDATA 'Programs\CLion\bin'
 $env:PATH = "$clionBin\cmake\win\x64\bin;$clionBin\ninja\win\x64;$env:PATH"
