@@ -20,6 +20,7 @@
 #include <ozz/base/span.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <memory>
 #include <utility>
@@ -38,7 +39,34 @@ namespace
 	constexpr size_t cMaxContexts = 16;
 
 	struct SkeletonAsset { Skeleton mSkeleton; };
-	struct AnimationAsset { Animation mAnimation; };
+
+	struct Joint
+	{
+		float t[3];
+		float r[4];		///< xyzw
+		float s[3];
+	};
+
+	/// 重定向：源剪辑在源骨架上采样，按关节对照搬到目标骨架（sn_anim_retarget）
+	struct Retarget
+	{
+		int32_t								mSourceAnimation = 0;	///< 句柄：每次用时查（源剪辑先销毁了就报错）
+		int32_t								mSourceSkeleton = 0;
+		int32_t								mTargetSkeleton = 0;
+		std::vector<int32_t>				mSourceOf;				///< 每个目标关节对应的源关节，-1 是没有
+		std::vector<std::array<float, 4>>	mCorrection;			///< 每个目标关节：源静止的模型旋转的逆 × 目标静止的模型旋转
+		std::vector<Joint>					mTargetRest;			///< 目标骨架的静止局部姿势（逐关节）
+		int32_t								mTargetHips = -1, mSourceHips = -1;
+		float								mHipsScale = 1.0f;
+		float								mSourceHipsRest[3] = { 0, 0, 0 };
+		float								mTargetHipsRest[3] = { 0, 0, 0 };
+	};
+
+	struct AnimationAsset
+	{
+		Animation							mAnimation;
+		std::unique_ptr<Retarget>			mRetarget;				///< 重定向出来的句柄才有；那时 mAnimation 是空的
+	};
 
 	/// 按关节的权重（个数补到 SoA 的整数倍，补的是 0）
 	struct Mask
@@ -60,6 +88,8 @@ namespace
 		ozz::vector<ozz::math::Float4x4>		mModels;
 		std::vector<sn_anim_ik>					mIks;		///< 每次求值以后按顺序做
 		ozz::vector<SoaTransform>				mSnapshot;	///< sn_anim_instance_snapshot 存的局部姿势；空的是没存过
+		ozz::vector<SoaTransform>				mSourcePose;	///< 重定向：源剪辑在源骨架上的局部姿势
+		ozz::vector<ozz::math::Float4x4>		mSourceModels;	///< 重定向：源骨架的模型空间矩阵
 
 		ozz::animation::SamplingJob::Context &ContextFor(const Animation &inAnimation)
 		{
@@ -69,7 +99,7 @@ namespace
 			if (mContexts.size() >= cMaxContexts)
 				mContexts.erase(mContexts.begin());
 			auto context = std::make_unique<ozz::animation::SamplingJob::Context>();
-			context->Resize(mSkeleton->num_joints());
+			context->Resize(inAnimation.num_tracks());
 			return *mContexts.emplace_back(&inAnimation, std::move(context)).second;
 		}
 	};
@@ -94,13 +124,6 @@ namespace
 
 	// ---------------------------------------------------------------------------------------------
 	// Stride 的 AnimationBlender 的数学，逐关节标量计算（SoA 拆成 4 个关节）
-
-	struct Joint
-	{
-		float t[3];
-		float r[4];		///< xyzw
-		float s[3];
-	};
 
 	void Unpack(const SoaTransform &inSoa, Joint outJoints[4])
 	{
@@ -229,6 +252,141 @@ namespace
 
 	// ---------------------------------------------------------------------------------------------
 
+	void Conjugate(const float *inQ, float *outQ)
+	{
+		outQ[0] = -inQ[0];
+		outQ[1] = -inQ[1];
+		outQ[2] = -inQ[2];
+		outQ[3] = inQ[3];
+	}
+
+	/// 四元数转向量：v + 2w(q × v) + 2 q × (q × v)
+	void Rotate(const float *inQ, const float *inV, float *outV)
+	{
+		float t[3] = { 2 * (inQ[1] * inV[2] - inQ[2] * inV[1]), 2 * (inQ[2] * inV[0] - inQ[0] * inV[2]), 2 * (inQ[0] * inV[1] - inQ[1] * inV[0]) };
+		float c[3] = { inQ[1] * t[2] - inQ[2] * t[1], inQ[2] * t[0] - inQ[0] * t[2], inQ[0] * t[1] - inQ[1] * t[0] };
+		for (int k = 0; k < 3; ++k)
+			outV[k] = inV[k] + inQ[3] * t[k] + c[k];
+	}
+
+	/// 模型矩阵的旋转和平移（ToAffine）
+	void Decompose(const ozz::math::Float4x4 &inMatrix, float *outRotation, float *outTranslation)
+	{
+		ozz::math::SimdFloat4 translation, rotation, scale;
+		ozz::math::ToAffine(inMatrix, &translation, &rotation, &scale);
+		alignas(16) float t[4], r[4];
+		ozz::math::StorePtr(translation, t);
+		ozz::math::StorePtr(rotation, r);
+		std::copy(r, r + 4, outRotation);
+		if (outTranslation != nullptr)
+			std::copy(t, t + 3, outTranslation);
+	}
+
+	/// 骨架的静止姿势的模型空间矩阵
+	ozz::vector<ozz::math::Float4x4> RestModels(const Skeleton &inSkeleton)
+	{
+		ozz::vector<ozz::math::Float4x4> models(size_t(inSkeleton.num_joints()));
+		ozz::animation::LocalToModelJob job;
+		job.skeleton = &inSkeleton;
+		job.input = inSkeleton.joint_rest_poses();
+		job.output = ozz::make_span(models);
+		job.Run();
+		return models;
+	}
+
+	/// 重定向的剪辑在 inTime 秒的姿势写进 outPose（目标骨架的局部 SoA）。注意 Multiply(a, b) 按 Stride 的约定是 b·a
+	int32_t SampleRetargeted(Instance &ioInstance, const Retarget &inRetarget, float inTime, ozz::vector<SoaTransform> &outPose)
+	{
+		AnimationAsset *source = GetTable<AnimationAsset>().Get(inRetarget.mSourceAnimation);
+		SkeletonAsset *sourceSkeleton = GetTable<SkeletonAsset>().Get(inRetarget.mSourceSkeleton);
+		if (source == nullptr || sourceSkeleton == nullptr || source->mRetarget != nullptr)
+			return SN_ERROR_INVALID_HANDLE;
+		const Skeleton &from = sourceSkeleton->mSkeleton;
+		const Animation &animation = source->mAnimation;
+		ioInstance.mSourcePose.resize(size_t(from.num_soa_joints()));
+		ioInstance.mSourceModels.resize(size_t(from.num_joints()));
+		ozz::animation::SamplingJob sampling;
+		sampling.animation = &animation;
+		sampling.context = &ioInstance.ContextFor(animation);
+		float duration = animation.duration();
+		sampling.ratio = duration > 0 ? std::clamp(inTime / duration, 0.0f, 1.0f) : 0.0f;
+		sampling.output = ozz::make_span(ioInstance.mSourcePose);
+		if (!sampling.Run())
+			return SN_ERROR_FAILED;
+		ozz::animation::LocalToModelJob to_model;
+		to_model.skeleton = &from;
+		to_model.input = ozz::make_span(ioInstance.mSourcePose);
+		to_model.output = ozz::make_span(ioInstance.mSourceModels);
+		if (!to_model.Run())
+			return SN_ERROR_FAILED;
+
+		// 目标关节按顺序（父在前）：模型空间的旋转 = 源关节现在的模型旋转 × 修正，没有对应的跟着父关节；局部 = 父的逆 × 自己
+		const Skeleton &to = *ioInstance.mSkeleton;
+		size_t count = size_t(to.num_joints());
+		std::vector<std::array<float, 4>> model(count);
+		std::vector<Joint> locals(inRetarget.mTargetRest);
+		for (size_t j = 0; j < count; ++j)
+		{
+			int parent = to.joint_parents()[j];
+			int s = inRetarget.mSourceOf[j];
+			float parentRotation[4] = { 0, 0, 0, 1 };
+			if (parent >= 0)
+				std::copy(model[size_t(parent)].begin(), model[size_t(parent)].end(), parentRotation);
+			if (s < 0)
+			{
+				Multiply(locals[j].r, parentRotation, model[j].data());
+				continue;
+			}
+			float sourceRotation[4];
+			Decompose(ioInstance.mSourceModels[size_t(s)], sourceRotation, nullptr);
+			Multiply(inRetarget.mCorrection[j].data(), sourceRotation, model[j].data());
+			Normalize(model[j].data());
+			float inverse[4];
+			Conjugate(parentRotation, inverse);
+			Multiply(model[j].data(), inverse, locals[j].r);
+			Normalize(locals[j].r);
+		}
+		// 髋：源的髋在模型空间里离静止位置挪了多少，目标按髋高的比例挪；换到父关节的空间
+		if (inRetarget.mTargetHips >= 0 && inRetarget.mSourceHips >= 0)
+		{
+			float rotation[4], position[3];
+			Decompose(ioInstance.mSourceModels[size_t(inRetarget.mSourceHips)], rotation, position);
+			float target[3];
+			for (int k = 0; k < 3; ++k)
+				target[k] = inRetarget.mTargetHipsRest[k] + (position[k] - inRetarget.mSourceHipsRest[k]) * inRetarget.mHipsScale;
+			// 父关节的模型空间：静止的平移链加上面算的旋转（髋的父一般是根节点，不动）
+			int parent = to.joint_parents()[size_t(inRetarget.mTargetHips)];
+			float parentPosition[3] = { 0, 0, 0 }, parentRotation[4] = { 0, 0, 0, 1 };
+			std::vector<int> chain;
+			for (int p = parent; p >= 0; p = to.joint_parents()[size_t(p)])
+				chain.push_back(p);
+			for (auto it = chain.rbegin(); it != chain.rend(); ++it)
+			{
+				float offset[3];
+				Rotate(parentRotation, locals[size_t(*it)].t, offset);
+				for (int k = 0; k < 3; ++k)
+					parentPosition[k] += offset[k];
+				float next[4];
+				Multiply(locals[size_t(*it)].r, parentRotation, next);
+				std::copy(next, next + 4, parentRotation);
+			}
+			float delta[3] = { target[0] - parentPosition[0], target[1] - parentPosition[1], target[2] - parentPosition[2] }, inverse[4];
+			Conjugate(parentRotation, inverse);
+			Rotate(inverse, delta, locals[size_t(inRetarget.mTargetHips)].t);
+		}
+		Joint lanes[4];
+		for (size_t soa = 0; soa < outPose.size(); ++soa)
+		{
+			for (int lane = 0; lane < 4; ++lane)
+			{
+				size_t j = soa * 4 + size_t(lane);
+				lanes[lane] = j < count ? locals[j] : Joint { { 0, 0, 0 }, { 0, 0, 0, 1 }, { 1, 1, 1 } };
+			}
+			Pack(lanes, outPose[soa]);
+		}
+		return SN_OK;
+	}
+
 	/// 局部（SoA）姿势里第 inJoint 个关节的旋转右乘 inCorrection（同 ozz 样例的 MultiplySoATransformQuaternion）
 	void MultiplyLocalRotation(ozz::vector<SoaTransform> &ioLocals, int inJoint, const ozz::math::SimdQuaternion &inCorrection)
 	{
@@ -338,6 +496,17 @@ namespace
 				AnimationAsset *asset = GetTable<AnimationAsset>().Get(op.animation);
 				if (asset == nullptr)
 					return SN_ERROR_INVALID_HANDLE;
+				if (asset->mRetarget != nullptr)
+				{
+					SkeletonAsset *target = GetTable<SkeletonAsset>().Get(asset->mRetarget->mTargetSkeleton);
+					if (depth >= cMaxStack || target == nullptr || &target->mSkeleton != &skeleton)
+						return SN_ERROR_INVALID_ARGUMENT;
+					int32_t result = SampleRetargeted(*instance, *asset->mRetarget, op.time, instance->mStack[depth]);
+					if (result != SN_OK)
+						return result;
+					++depth;
+					continue;
+				}
 				const Animation &animation = asset->mAnimation;
 				if (depth >= cMaxStack || animation.num_tracks() != skeleton.num_joints())
 					return SN_ERROR_INVALID_ARGUMENT;
@@ -471,6 +640,11 @@ SN_API int32_t sn_anim_skeleton_joint_count(int32_t skeleton)
 SN_API float sn_anim_animation_duration(int32_t animation)
 {
 	AnimationAsset *asset = Lookup<AnimationAsset>(animation, "animation");
+	if (asset != nullptr && asset->mRetarget != nullptr)
+	{
+		AnimationAsset *source = GetTable<AnimationAsset>().Get(asset->mRetarget->mSourceAnimation);
+		return source != nullptr ? source->mAnimation.duration() : -1.0f;
+	}
 	return asset != nullptr ? asset->mAnimation.duration() : -1.0f;
 }
 
@@ -578,6 +752,67 @@ SN_API int32_t sn_anim_evaluate_batch(const sn_anim_op *ops, sn_anim_evaluate_re
 	if (DebugEnabled())
 		sn_debug_set_counter("animation.instances", count);
 	return RunBatch(requests, count, "animation evaluation", [ops](const sn_anim_evaluate_request &inRequest) { return Evaluate(ops, inRequest); });
+}
+
+SN_API int32_t sn_anim_retarget(int32_t source_animation, int32_t source_skeleton, int32_t target_skeleton, const int32_t *source_of_target,
+	int32_t target_hips, int32_t source_hips)
+{
+	AnimationAsset *source = Lookup<AnimationAsset>(source_animation, "animation");
+	SkeletonAsset *from = Lookup<SkeletonAsset>(source_skeleton, "skeleton");
+	SkeletonAsset *to = Lookup<SkeletonAsset>(target_skeleton, "skeleton");
+	if (source == nullptr || from == nullptr || to == nullptr)
+		return SN_ERROR_INVALID_HANDLE;
+	if (source->mRetarget != nullptr)
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "sn_anim_retarget: the source is itself retargeted");
+	if (source->mAnimation.num_tracks() != from->mSkeleton.num_joints())
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "sn_anim_retarget: the source animation is not for the source skeleton");
+	if (source_of_target == nullptr)
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "sn_anim_retarget: source_of_target is required");
+	int sources = from->mSkeleton.num_joints(), targets = to->mSkeleton.num_joints();
+	for (int j = 0; j < targets; ++j)
+		if (source_of_target[j] < -1 || source_of_target[j] >= sources)
+			return SetLastError(SN_ERROR_INVALID_ARGUMENT, "sn_anim_retarget: target joint " + std::to_string(j) + " maps to source joint " + std::to_string(source_of_target[j]) + " (the source has " + std::to_string(sources) + ")");
+	if (target_hips >= targets || source_hips >= sources || (target_hips < 0) != (source_hips < 0))
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "sn_anim_retarget: hips must be both given (in range) or both -1");
+
+	auto retarget = std::make_unique<Retarget>();
+	retarget->mSourceAnimation = source_animation;
+	retarget->mSourceSkeleton = source_skeleton;
+	retarget->mTargetSkeleton = target_skeleton;
+	retarget->mSourceOf.assign(source_of_target, source_of_target + targets);
+	ozz::vector<ozz::math::Float4x4> sourceRest = RestModels(from->mSkeleton), targetRest = RestModels(to->mSkeleton);
+	retarget->mCorrection.resize(size_t(targets));
+	for (int j = 0; j < targets; ++j)
+	{
+		float targetRotation[4], sourceRotation[4] = { 0, 0, 0, 1 }, inverse[4];
+		Decompose(targetRest[size_t(j)], targetRotation, nullptr);
+		if (source_of_target[j] >= 0)
+			Decompose(sourceRest[size_t(source_of_target[j])], sourceRotation, nullptr);
+		Conjugate(sourceRotation, inverse);
+		Multiply(targetRotation, inverse, retarget->mCorrection[size_t(j)].data());
+	}
+	// 目标的静止局部姿势逐关节拆出来
+	retarget->mTargetRest.resize(size_t(targets));
+	Joint lanes[4];
+	for (int soa = 0; soa < to->mSkeleton.num_soa_joints(); ++soa)
+	{
+		Unpack(to->mSkeleton.joint_rest_poses()[size_t(soa)], lanes);
+		for (int lane = 0; lane < 4 && soa * 4 + lane < targets; ++lane)
+			retarget->mTargetRest[size_t(soa * 4 + lane)] = lanes[lane];
+	}
+	if (target_hips >= 0)
+	{
+		float rotation[4];
+		Decompose(sourceRest[size_t(source_hips)], rotation, retarget->mSourceHipsRest);
+		Decompose(targetRest[size_t(target_hips)], rotation, retarget->mTargetHipsRest);
+		retarget->mTargetHips = target_hips;
+		retarget->mSourceHips = source_hips;
+		retarget->mHipsScale = std::abs(retarget->mSourceHipsRest[1]) > 1e-6f ? retarget->mTargetHipsRest[1] / retarget->mSourceHipsRest[1] : 1.0f;
+	}
+	auto asset = std::make_unique<AnimationAsset>();
+	asset->mRetarget = std::move(retarget);
+	int32_t handle = GetTable<AnimationAsset>().Add(std::move(asset));
+	return handle;
 }
 
 SN_API int32_t sn_anim_mask_create(const float *weights, uint32_t joint_count)

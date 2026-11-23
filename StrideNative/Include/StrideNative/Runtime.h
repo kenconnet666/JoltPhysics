@@ -253,6 +253,16 @@ enum
 	SN_ANIM_ADD_MASKED = 6,			///< like ADD with a mask (an additive layer on the upper body)
 };
 
+/// Retargets a clip made for source_skeleton onto target_skeleton: returns a new animation handle that
+/// SN_ANIM_PUSH samples on instances of target_skeleton (same duration). source_of_target has one entry per
+/// target joint, the source joint it copies (-1: keeps the target's rest pose relative to its parent).
+/// Each mapped joint turns, in model space, by as much as its source joint turned from the source rest pose
+/// (rest poses should be alike: both T-pose or both A-pose). The hips (target_hips, from source_hips) also
+/// move, by the source hips' model-space movement scaled by the ratio of the two hips' rest heights;
+/// -1 keeps the target's rest translations everywhere (in-place animation).
+SN_API int32_t sn_anim_retarget(int32_t source_animation, int32_t source_skeleton, int32_t target_skeleton, const int32_t *source_of_target,
+	int32_t target_hips, int32_t source_hips);
+
 /// A mask: one weight (0..1) per skeleton joint, for the masked blends (upper-body layers).
 SN_API int32_t sn_anim_mask_create(const float *weights, uint32_t joint_count);
 SN_API void sn_anim_mask_destroy(int32_t mask);

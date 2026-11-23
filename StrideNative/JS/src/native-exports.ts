@@ -60,6 +60,17 @@ export interface NativeExports {
 	_sn_anim_mask_create(weights: number, jointCount: number): number;
 	/** C: Runtime.h */
 	_sn_anim_mask_destroy(mask: number): void;
+	/**
+	 * Retargets a clip made for source_skeleton onto target_skeleton: returns a new animation handle that
+	 * SN_ANIM_PUSH samples on instances of target_skeleton (same duration). source_of_target has one entry per
+	 * target joint, the source joint it copies (-1: keeps the target's rest pose relative to its parent).
+	 * Each mapped joint turns, in model space, by as much as its source joint turned from the source rest pose
+	 * (rest poses should be alike: both T-pose or both A-pose). The hips (target_hips, from source_hips) also
+	 * move, by the source hips' model-space movement scaled by the ratio of the two hips' rest heights;
+	 * -1 keeps the target's rest translations everywhere (in-place animation).
+	 * C: Runtime.h
+	 */
+	_sn_anim_retarget(sourceAnimation: number, sourceSkeleton: number, targetSkeleton: number, sourceOfTarget: number, targetHips: number, sourceHips: number): number;
 	/** C: Runtime.h */
 	_sn_anim_skeleton_joint_count(skeleton: number): number;
 	/**
@@ -891,6 +902,7 @@ export const POINTER_SIGNATURES: Readonly<Record<string, string>> = {
 	sn_anim_load_animation: '_p_',
 	sn_anim_load_skeleton: '_p_',
 	sn_anim_mask_create: '_p_',
+	sn_anim_retarget: '____p__',
 	sn_anim_skin_batch: '_p_',
 	sn_anim_skin_create: '_pp_',
 	sn_bvh_build_boxes: '_p_',
@@ -1128,6 +1140,7 @@ export type RuntimeExport =
 	| 'sn_anim_instance_create'
 	| 'sn_anim_instance_destroy'
 	| 'sn_anim_instance_model_matrices'
+	| 'sn_anim_retarget'
 	| 'sn_anim_mask_create'
 	| 'sn_anim_mask_destroy'
 	| 'sn_anim_evaluate_batch'

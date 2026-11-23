@@ -1432,6 +1432,54 @@ describe('stride-native and stride-tools', () => {
 		assert.throws(() => instance.setIk([{ type: 'twoBone', joints: [1, 2, 9], target: [0, 0, 0] }]), /out of range/);
 	});
 
+	it('retargets a clip onto another skeleton (different proportions, names, rest rotations; hips move scaled)', () => {
+		const s = Math.SQRT1_2;
+		// 源：髋高 1，大腿根、膝往下各 0.5；剪辑在 1 秒时大腿绕 x 转 -90°（往前抬平），髋往前（+z）挪 1
+		const sourceSkeleton = native.loadSkeleton(tools.buildSkeleton([
+			{ parent: -1, translation: [0, 1, 0], name: 'hips' },
+			{ parent: 0, translation: [0.1, 0, 0], name: 'thigh' },
+			{ parent: 1, translation: [0, -0.5, 0], name: 'knee' },
+		]));
+		const clip = native.loadAnimation(tools.buildAnimation(1, [
+			{ translations: [[0, 0, 1, 0], [1, 0, 1, 1]], rotations: [[0, 0, 0, 0, 1]], scales: [[0, 1, 1, 1]] },
+			{ translations: [[0, 0.1, 0, 0]], rotations: [[0, 0, 0, 0, 1], [1, -s, 0, 0, s]], scales: [[0, 1, 1, 1]] },
+			{ translations: [[0, 0, -0.5, 0]], rotations: [[0, 0, 0, 0, 1]], scales: [[0, 1, 1, 1]] },
+		]));
+		// 目标：高一倍；根上多一个不对应的节点，大腿的静止局部旋转绕 y 转了 90°（骨头还是往下），膝下多一根不对应的脚
+		const targetSkeleton = native.loadSkeleton(tools.buildSkeleton([
+			{ parent: -1, name: 'root' },
+			{ parent: 0, translation: [0, 2, 0], name: 'pelvis' },
+			{ parent: 1, translation: [0.2, 0, 0], rotation: [0, s, 0, s], name: 'upperLeg' },
+			{ parent: 2, translation: [0, -1, 0], name: 'lowerLeg' },
+			{ parent: 3, translation: [0, -1, 0], name: 'foot' },
+		]));
+		const retargeted = native.retargetAnimation(clip, sourceSkeleton, targetSkeleton, [-1, 0, 1, 2, -1], 1, 0);
+		assert.equal(retargeted.duration, 1);
+		const instance = targetSkeleton.createInstance();
+		using batch = new AnimationBatch(native);
+		const at = (time) => {
+			batch.clear().instance(instance).push(retargeted, time);
+			batch.evaluate();
+			const m = instance.modelMatrices();
+			return (joint) => [m[joint * 16 + 12], m[joint * 16 + 13], m[joint * 16 + 14]].map((v) => +v.toFixed(3));
+		};
+		// 0 秒：静止姿势
+		let pos = at(0);
+		assert.deepEqual(pos(1), [0, 2, 0]);
+		assert.deepEqual(pos(3), [0.2, 1, 0]);
+		// 1 秒：髋往前挪 2（髋高之比），腿往前抬平：膝在髋前 1 米、脚在 2 米
+		pos = at(1);
+		assert.deepEqual(pos(1), [0, 2, 2]);
+		assert.deepEqual(pos(3), [0.2, 2, 3]);
+		assert.deepEqual(pos(4), [0.2, 2, 4]);
+		assert.throws(() => native.retargetAnimation(clip, sourceSkeleton, targetSkeleton, [-1, 0, 1, 2]), /4 entries for 5 target joints/);
+		assert.throws(() => native.retargetAnimation(clip, sourceSkeleton, targetSkeleton, [-1, 0, 1, 9, -1]), /maps to source joint 9/);
+		// 在别的骨架的实例上压：报错
+		const other = sourceSkeleton.createInstance();
+		batch.clear().instance(other).push(retargeted, 0);
+		assert.throws(() => batch.evaluate());
+	});
+
 	it('builds ozz assets (tools) and samples characters in parallel (runtime)', () => {
 		const skeletonBytes = tools.buildSkeleton([
 			{ parent: -1, name: 'root' },
