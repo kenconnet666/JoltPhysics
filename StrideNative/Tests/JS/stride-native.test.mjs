@@ -59,20 +59,6 @@ function encodePng(width, height, rgba) {
 	return new Uint8Array(Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', header), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]));
 }
 
-/** 读压缩的宽 BVH 节点（布局见 Runtime.h）：第 n 个节点第 i 个孩子的盒子（解量化）、图元数、孩子的下标。 */
-function wideNodes(nodes) {
-	const floats = new Float32Array(nodes.buffer, nodes.byteOffset, nodes.length);
-	const byte = (word, i) => (word >>> (i * 8)) & 0xff;
-	return {
-		box: (n, i) => [0, 1, 2, 3, 4, 5].map((k) => {
-			const axis = k % 3, scale = 2 ** (byte(nodes[n * 16 + 3], axis) - 127);
-			return floats[n * 16 + axis] + byte(nodes[n * 16 + 4 + k], i) * scale;
-		}),
-		count: (n, i) => byte(nodes[n * 16 + 10], i),
-		child: (n, i) => nodes[n * 16 + 12 + i],
-	};
-}
-
 describe('stride-native and stride-tools', () => {
 	let native, tools;
 
@@ -770,36 +756,29 @@ describe('stride-native and stride-tools', () => {
 			}
 		}
 		const { nodes, triangles, nodeCount } = await native.buildTriangleBvh(positions, indices);
-		assert.equal(nodes.length, nodeCount * 16);
-		// 压缩的宽节点：原点、缩放（2 的指数加 127）、4 个孩子的盒子各 8 位的格数（最小 xyz、最大 xyz）、图元数（255 空着）、孩子
-		const { box, count: countOf, child: childOf } = wideNodes(nodes);
+		const floats = new Float32Array(nodes.buffer, nodes.byteOffset, nodes.length);
+		assert.equal(nodes.length, nodeCount * 32);
+		// 宽节点：4 个孩子的盒子按分量排（最小 xyz、最大 xyz 各 4 个），孩子、图元数；空的孩子盒子是反的
+		const box = (n, i) => [0, 1, 2, 3, 4, 5].map((k) => floats[n * 32 + k * 4 + i]);
 		const seen = new Set();
 		let reached = 1;
 		for (let n = 0; n < nodeCount; n++) {
 			for (let i = 0; i < 4; i++) {
-				const leafCount = countOf(n, i);
-				if (leafCount === 255) continue;
 				const [x0, y0, z0, x1, y1, z1] = box(n, i);
-				const child = childOf(n, i);
+				if (x0 > x1) continue;
+				const child = nodes[n * 32 + 24 + i], leafCount = nodes[n * 32 + 28 + i];
 				if (leafCount === 0) {
-					// 子节点的孩子都在这个盒子里：两层各按自己的格子向外取整，允许探出两格（缩放取 2 的整数次幂，一格最多是范围的 2/255）；遍历只要求叶子的盒子
-					// 盖住三角形（下面查）
+					// 子节点的孩子都在这个盒子里
 					reached++;
-					const slack = [x1 - x0, y1 - y0, z1 - z0].map((extent) => (2 * extent) / 255 + 1e-6);
 					for (let j = 0; j < 4; j++) {
-						if (countOf(child, j) === 255) continue;
 						const inner = box(child, j);
-						assert.ok(inner[0] >= x0 - slack[0] && inner[1] >= y0 - slack[1] && inner[2] >= z0 - slack[2] && inner[3] <= x1 + slack[0] && inner[4] <= y1 + slack[1] && inner[5] <= z1 + slack[2], `node ${n} child ${i} contains its children`);
+						if (inner[0] > inner[3]) continue;
+						assert.ok(inner[0] >= x0 && inner[1] >= y0 && inner[2] >= z0 && inner[3] <= x1 && inner[4] <= y1 && inner[5] <= z1, `node ${n} child ${i} contains its children`);
 					}
 					continue;
 				}
 				assert.ok(leafCount <= 4);
-				for (let t = child; t < child + leafCount; t++) {
-					seen.add(new Uint32Array(triangles.buffer, triangles.byteOffset)[t * 12 + 3]);
-					// 量化的盒子向外取整：盖住叶子里的三角形
-					const v = triangles.subarray(t * 12, t * 12 + 12), corners = [[v[0], v[1], v[2]], [v[0] + v[4], v[1] + v[5], v[2] + v[6]], [v[0] + v[8], v[1] + v[9], v[2] + v[10]]];
-					for (const p of corners) assert.ok(p[0] >= x0 && p[1] >= y0 && p[2] >= z0 && p[0] <= x1 && p[1] <= y1 && p[2] <= z1, `leaf box of node ${n} child ${i} covers triangle ${t}`);
-				}
+				for (let t = child; t < child + leafCount; t++) seen.add(new Uint32Array(triangles.buffer, triangles.byteOffset)[t * 12 + 3]);
 			}
 		}
 		assert.equal(seen.size, count);
@@ -828,9 +807,9 @@ describe('stride-native and stride-tools', () => {
 		assert.ok(reduced.triangleCount > 2 && reduced.triangleCount <= items * 12 + 2, `simplified to ${reduced.triangleCount}`);
 		assert.equal(reduced.triangles.length, reduced.triangleCount * 12);
 		// 根的 4 个孩子合起来还是盖住地板和商品
-		const root = wideNodes(reduced.nodes), boxes4 = [0, 1, 2, 3].filter((i) => root.count(0, i) !== 255).map((i) => root.box(0, i));
-		const span = (k, pick) => pick(...boxes4.map((b) => b[k]));
-		assert.ok(span(0, Math.min) <= 0 && span(3, Math.max) >= 10 && span(1, Math.min) <= -0.1 && span(4, Math.max) > 1, `still spans the floor and the items: ${JSON.stringify(boxes4)}`);
+		const root = new Float32Array(reduced.nodes.buffer, reduced.nodes.byteOffset, 32);
+		const span = (k, pick) => pick(...[0, 1, 2, 3].map((i) => root[k * 4 + i]).filter((v) => Math.abs(v) < 3e38));
+		assert.ok(span(0, Math.min) <= 0 && span(3, Math.max) >= 10 && span(1, Math.min) <= -0.1 && span(4, Math.max) > 1, `still spans the floor and the items: ${[...root.subarray(0, 24)]}`);
 		// 没超过上限的不动
 		assert.equal((await native.buildTriangleBvh(itemPositions, new Uint32Array(itemIndices), { maxTriangles: 100000 })).triangleCount, items * 24 + 2);
 		const boxes = new Float32Array([0, 0, 0, 1, 1, 1, 5, 0, 0, 6, 1, 1, 10, 0, 0, 11, 1, 1]);

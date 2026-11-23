@@ -195,8 +195,8 @@ export class StrideNative extends NativeModule<RuntimeExport> {
 	}
 
 	/**
-	 * 三角网格的 BVH（光追用，工作线程上建，按表面积启发式建二叉树再收成 4 叉）：nodes 每个节点 16 个 32 位（压缩过：原点、缩放、4 个孩子
-	 * 盒子的 8 位格数、图元数、孩子的下标；布局见 Runtime.h，GPU 上直接用），triangles 按叶子排好、每个 12 个 32 位
+	 * 三角网格的 BVH（光追用，工作线程上建，按表面积启发式建二叉树再收成 4 叉）：nodes 每个节点 32 个 32 位（4 个孩子的包围盒按
+	 * 分量排、孩子的下标、图元数，0 是内部节点；布局见 Runtime.h，GPU 上直接用），triangles 按叶子排好、每个 12 个 32 位
 	 * （v0、三角形下标、e1、0、e2、0）。maxTriangles 给了且三角形比它多时先简化（连通的小块按格子换成包围盒，见 Runtime.h）；
 	 * triangleCount 是实际用了几个三角形。
 	 */
