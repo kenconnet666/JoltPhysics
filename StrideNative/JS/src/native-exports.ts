@@ -214,6 +214,11 @@ export interface NativeExports {
 	 */
 	_sn_physics_add_constraint(world: number, constraint: number): number;
 	/**
+	 * 加一辆车，返回车的句柄（> 0）。车身被移除时车一起移除。轮子至少 2 个、个数是偶数。
+	 * C: Physics.h
+	 */
+	_sn_physics_add_vehicle(world: number, vehicle: number, wheels: number, wheelCount: number): number;
+	/**
 	 * 浮力（Jolt 的 ApplyBuoyancyImpulse）：水面是过 surface_position（世界坐标，双精度）、法线 surface_normal 的平面，按物体的形状
 	 * 算出水下的体积和浮心，加浮力和水的阻力（linear_drag、angular_drag），水按 fluid_velocity（米每秒）流；buoyancy 是浮力系数
 	 * （1 是中性，大于 1 浮起来），delta_time 是这一步的时长。每个物理步之前调。运动学物体忽略；*submerged 写 1（有部分在水下）或 0，
@@ -363,6 +368,11 @@ export interface NativeExports {
 	 */
 	_sn_physics_remove_constraint(world: number, constraint: number): number;
 	/**
+	 * 移除车（车身留着）；移除过的忽略。
+	 * C: Physics.h
+	 */
+	_sn_physics_remove_vehicle(world: number, vehicle: number): number;
+	/**
 	 * 运行中改重力（Stride 的 BepuSimulation.PoseGravity）；睡着的物体要被碰到或唤醒才受新的重力。
 	 * C: Physics.h
 	 */
@@ -384,6 +394,17 @@ export interface NativeExports {
 	 * C: Physics.h
 	 */
 	_sn_physics_step(world: number, deltaTime: number, collisionSteps: number): number;
+	/**
+	 * 驾驶的输入：forward -1..1（油门，负的是倒车）、right -1..1（转向）、brake 0..1、hand_brake 0..1。有输入时唤醒车身。
+	 * C: Physics.h
+	 */
+	_sn_physics_vehicle_input(world: number, vehicle: number, forward: number, right: number, brake: number, handBrake: number): number;
+	/**
+	 * 车的状态：out[0] 发动机转速、out[1] 挡位（负的是倒挡）、out[2] 沿车头方向的速度（米/秒）、out[3] 着地的轮子数；
+	 * 之后每个轮子 8 个数：相对车身的位置 xyz、旋转 xyzw（轮子模型的轮轴沿本地 X）、悬挂现在的长度。capacity 是 out 能放几个数。
+	 * C: Physics.h
+	 */
+	_sn_physics_vehicle_state(world: number, vehicle: number, out: number, capacity: number): number;
 	/**
 	 * 正在运行的核心的插件 ABI 版本。
 	 * C: Plugin.h
@@ -800,6 +821,7 @@ export const POINTER_SIGNATURES: Readonly<Record<string, string>> = {
 	sn_parallel_for: '___p',
 	sn_physics_add_bodies: '__p_p_p_p',
 	sn_physics_add_constraint: '__p',
+	sn_physics_add_vehicle: '__pp_',
 	sn_physics_body_apply_buoyancy: '___pp___p_p',
 	sn_physics_body_apply_impulse: '___pp',
 	sn_physics_body_set_rotation: '___p',
@@ -819,6 +841,7 @@ export const POINTER_SIGNATURES: Readonly<Record<string, string>> = {
 	sn_physics_set_gravity: '__p',
 	sn_physics_sphere_cast: '___pp___p',
 	sn_physics_static_triangles: '___p',
+	sn_physics_vehicle_state: '___p_',
 	sn_run_task: '_p_pp',
 	sn_set_last_error: '__p',
 	sn_task_add_output: 'pp_',
@@ -934,6 +957,10 @@ export type RuntimeExport =
 	| 'sn_physics_body_set_never_sleep'
 	| 'sn_physics_add_constraint'
 	| 'sn_physics_remove_constraint'
+	| 'sn_physics_add_vehicle'
+	| 'sn_physics_remove_vehicle'
+	| 'sn_physics_vehicle_input'
+	| 'sn_physics_vehicle_state'
 	| 'sn_physics_body_set_contact_events'
 	| 'sn_physics_body_set_sensor'
 	| 'sn_physics_contact_events'
