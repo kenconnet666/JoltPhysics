@@ -1634,12 +1634,14 @@ export class NavMesh extends NativeObject<StrideNative> {
 export class Crowd extends NativeObject<StrideNative> {
 	readonly maxAgents: number;
 	readonly #positions: Float32Array;
+	readonly #velocities: Float32Array;
 
 	/** @internal */
 	constructor(native: StrideNative, handle: number, maxAgents: number) {
 		super(native, handle);
 		this.maxAgents = maxAgents;
 		this.#positions = native.f32(native.module._sn_crowd_positions(handle), maxAgents * 3);
+		this.#velocities = native.f32(native.module._sn_crowd_velocities(handle), maxAgents * 3);
 	}
 
 	addAgent(position: Vec3, { radius = 0.5, height = 2, maxSpeed = 3.5, maxAcceleration = 8 }: AgentOptions = {}): AgentId {
@@ -1668,6 +1670,11 @@ export class Crowd extends NativeObject<StrideNative> {
 	 */
 	positions(): Float32Array {
 		return this.#positions;
+	}
+
+	/** 每个槽位的速度 xyz（空槽位是 0），同 positions：原生内存上的视图，update() 原地改写。 */
+	velocities(): Float32Array {
+		return this.#velocities;
 	}
 
 	protected override release(): void {

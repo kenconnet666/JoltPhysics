@@ -1271,8 +1271,14 @@ describe('stride-native and stride-tools', () => {
 		const positions = crowd.positions();
 		const agents = [-10, 0, 10].map((z) => crowd.addAgent([-20, 0, z]));
 		agents.forEach((agent, i) => crowd.requestMove(agent, [20, 0, (i - 1) * 10]));
-		for (let i = 0; i < 450; ++i)
+		// 走着的时候速度朝 +x（往目标），停下以后接近 0
+		for (let i = 0; i < 30; ++i)
 			crowd.update(1 / 30);
+		const velocities = crowd.velocities();
+		agents.forEach((agent) => assert.ok(velocities[agent * 3] > 1, `agent ${agent} walks toward +x: ${velocities[agent * 3]}`));
+		for (let i = 0; i < 420; ++i)
+			crowd.update(1 / 30);
+		agents.forEach((agent) => assert.ok(Math.hypot(velocities[agent * 3], velocities[agent * 3 + 2]) < 0.5, `agent ${agent} stopped`));
 		assert.equal(crowd.positions(), positions, 'the view is reused, update() rewrites it in place');
 		assert.ok(Number.isNaN(positions[15 * 3]), 'empty slots are NaN');
 		agents.forEach((agent) => assert.ok(Math.abs(positions[agent * 3] - 20) < 1, `agent ${agent} reached the target`));

@@ -129,6 +129,11 @@ export interface NativeExports {
 	 */
 	_sn_crowd_update(crowd: number, deltaTime: number): void;
 	/**
+	 * Velocities (xyz per agent slot, 0 for empty slots), kept like the positions buffer: which way each agent walks.
+	 * C: Navigation.h
+	 */
+	_sn_crowd_velocities(crowd: number): number;
+	/**
 	 * Adds one call that took `milliseconds` to a timing, e.g. "physics.step".
 	 * C: Debug.h
 	 */
@@ -910,6 +915,7 @@ export const POINTER_SIGNATURES: Readonly<Record<string, string>> = {
 	sn_crowd_add_agent: '__p____',
 	sn_crowd_positions: 'p_',
 	sn_crowd_request_move: '___p',
+	sn_crowd_velocities: 'p_',
 	sn_debug_add_timing: '_p_',
 	sn_debug_drain_log: 'p',
 	sn_debug_log: '__p',
@@ -1051,6 +1057,7 @@ export type RuntimeExport =
 	| 'sn_crowd_request_move'
 	| 'sn_crowd_update'
 	| 'sn_crowd_positions'
+	| 'sn_crowd_velocities'
 	| 'sn_physics_create'
 	| 'sn_physics_destroy'
 	| 'sn_physics_set_gravity'

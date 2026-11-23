@@ -46,6 +46,7 @@ namespace
 		dtCrowd *			mCrowd = nullptr;
 		int32_t				mNavMesh = 0;			///< The navmesh must outlive the crowd
 		std::vector<float>	mPositions;				///< xyz per agent slot, NaN when empty; sized once so callers can keep a view
+		std::vector<float>	mVelocities;			///< xyz per agent slot (0 when empty), like mPositions
 
 		~Crowd() { dtFreeCrowd(mCrowd); }
 
@@ -53,7 +54,10 @@ namespace
 		{
 			const dtCrowdAgent *agent = mCrowd->getAgent(inAgent);
 			for (int axis = 0; axis < 3; ++axis)
+			{
 				mPositions[inAgent * 3 + axis] = agent->active ? agent->npos[axis] : std::numeric_limits<float>::quiet_NaN();
+				mVelocities[inAgent * 3 + axis] = agent->active ? agent->vel[axis] : 0.0f;
+			}
 		}
 	};
 
@@ -180,6 +184,7 @@ SN_API int32_t sn_crowd_create(int32_t navmesh, uint32_t max_agents, float max_a
 	if (crowd->mCrowd == nullptr || !crowd->mCrowd->init(int(max_agents), max_agent_radius, nav->mNavMesh))
 		return SetLastError(SN_ERROR_FAILED, "dtCrowd::init failed");
 	crowd->mPositions.assign(size_t(max_agents) * 3, std::numeric_limits<float>::quiet_NaN());
+	crowd->mVelocities.assign(size_t(max_agents) * 3, 0.0f);
 	return GetTable<Crowd>().Add(std::move(crowd));
 }
 
@@ -247,6 +252,12 @@ SN_API void sn_crowd_update(int32_t crowd, float delta_time)
 	c->mCrowd->update(delta_time, nullptr);
 	for (int agent = 0; agent < c->mCrowd->getAgentCount(); ++agent)
 		c->WritePosition(agent);
+}
+
+SN_API const float *sn_crowd_velocities(int32_t crowd)
+{
+	Crowd *c = Lookup<Crowd>(crowd, "crowd");
+	return c != nullptr ? c->mVelocities.data() : nullptr;
 }
 
 SN_API const float *sn_crowd_positions(int32_t crowd)
