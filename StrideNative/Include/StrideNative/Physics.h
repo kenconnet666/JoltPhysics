@@ -305,7 +305,7 @@ typedef struct sn_soft_body
 	float compliance;				///< 边（拉伸）
 	float shear_compliance;			///< 剪切（四边形的对角线）
 	float bend_compliance;			///< 弯曲；负数是不加弯曲约束
-	uint32_t bend_type;				///< 1 距离（便宜），2 二面角（准，初始不共面也行）
+	uint32_t bend_type;				///< 1 距离（便宜、稳），2 二面角（准，初始不共面也行；被猛撞、迭代少时会把布拉爆）
 	uint32_t long_range;			///< 长程拉住（每个点离最近的固定点不超过静止时的距离，不伸长）：0 不加，1 直线距离，2 沿边的距离
 	float pressure;					///< 封闭的软体里气体的压力（n·R·T），0 没有；气球、球
 	float friction;

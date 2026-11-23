@@ -504,7 +504,7 @@ export interface SoftBodyDesc {
 	readonly shearCompliance?: number;
 	/** 弯曲的柔度；undefined 是不加弯曲约束。 */
 	readonly bendCompliance?: number;
-	/** 'distance' 便宜，'dihedral' 准（默认）。 */
+	/** 'distance'（默认）便宜、稳；'dihedral' 准（初始不共面也行），但被猛撞、迭代次数少时会把布拉爆。 */
 	readonly bendType?: 'distance' | 'dihedral';
 	/** 长程拉住：每个点离最近的固定点不超过静止时的距离（布料不被拉长）。 */
 	readonly longRange?: 'none' | 'euclidean' | 'geodesic';
@@ -695,7 +695,7 @@ export class PhysicsWorld extends NativeObject<StrideNative> {
 			floats[6] = desc.compliance ?? 0;
 			floats[7] = desc.shearCompliance ?? 0;
 			floats[8] = desc.bendCompliance ?? -1;
-			words[9] = desc.bendType === 'distance' ? 1 : 2;
+			words[9] = desc.bendType === 'dihedral' ? 2 : 1;
 			words[10] = desc.longRange === 'euclidean' ? 1 : desc.longRange === 'geodesic' ? 2 : 0;
 			floats[11] = desc.pressure ?? 0;
 			floats[12] = desc.friction ?? 0.2;
