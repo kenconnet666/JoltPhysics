@@ -24,11 +24,14 @@ typedef struct sn_transform_columns
 	uint32_t capacity;				///< 最大槽位号；各列都有 capacity + 1 项（含槽位 0）
 } sn_transform_columns;
 
-/// 创建能放 capacity 个槽位的变换存储，返回句柄。
+/// 创建变换存储，返回句柄。capacity 是一开始能放的槽位数；不够时分配会自动增长（翻倍，上限 2^31 - 2），增长以后各列换了新的内存，
+/// 要重新用 sn_transforms_columns 取（sn_transforms_generation 每增长一次加 1，用来判断要不要重取）。
 SN_API int32_t sn_transforms_create(uint32_t capacity);
 SN_API void sn_transforms_destroy(int32_t transforms);
 SN_API int32_t sn_transforms_columns(int32_t transforms, sn_transform_columns *out_columns);
-/// 分配 count 个槽位写进 out_slots：位置 0、旋转单位、缩放 1、没有父节点。返回 count；容量不够时什么都不分配。
+/// 存储增长过几次（出错时是负的错误码）。
+SN_API int32_t sn_transforms_generation(int32_t transforms);
+/// 分配 count 个槽位写进 out_slots：位置 0、旋转单位、缩放 1、没有父节点。返回 count；容量不够时先增长，到上限还不够才什么都不分配。
 SN_API int32_t sn_transforms_alloc(int32_t transforms, int32_t *out_slots, uint32_t count);
 /// 释放这些槽位。还有子节点留着的槽位不能释放（一起释放的子节点不算），这时什么都不释放。
 SN_API int32_t sn_transforms_free(int32_t transforms, const int32_t *slots, uint32_t count);

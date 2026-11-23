@@ -18,13 +18,19 @@ namespace StrideNative
 	class TransformStore
 	{
 	public:
+		/// 最多能有多少个槽位（槽位号是 int32）。
+		static constexpr uint32_t cMaxCapacity = INT32_MAX - 1;
+
+		/// inCapacity 是一开始能放的槽位数，不够时自动翻倍增长（上限 cMaxCapacity）。
 		explicit TransformStore(uint32_t inCapacity);
 
 		uint32_t Capacity() const { return mCapacity; }
+		/// 增长过几次：增长时各列换了新的内存，JS 那边拿着的视图要重新取（sn_transforms_columns）。
+		uint32_t Generation() const { return mGeneration; }
 		uint32_t SlotLimit() const { return mHighWater; }
 		bool IsAlive(int32_t inSlot) const { return inSlot > 0 && uint32_t(inSlot) <= mCapacity && mAlive[inSlot] != 0; }
 
-		/// 分配 inCount 个槽位；容量不够时什么都不做，返回 false。
+		/// 分配 inCount 个槽位；容量不够时先增长，到 cMaxCapacity 还不够才什么都不做、返回 false。
 		bool Allocate(int32_t *outSlots, uint32_t inCount);
 		/// 释放槽位；有留下的子节点时什么都不做，在 outError 里说明原因。
 		bool Free(const int32_t *inSlots, uint32_t inCount, std::string &outError);
@@ -76,7 +82,11 @@ namespace StrideNative
 		/// 记下槽位变了（这一轮还没记过才加进列表）
 		void					MarkChanged(int32_t inSlot);
 
+		/// 把各列增长到能放 inCapacity 个槽位（新的槽位由 Allocate 初始化）。
+		void					Grow(uint32_t inCapacity);
+
 		uint32_t				mCapacity;
+		uint32_t				mGeneration = 0;
 		std::vector<uint8_t>	mAlive;
 		std::vector<uint32_t>	mChildCount;
 		std::vector<int32_t>	mFreeSlots;			///< 释放过的槽位，后进先出地重用

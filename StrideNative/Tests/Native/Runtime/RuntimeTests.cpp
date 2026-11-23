@@ -829,7 +829,11 @@ TEST_CASE("变换：世界矩阵按层级传播，挂接和释放都做检查")
 	int32_t last = 0;
 	REQUIRE(sn_transforms_alloc(store, &last, 1) == 1);
 	CHECK(last == 4);
-	CHECK(sn_transforms_alloc(store, &last, 1) == SN_ERROR_FAILED);						// 容量用完
+	CHECK(sn_transforms_alloc(store, &last, 1) == 1);										// 容量用完：自动增长
+	CHECK(last == 5);
+	CHECK(sn_transforms_generation(store) == 1);
+	REQUIRE(sn_transforms_columns(store, &c) == SN_OK);									// 增长以后列换了新的内存，重新取
+	CHECK(c.capacity >= 8);
 
 	// 父节点和子节点一起释放可以，顺序不限
 	const int32_t subtree[] = { root, grandchild, child };

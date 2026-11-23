@@ -1016,28 +1016,37 @@ const COLUMNS_SIZE = 56;
  * GPUQueue.writeBuffer。物理世界绑定了槽位时，步进会把位姿写回这里。
  */
 export class TransformStore extends NativeObject<StrideNative> {
-	/** 最大槽位号；槽位是 1..capacity。 */
-	readonly capacity: number;
+	/** 现在最大的槽位号；槽位是 1..capacity。分配不够时自动翻倍增长（增长以后列都是新的视图，见 generation）。 */
+	capacity!: number;
+	/** 增长过几次：缓存了列（position 等）的地方，generation 变了要重新取。 */
+	generation = 0;
 	/** 本地位置（双精度：大世界几十公里外也不抖），position[slot * 3 + 0..2]。 */
-	readonly position: Float64Array;
+position!: Float64Array;
 	/** 本地旋转，单位四元数 xyzw，rotation[slot * 4 + 0..3]。 */
-	readonly rotation: Float32Array;
+rotation!: Float32Array;
 	/** 本地缩放，scale[slot * 3 + 0..2]。 */
-	readonly scale: Float32Array;
+scale!: Float32Array;
 	/** 父槽位，0 表示根。只能读：要改用 setParent，原生那边要维护子节点数和计算顺序。 */
-	readonly parent: Int32Array;
+parent!: Int32Array;
 	/** 世界矩阵（双精度），列主序 4x4，world[slot * 16 + 0..15]，平移在 12..14；update() 写入。 */
-	readonly world: Float64Array;
+world!: Float64Array;
 	/**
 	 * 渲染用的世界矩阵（单精度），平移减了渲染原点（setRenderOrigin）；和 world 一起写。GPU 和剔除用它：整段交给
 	 * GPUQueue.writeBuffer，远处的东西在相机附近也有足够的精度。
 	 */
-	readonly renderWorld: Float32Array;
+renderWorld!: Float32Array;
 	readonly #scratch: number;
 
 	/** @internal */
 	constructor(native: StrideNative, handle: number) {
 		super(native, handle);
+		this.#refresh();
+		this.#scratch = native.alloc(8);
+	}
+
+	/** 原生那边增长以后各列换了新的内存：重新取指针、重建视图。 */
+	#refresh(): void {
+		const native = this.native, handle = this[HANDLE];
 		const [position, rotation, scale, parent, world, renderWorld, capacity] = native.withScratch(COLUMNS_SIZE, (out) => {
 			native.check(native.module._sn_transforms_columns(handle, out), 'sn_transforms_columns');
 			return [0, 1, 2, 3, 4, 5].map((i) => native.readPointer(out + i * 8)).concat(native.u32(out + 48, 1)[0]!);
@@ -1050,24 +1059,32 @@ export class TransformStore extends NativeObject<StrideNative> {
 		this.parent = native.i32(parent, slots);
 		this.world = native.f64(world, slots * 16);
 		this.renderWorld = native.f32(renderWorld, slots * 16);
-		this.#scratch = native.alloc(8);
+		this.generation = native.check(native.module._sn_transforms_generation(handle), 'sn_transforms_generation');
 	}
 
-	/** 分配一个槽位：位置 0、旋转单位、缩放 1、没有父节点。容量不够时抛 NativeError。 */
+	/** 分配一个槽位：位置 0、旋转单位、缩放 1、没有父节点。容量不够时自动增长，到上限（2^31 - 2）还不够才抛 NativeError。 */
 	allocate(): TransformSlot;
-	/** 一次分配 count 个槽位；容量不够时一个都不分配。 */
+	/** 一次分配 count 个槽位；到上限还不够时一个都不分配。 */
 	allocate(count: number): TransformSlot[];
 	allocate(count?: number): TransformSlot | TransformSlot[] {
 		const n = this.native;
 		if (count === undefined) {
 			n.check(n.module._sn_transforms_alloc(this[HANDLE], this.#scratch, 1), 'sn_transforms_alloc');
+			this.#refreshIfGrown();
 			return n.i32(this.#scratch, 1)[0] as TransformSlot;
 		}
 		if (count === 0) return [];
-		return n.withScratch(count * 4, (out) => {
+		const slots = n.withScratch(count * 4, (out) => {
 			n.check(n.module._sn_transforms_alloc(this[HANDLE], out, count), 'sn_transforms_alloc');
 			return Array.from(n.i32(out, count)) as TransformSlot[];
 		});
+		this.#refreshIfGrown();
+		return slots;
+	}
+
+	#refreshIfGrown(): void {
+		const n = this.native;
+		if (n.check(n.module._sn_transforms_generation(this[HANDLE]), 'sn_transforms_generation') !== this.generation) this.#refresh();
 	}
 
 	/** 释放槽位。还有子节点留着的槽位不能释放（一起释放的子节点不算），这时一个都不释放。 */

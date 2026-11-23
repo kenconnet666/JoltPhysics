@@ -57,18 +57,40 @@ namespace StrideNative
 		mLinkMatrix(size_t(inCapacity + 1) * 16, 0.0f),
 		mChangedStamp(inCapacity + 1, 0)
 	{
-		for (uint32_t slot = 0; slot <= inCapacity; ++slot)
-		{
-			mRotation[slot * 4 + 3] = 1.0f;
-			StoreDMat44(DMat44::sIdentity(), &mWorld[slot * 16]);
-			Mat44::sIdentity().StoreFloat4x4(reinterpret_cast<Float4 *>(&mRenderWorld[slot * 16]));
-		}
+		// 只有槽位 0（"没有父节点"）要现成的单位矩阵；别的槽位在 Allocate 里初始化，这里不碰它们的内存
+		mRotation[3] = 1.0f;
+		StoreDMat44(DMat44::sIdentity(), &mWorld[0]);
+		Mat44::sIdentity().StoreFloat4x4(reinterpret_cast<Float4 *>(&mRenderWorld[0]));
+	}
+
+	void TransformStore::Grow(uint32_t inCapacity)
+	{
+		const size_t slots = size_t(inCapacity) + 1;
+		mPosition.resize(slots * 3);
+		mRotation.resize(slots * 4);
+		mScale.resize(slots * 3);
+		mParent.resize(slots);
+		mWorld.resize(slots * 16);
+		mRenderWorld.resize(slots * 16);
+		mAlive.resize(slots);
+		mChildCount.resize(slots);
+		mLinkSlot.resize(slots);
+		mLinkMatrix.resize(slots * 16);
+		mChangedStamp.resize(slots);
+		mCapacity = inCapacity;
+		++mGeneration;
 	}
 
 	bool TransformStore::Allocate(int32_t *outSlots, uint32_t inCount)
 	{
 		if (inCount > mFreeSlots.size() + (mCapacity - mHighWater))
-			return false;
+		{
+			// 增长到够用：至少翻倍（几十万个实体一个个建时，拷贝的总量是 O(n)）
+			uint64_t needed = uint64_t(mHighWater) + inCount - mFreeSlots.size();
+			if (needed > cMaxCapacity)
+				return false;
+			Grow(uint32_t(std::min<uint64_t>(std::max<uint64_t>(needed, uint64_t(mCapacity) * 2), cMaxCapacity)));
+		}
 		for (uint32_t i = 0; i < inCount; ++i)
 		{
 			int32_t slot;
@@ -457,6 +479,14 @@ SN_API int32_t sn_transforms_create(uint32_t capacity)
 SN_API void sn_transforms_destroy(int32_t transforms)
 {
 	GetTable<TransformStore>().Remove(transforms);
+}
+
+SN_API int32_t sn_transforms_generation(int32_t transforms)
+{
+	TransformStore *store = GetStore(transforms);
+	if (store == nullptr)
+		return SN_ERROR_INVALID_HANDLE;
+	return int32_t(store->Generation());
 }
 
 SN_API int32_t sn_transforms_columns(int32_t transforms, sn_transform_columns *out_columns)

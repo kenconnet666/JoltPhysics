@@ -463,7 +463,7 @@ export interface NativeExports {
 	 */
 	_sn_terrain_heights(terrain: number, x0: number, z0: number, spacing: number, countX: number, countZ: number): number;
 	/**
-	 * 分配 count 个槽位写进 out_slots：位置 0、旋转单位、缩放 1、没有父节点。返回 count；容量不够时什么都不分配。
+	 * 分配 count 个槽位写进 out_slots：位置 0、旋转单位、缩放 1、没有父节点。返回 count；容量不够时先增长，到上限还不够才什么都不分配。
 	 * C: Runtime.h
 	 */
 	_sn_transforms_alloc(transforms: number, outSlots: number, count: number): number;
@@ -477,7 +477,8 @@ export interface NativeExports {
 	/** C: Runtime.h */
 	_sn_transforms_columns(transforms: number, outColumns: number): number;
 	/**
-	 * 创建能放 capacity 个槽位的变换存储，返回句柄。
+	 * 创建变换存储，返回句柄。capacity 是一开始能放的槽位数；不够时分配会自动增长（翻倍，上限 2^31 - 2），增长以后各列换了新的内存，
+	 * 要重新用 sn_transforms_columns 取（sn_transforms_generation 每增长一次加 1，用来判断要不要重取）。
 	 * C: Runtime.h
 	 */
 	_sn_transforms_create(capacity: number): number;
@@ -497,6 +498,11 @@ export interface NativeExports {
 	 * C: Runtime.h
 	 */
 	_sn_transforms_free(transforms: number, slots: number, count: number): number;
+	/**
+	 * 存储增长过几次（出错时是负的错误码）。
+	 * C: Runtime.h
+	 */
+	_sn_transforms_generation(transforms: number): number;
 	/**
 	 * 链接（Stride 的 TransformLink，比如 ModelNodeLinkComponent 挂到骨骼节点）：slot 的世界矩阵改成
 	 * link_slot.world * matrix * T * R * S，不再看父节点（父子关系不变）。matrix 是列主序 4x4，拷进存储；每帧要变时再调一次。
@@ -949,6 +955,7 @@ export type RuntimeExport =
 	| 'sn_transforms_create'
 	| 'sn_transforms_destroy'
 	| 'sn_transforms_columns'
+	| 'sn_transforms_generation'
 	| 'sn_transforms_alloc'
 	| 'sn_transforms_free'
 	| 'sn_transforms_set_parent'

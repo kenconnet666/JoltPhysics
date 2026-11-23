@@ -736,7 +736,10 @@ describe('stride-native and stride-tools', () => {
 		assert.throws(() => transforms.setParent(parent, child), (error) => error instanceof NativeError && error.code === 'invalid-argument' && /descendant of itself/.test(error.message));
 		assert.throws(() => transforms.free(parent), /still has 1 child/);
 		assert.throws(() => native.createPhysicsWorld(2).addBox({ halfExtent: [1, 1, 1], transform: root }), /without a transform store/);
-		assert.throws(() => transforms.allocate(6), /capacity 8 reached/);
+		// 容量不够时自动增长，列换成新的视图
+		const before = transforms.generation;
+		assert.equal(transforms.allocate(6).length, 6);
+		assert.ok(transforms.generation > before && transforms.capacity >= 14);
 		assert.equal(transforms.allocate(5).length, 5);
 	});
 
