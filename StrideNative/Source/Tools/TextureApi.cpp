@@ -39,8 +39,10 @@ SN_API int32_t st_basis_encode(const uint8_t *rgba, uint32_t width, uint32_t hei
 			encoder_flags |= basisu::cFlagSRGB;
 		if ((flags & ST_BASIS_FLAG_MIPMAPS) != 0)
 			encoder_flags |= basisu::cFlagGenMipsClamp;
-		// No cFlagThreaded: the encoder's own pool would oversubscribe the cores the job system owns;
-		// textures are encoded in parallel as separate tasks instead.
+		// By default no cFlagThreaded: the encoder's own pool would oversubscribe the cores the job system owns;
+		// textures are encoded in parallel as separate tasks instead. A lone big texture opts in with ST_BASIS_FLAG_THREADED.
+		if ((flags & ST_BASIS_FLAG_THREADED) != 0)
+			encoder_flags |= basisu::cFlagThreaded;
 		basist::basis_tex_format format = mode == ST_BASIS_UASTC ? basist::basis_tex_format::cUASTC_LDR_4x4 : basist::basis_tex_format::cETC1S;
 
 		size_t size = 0;

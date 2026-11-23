@@ -173,6 +173,29 @@ describe('stride-native and stride-tools', () => {
 		}
 	});
 
+	it('updates a level with thousands of slots on several threads, same result as one by one', () => {
+		const roots = 20000;
+		using transforms = native.createTransforms(roots * 2);
+		const slots = transforms.allocate(roots * 2);
+		for (let i = 0; i < roots; i++) {
+			transforms.position[slots[i] * 3] = i;
+			transforms.position[slots[roots + i] * 3 + 1] = 1;
+			transforms.setParent(slots[roots + i], slots[i]);
+		}
+		transforms.update();
+		for (let i = 0; i < roots; i += 997) {
+			assert.equal(transforms.world[slots[i] * 16 + 12], i);
+			assert.equal(transforms.world[slots[roots + i] * 16 + 12], i);
+			assert.equal(transforms.world[slots[roots + i] * 16 + 13], 1);
+		}
+		assert.equal(transforms.changedSlots().length, roots * 2);
+		// 第二轮只动一个父节点：它和它的子节点变了，别的不报
+		transforms.position[slots[12345] * 3 + 2] = 5;
+		transforms.update();
+		assert.deepEqual([...transforms.changedSlots()].sort((a, b) => a - b), [slots[12345], slots[roots + 12345]].sort((a, b) => a - b));
+		assert.equal(transforms.world[slots[roots + 12345] * 16 + 14], 5);
+	});
+
 	it('steps physics on the shared job system', () => {
 		const world = native.createPhysicsWorld(64);
 		assert.equal(world.addBox({ position: [0, -1, 0], halfExtent: [50, 1, 50], motion: 'static' }), 0);

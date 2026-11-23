@@ -220,6 +220,8 @@ export interface BasisOptions {
 	mipmaps?: boolean;
 	quality?: number;
 	effort?: number;
+	/** 编码器自己开线程，默认开：量过（1K 贴图 19.6 → 3.9 秒；2K 单线程 76 秒），24 张 512² 并发时总耗时也更短（9.4 → 6.6 秒）。 */
+	threaded?: boolean;
 }
 
 export interface Glyph {
@@ -494,9 +496,9 @@ export class StrideTools extends NativeModule<ToolsExport> {
 	}
 
 	/** 把 RGBA8 像素编码成 KTX2 文件。 */
-	encodeBasis(rgba: Uint8Array, width: number, height: number, { mode = 'uastc', srgb = true, mipmaps = true, quality = 75, effort = 2 }: BasisOptions = {}): Promise<Uint8Array> {
+	encodeBasis(rgba: Uint8Array, width: number, height: number, { mode = 'uastc', srgb = true, mipmaps = true, quality = 75, effort = 2, threaded = true }: BasisOptions = {}): Promise<Uint8Array> {
 		const code = enumCode(BASIS_MODES, mode, 'BasisOptions.mode');
-		const flags = (srgb ? 1 : 0) | (mipmaps ? 2 : 0);
+		const flags = (srgb ? 1 : 0) | (mipmaps ? 2 : 0) | (threaded ? 4 : 0);
 		return this.withArraysAsync([rgba], (pixels) =>
 			this.awaitTask(this.module._st_basis_encode(pixels, width, height, code, flags, quality, effort), 'st_basis_encode',
 				(task) => task.output(Uint8Array, 0)));

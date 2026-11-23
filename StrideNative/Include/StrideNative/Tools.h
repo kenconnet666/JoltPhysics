@@ -204,6 +204,8 @@ enum
 {
 	ST_BASIS_FLAG_SRGB = 1,
 	ST_BASIS_FLAG_MIPMAPS = 2,
+	/// Let the encoder use its own thread pool (one big texture on an otherwise idle machine; with many textures in flight leave it off).
+	ST_BASIS_FLAG_THREADED = 4,
 };
 
 /// Decodes a PNG, JPEG, TGA, WebP or DDS file (the largest mip: BC1-BC5, BC7, 24/32-bit RGB) into RGBA8. data must stay alive until the task finishes.

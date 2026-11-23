@@ -66,7 +66,11 @@ namespace StrideNative
 		JPH::DMat44				ParentWorld(int32_t inSlot) const;
 		void					RebuildOrder();
 		/// 写世界矩阵：和原来的不一样才写，并记下这个槽位变了
-		void					StoreWorld(int32_t inSlot, JPH::DMat44Arg inWorld);
+		/// 返回是不是变了（没变不写，也不重算渲染用的那份）
+		bool					StoreWorld(int32_t inSlot, JPH::DMat44Arg inWorld);
+		/// 重算一个槽位的世界矩阵，变了就写并把槽位记进 ioChanged（每个槽位每轮只记一次）；只碰这个槽位自己的数据，
+		/// 同一层的槽位可以在几个线程里同时算，各用自己的 ioChanged
+		void					UpdateOne(int32_t inSlot, std::vector<int32_t> &ioChanged);
 		/// 由世界矩阵写渲染用的那份（平移减渲染原点）
 		void					StoreRenderWorld(int32_t inSlot);
 		/// 记下槽位变了（这一轮还没记过才加进列表）
@@ -81,6 +85,7 @@ namespace StrideNative
 		std::vector<int32_t>	mLinked;			///< 有链接的槽位（释放槽位时去掉指向它的链接）
 		uint32_t				mHighWater = 0;		///< 发出去过的最大槽位号
 		std::vector<int32_t>	mOrder;				///< 活着的槽位，父节点在前
+		std::vector<uint32_t>	mLevelEnd;			///< mOrder 里每个深度那一层的结束位置
 		std::vector<int32_t>	mDepth;				///< 以下三个是 RebuildOrder 的临时数据，留着重用
 		std::vector<int32_t>	mChain;
 		std::vector<uint32_t>	mBuckets;

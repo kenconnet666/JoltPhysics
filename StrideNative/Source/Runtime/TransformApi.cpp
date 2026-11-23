@@ -1,4 +1,5 @@
 // 变换存储和它的 C API。世界矩阵用 Jolt 的 DMat44（旋转缩放单精度、平移双精度）算，按父节点在前的顺序一遍算完。
+#include <Core/Core.h>
 #include <Core/Debug.h>
 #include <Core/HandleTable.h>
 #include <Runtime/Transforms.h>
@@ -6,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <mutex>
 
 using namespace JPH;
 
@@ -13,6 +15,9 @@ namespace StrideNative
 {
 	namespace
 	{
+		/// 一层里的槽位至少这么多才分块并行（再少的话调度的开销比算的还大）
+		constexpr uint32_t cParallelLevelSize = 8192;
+
 		/// 列主序的 4x4 双精度矩阵（JS 读的布局）和 DMat44 互换
 		void StoreDMat44(DMat44Arg inMatrix, double *outValues)
 		{
@@ -265,6 +270,8 @@ namespace StrideNative
 		for (int32_t slot = 1; slot <= int32_t(mHighWater); ++slot)
 			if (mAlive[slot] != 0)
 				mOrder[mBuckets[mDepth[slot]]++] = slot;
+		// 放完以后 mBuckets[d] 是第 d 层的结束位置（开始位置是上一层的结束位置）
+		mLevelEnd.assign(mBuckets.begin(), mBuckets.begin() + (max_depth + 1));
 		mOrderDirty = false;
 	}
 
@@ -305,22 +312,56 @@ namespace StrideNative
 	{
 		if (mOrderDirty)
 			RebuildOrder();
-		for (int32_t slot : mOrder)
-			StoreWorld(slot, EffectiveParent(slot) != 0 ? ParentWorld(slot) * LocalMatrix(slot) : LocalMatrix(slot));
+		// 一层一层算（父节点在上一层，已经算完）；一层里的槽位互不相干，层够大时分块并行
+		uint32_t begin = 0;
+		for (uint32_t end : mLevelEnd)
+		{
+			if (end - begin < cParallelLevelSize)
+			{
+				for (uint32_t i = begin; i < end; ++i)
+					UpdateOne(mOrder[i], mChanged);
+			}
+			else
+			{
+				std::mutex changed_mutex;
+				ParallelFor(end - begin, [&](uint32_t inBegin, uint32_t inEnd)
+				{
+					std::vector<int32_t> changed;
+					for (uint32_t i = begin + inBegin; i < begin + inEnd; ++i)
+						UpdateOne(mOrder[i], changed);
+					std::lock_guard lock(changed_mutex);
+					mChanged.insert(mChanged.end(), changed.begin(), changed.end());
+				});
+			}
+			begin = end;
+		}
 		// 这一轮变了的交出去，开始下一轮
 		mPublished.swap(mChanged);
 		mChanged.clear();
 		++mStamp;
 	}
 
-	void TransformStore::StoreWorld(int32_t inSlot, DMat44Arg inWorld)
+	void TransformStore::UpdateOne(int32_t inSlot, std::vector<int32_t> &ioChanged)
+	{
+		DMat44 world = EffectiveParent(inSlot) != 0 ? ParentWorld(inSlot) * LocalMatrix(inSlot) : LocalMatrix(inSlot);
+		if (!StoreWorld(inSlot, world))
+			return;
+		// 只碰自己槽位的去重标记，几个线程各算各的槽位时不冲突
+		if (mChangedStamp[inSlot] != mStamp)
+		{
+			mChangedStamp[inSlot] = mStamp;
+			ioChanged.push_back(inSlot);
+		}
+	}
+
+	bool TransformStore::StoreWorld(int32_t inSlot, DMat44Arg inWorld)
 	{
 		double *stored = &mWorld[inSlot * 16];
 		if (LoadDMat44(stored) == inWorld)
-			return;
+			return false;
 		StoreDMat44(inWorld, stored);
 		StoreRenderWorld(inSlot);
-		MarkChanged(inSlot);
+		return true;
 	}
 
 	void TransformStore::StoreRenderWorld(int32_t inSlot)
@@ -363,7 +404,7 @@ namespace StrideNative
 		for (int32_t slot = inSlot; slot != 0; slot = EffectiveParent(slot))
 			chain.push_back(slot);
 		for (auto it = chain.rbegin(); it != chain.rend(); ++it)
-			StoreWorld(*it, EffectiveParent(*it) != 0 ? ParentWorld(*it) * LocalMatrix(*it) : LocalMatrix(*it));
+			UpdateOne(*it, mChanged);
 	}
 
 	void TransformStore::SetWorldPose(int32_t inSlot, DVec3Arg inPosition, QuatArg inRotation)
