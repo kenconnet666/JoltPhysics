@@ -298,7 +298,8 @@ const BODY_CONTACT_EVENTS = 16;
 const BODY_TOUCHING_EVENTS = 32;
 const BODY_CONTINUOUS = 64;
 // sn_contact_event：type、body_a、body_b、depth（float）
-const CONTACT_EVENT_WORDS = 5;
+/** 一个接触事件 64 字节：类型、两个物体、深度、速度、留空，接触点（三个 double）、法线、留空。 */
+const CONTACT_EVENT_WORDS = 16;
 const CONTACT_TYPES = { 1: 'started', 2: 'stopped', 3: 'touching' } as const;
 // sn_constraint：type、body_a、body_b、offset_a[3]、offset_b[3]、axis_a[3]、axis_b[3]、basis_a[4]、basis_b[4]、minimum、maximum、
 // scale、target[4]、spring[2]、max_force
@@ -597,6 +598,10 @@ export interface ContactEvent {
 	readonly depth: number;
 	/** started 时两者在接触点上互相接近的速度（米/秒，碰撞求解之前的、沿接触法线）；别的是 0。撞得多狠（可破碎物体、撞击声）按它。 */
 	readonly speed: number;
+	/** started 时的接触点（几个接触点的平均，世界位置）；别的是 0。 */
+	readonly point: readonly [number, number, number];
+	/** started 时的接触法线（单位向量，从 self 指向 other）；别的是 0。 */
+	readonly normal: readonly [number, number, number];
 }
 
 /** 射线和扫掠的结果；查询传入一个对象时就地改写它，不分配内存。 */
@@ -861,12 +866,15 @@ export class PhysicsWorld extends NativeObject<StrideNative> {
 			if (count === 0) return [];
 			const words = n.i32(address, count * CONTACT_EVENT_WORDS);
 			const floats = n.f32(address, count * CONTACT_EVENT_WORDS);
+			const doubles = n.f64(address, count * CONTACT_EVENT_WORDS / 2);
 			return Array.from({ length: count }, (_, i) => ({
 				type: CONTACT_TYPES[words[i * CONTACT_EVENT_WORDS] as 1 | 2 | 3],
 				self: words[i * CONTACT_EVENT_WORDS + 1]! as BodyId,
 				other: words[i * CONTACT_EVENT_WORDS + 2]! as BodyId,
 				depth: floats[i * CONTACT_EVENT_WORDS + 3]!,
 				speed: floats[i * CONTACT_EVENT_WORDS + 4]!,
+				point: [doubles[i * 8 + 3]!, doubles[i * 8 + 4]!, doubles[i * 8 + 5]!] as [number, number, number],
+				normal: [floats[i * CONTACT_EVENT_WORDS + 12]!, floats[i * CONTACT_EVENT_WORDS + 13]!, floats[i * CONTACT_EVENT_WORDS + 14]!] as [number, number, number],
 			}));
 		});
 	}

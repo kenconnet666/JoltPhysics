@@ -348,6 +348,10 @@ typedef struct sn_contact_event
 	int32_t body_b;
 	float depth;					///< SN_CONTACT_TOUCHING 的穿透深度（米，正数是陷进去）；别的事件是 0
 	float speed;					///< SN_CONTACT_STARTED 时两者在接触点上互相接近的速度（米/秒，碰撞求解之前的，沿法线）；别的事件是 0
+	int32_t reserved;
+	double point[3];				///< SN_CONTACT_STARTED 时接触点（几个接触点的平均，世界位置）；别的事件是 0
+	float normal[3];				///< SN_CONTACT_STARTED 时接触的法线（单位向量，从 body_a 指向 body_b）；别的事件是 0
+	float reserved2;
 } sn_contact_event;
 
 /// 打开或关掉某个物体的接触事件：0 关掉，1 报开始和结束（SN_BODY_CONTACT_EVENTS），2 另外每步报正在接触的深度

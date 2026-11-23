@@ -533,7 +533,7 @@ describe('stride-native and stride-tools', () => {
 				seen.push(...world.contactEvents());
 			}
 			// 开始接触时带着碰撞前的接近速度：落进触发器时掉了 3.5 米、落地时掉了 7.5 米（√(2gh)，按步长差一点）
-			assert.deepEqual(seen.map(({ speed, ...event }) => event), [
+			assert.deepEqual(seen.map(({ speed, point, normal, ...event }) => event), [
 				{ type: 'started', self: trigger, other: box, depth: 0 },
 				{ type: 'stopped', self: trigger, other: box, depth: 0 },
 				{ type: 'started', self: ground, other: box, depth: 0 },
@@ -541,6 +541,10 @@ describe('stride-native and stride-tools', () => {
 			assert.ok(Math.abs(seen[0].speed - Math.sqrt(2 * 9.81 * 3.5)) < 0.4, `into the trigger at ${seen[0].speed} m/s`);
 			assert.equal(seen[1].speed, 0);
 			assert.ok(Math.abs(seen[2].speed - Math.sqrt(2 * 9.81 * 7.5)) < 0.4, `onto the ground at ${seen[2].speed} m/s`);
+			// 落地的接触点在地面上（y 约 0、在箱子底下），法线从地面指向箱子（朝上）
+			assert.ok(Math.abs(seen[2].point[1]) < 0.05 && Math.hypot(seen[2].point[0], seen[2].point[2]) < 0.75, `contact at ${seen[2].point}`);
+			assert.ok(seen[2].normal[1] > 0.99, `normal ${seen[2].normal}`);
+			assert.deepEqual(seen[1].point, [0, 0, 0]);
 			world.removeBodies([box, box]);
 			world.step(1 / 60);
 			assert.deepEqual(world.contactEvents(), []);

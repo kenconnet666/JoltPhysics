@@ -175,14 +175,18 @@ namespace
 		{
 			// 接近的速度：碰撞求解之前两个物体在接触点上沿法线（从 1 指向 2）相对的速度，取各接触点最大的（可破碎物体按它判断撞得多狠）
 			float speed = 0.0f;
-			for (uint i = 0; i < inManifold.mRelativeContactPointsOn1.size(); ++i)
+			RVec3 average = RVec3::sZero();
+			uint count = uint(inManifold.mRelativeContactPointsOn1.size());
+			for (uint i = 0; i < count; ++i)
 			{
 				RVec3 point = inManifold.GetWorldSpaceContactPointOn1(i);
 				speed = std::max(speed, (inBody1.GetPointVelocity(point) - inBody2.GetPointVelocity(point)).Dot(inManifold.mWorldSpaceNormal));
+				average += Vec3(point - inManifold.mBaseOffset);
 			}
+			average = count > 0 ? inManifold.mBaseOffset + Vec3(average) / float(count) : inManifold.mBaseOffset;
 			if (Breaks(int32_t(inBody1.GetUserData()), speed) || Breaks(int32_t(inBody2.GetUserData()), speed))
 				ioSettings.mIsSensor = true;
-			Update(int32_t(inBody1.GetUserData()), int32_t(inBody2.GetUserData()), SubShapes(inManifold.mSubShapeID1, inManifold.mSubShapeID2), true, speed);
+			Update(int32_t(inBody1.GetUserData()), int32_t(inBody2.GetUserData()), SubShapes(inManifold.mSubShapeID1, inManifold.mSubShapeID2), true, speed, average, inManifold.mWorldSpaceNormal);
 			RecordDepth(int32_t(inBody1.GetUserData()), int32_t(inBody2.GetUserData()), inManifold.mPenetrationDepth);
 		}
 
@@ -197,7 +201,7 @@ namespace
 			std::lock_guard lock(mMutex);
 			for (const auto &[key, depth] : mDepths)
 				if (mPairs.count(key) != 0)
-					mEvents.push_back({ SN_CONTACT_TOUCHING, int32_t(key >> 32), int32_t(key & 0xffffffffu), depth, 0.0f });
+					mEvents.push_back(Event(SN_CONTACT_TOUCHING, int32_t(key >> 32), int32_t(key & 0xffffffffu), depth));
 			mDepths.clear();
 		}
 
@@ -244,7 +248,7 @@ namespace
 						pair->second.erase(sub_shapes);
 					if (pair->second.empty())
 					{
-						mEvents.push_back({ SN_CONTACT_STOPPED, int32_t(key >> 32), int32_t(key & 0xffffffffu), 0.0f, 0.0f });
+						mEvents.push_back(Event(SN_CONTACT_STOPPED, int32_t(key >> 32), int32_t(key & 0xffffffffu)));
 						mPairs.erase(pair);
 					}
 				}
@@ -345,13 +349,36 @@ namespace
 			return inBody >= 0 && size_t(inBody) < mWanted.size() && mWanted[inBody] != 0;
 		}
 
-		void Update(int32_t inA, int32_t inB, uint64_t inSubShapes, bool inTouching, float inSpeed = 0.0f)
+		static sn_contact_event Event(int32_t inType, int32_t inA, int32_t inB, float inDepth = 0.0f)
+		{
+			sn_contact_event event {};
+			event.type = inType;
+			event.body_a = inA;
+			event.body_b = inB;
+			event.depth = inDepth;
+			return event;
+		}
+
+		static sn_contact_event Started(int32_t inA, int32_t inB, float inSpeed, RVec3Arg inPoint, Vec3Arg inNormal)
+		{
+			sn_contact_event event = Event(SN_CONTACT_STARTED, inA, inB);
+			event.speed = inSpeed;
+			event.point[0] = inPoint.GetX();
+			event.point[1] = inPoint.GetY();
+			event.point[2] = inPoint.GetZ();
+			inNormal.StoreFloat3(reinterpret_cast<Float3 *>(event.normal));
+			return event;
+		}
+
+		void Update(int32_t inA, int32_t inB, uint64_t inSubShapes, bool inTouching, float inSpeed = 0.0f, RVec3Arg inPoint = RVec3::sZero(), Vec3Arg inNormal = Vec3::sZero())
 		{
 			if (!Wanted(inA) && !Wanted(inB))
 				return;
 			// 报告的一方在前：打开事件的那个，都打开时编号小的；子形状对跟着换
 			int32_t a = inA;
 			uint64_t key = PairKey(inA, inB);
+			// 法线从报告的一方指向另一方：换了位置的跟着取反
+			Vec3 normal = inA != a ? -inNormal : inNormal;
 			if (inA != a)
 				inSubShapes = inSubShapes << 32 | inSubShapes >> 32;
 			std::lock_guard lock(mMutex);
@@ -362,7 +389,8 @@ namespace
 				for (auto event = mEvents.rbegin(); event != mEvents.rend(); ++event)
 					if (event->type == SN_CONTACT_STARTED && event->body_a == inA && event->body_b == inB)
 					{
-						event->speed = std::max(event->speed, inSpeed);
+						if (inSpeed > event->speed)
+							*event = Started(inA, inB, inSpeed, inPoint, normal);
 						break;
 					}
 			if (inTouching)
@@ -377,9 +405,9 @@ namespace
 					mSuspended.erase(suspended);
 			}
 			if (!before && !touching.empty())
-				mEvents.push_back({ SN_CONTACT_STARTED, inA, inB, 0.0f, inSpeed });
+				mEvents.push_back(Started(inA, inB, inSpeed, inPoint, normal));
 			else if (before && touching.empty())
-				mEvents.push_back({ SN_CONTACT_STOPPED, inA, inB, 0.0f, 0.0f });
+				mEvents.push_back(Event(SN_CONTACT_STOPPED, inA, inB));
 			if (touching.empty())
 				mPairs.erase(key);
 		}
