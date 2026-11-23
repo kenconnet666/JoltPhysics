@@ -593,11 +593,24 @@ describe('stride-native and stride-tools', () => {
 			assert.ok(farthest < Math.hypot(0.5, 1) * 1.03, `cloth stretched to ${farthest}`);
 			// 法线是单位向量
 			for (let v = 0; v < side * side; v++) assert.ok(Math.abs(Math.hypot(out[v * 8 + 3], out[v * 8 + 4], out[v * 8 + 5]) - 1) < 1e-4);
-			// 固定点按目标走：两个角往 +x 移 0.5 米，一步到
-			world.softBodyPin(cloth, Uint32Array.of(0, side - 1), Float64Array.of(0, 3, -0.5, 1, 3, -0.5), 1 / 60);
-			world.step(1 / 60);
+			// 固定点按目标走：两个角花半秒往 +x 移 0.5 米（每步设一次目标）
+			for (let i = 1; i <= 30; i++) {
+				const dx = (0.5 * i) / 30;
+				world.softBodyPin(cloth, Uint32Array.of(0, side - 1), Float64Array.of(-0.5 + dx, 3, -0.5, 0.5 + dx, 3, -0.5), 1 / 60);
+				world.step(1 / 60);
+			}
 			origin = world.softBodyVertices(cloth, out, 8);
 			assert.ok(Math.abs(at(0)[0]) < 0.01 && Math.abs(at(side - 1)[0] - 1) < 0.01, `pinned corners moved to ${at(0)} and ${at(side - 1)}`);
+			// 风从 +z 吹：一秒以后整块布往 +z 飘
+			const before = world.softBodyVertices(cloth, out, 8)[2] + out[(side * side - 6) * 8 + 2];
+			for (let i = 0; i < 60; i++) {
+				// 固定点的速度一直保持到下一次设：停在原地也要每步设（速度归零）
+				world.softBodyPin(cloth, Uint32Array.of(0, side - 1), Float64Array.of(0, 3, -0.5, 1, 3, -0.5), 1 / 60);
+				world.softBodyWind(cloth, [0, 0, 8], 0.6, 1 / 60);
+				world.step(1 / 60);
+			}
+			const after = world.softBodyVertices(cloth, out, 8)[2] + out[(side * side - 6) * 8 + 2];
+			assert.ok(after > before + 0.2, `wind blew the far edge from z = ${before} to ${after}`);
 			assert.throws(() => world.softBodyVertices(0 === cloth ? 1 : 0, out, 8), /does not exist|not a soft body/);
 			world.removeBodies([cloth]);
 			assert.throws(() => world.softBodyVertices(cloth, out, 8), /does not exist/);

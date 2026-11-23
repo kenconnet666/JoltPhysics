@@ -722,10 +722,22 @@ export class PhysicsWorld extends NativeObject<StrideNative> {
 		});
 	}
 
-	/** 固定点这一步走到哪：targets 每个顶点三个数（世界位置）；按 (目标 − 现在) / deltaTime 设速度，下一次步进正好走到。 */
+	/** 固定点这一步走到哪：targets 每个顶点三个数（世界位置）；按 (目标 − 现在) / deltaTime 设速度，下一次步进正好走到。速度一直保持到下一次设：跟着锚走的每步都要设（锚停了速度归零）。 */
 	softBodyPin(body: BodyId, vertices: Uint32Array, targets: Float64Array, deltaTime: number): void {
 		const n = this.native;
 		n.withArrays([vertices, targets], (v, t) => n.check(n.module._sn_physics_soft_body_pin(this[HANDLE], body, v, t, vertices.length, deltaTime), 'sn_physics_soft_body_pin'));
+	}
+
+	/**
+	 * 风吹这一步（每个物理步之前调）：每个面沿法线受 drag · 面积 · (n·v)|n·v| 的力，v 是风相对这个面的速度；drag 是 ½·空气密度·阻力系数
+	 * （约 0.6）。
+	 */
+	softBodyWind(body: BodyId, wind: readonly [number, number, number], drag: number, deltaTime: number): void {
+		const n = this.native;
+		n.withScratch(12, (address) => {
+			n.f32(address, 3).set(wind);
+			n.check(n.module._sn_physics_soft_body_wind(this[HANDLE], body, address, drag, deltaTime), 'sn_physics_soft_body_wind');
+		});
 	}
 
 	/** 移除车（车身留着）；移除过的忽略。 */

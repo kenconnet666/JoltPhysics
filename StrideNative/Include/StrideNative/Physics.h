@@ -323,8 +323,11 @@ SN_API int32_t sn_physics_add_soft_body(int32_t world, const sn_soft_body *desc,
 /// 软体的质心的世界位置（双精度）。stride 至少 6。
 SN_API int32_t sn_physics_soft_body_vertices(int32_t world, int32_t body, float *out, uint32_t stride, double *out_origin);
 /// 固定点这一步走到哪：vertices 是顶点下标，targets 每个三个 double（世界位置）；按 (目标 − 现在) / delta_time 设它们的速度，下一次步进
-/// 正好走到。只对固定点（逆质量 0）有用。
+/// 正好走到。速度一直保持到下一次设：跟着锚走的固定点每步都要设（锚停了就设成原地，速度归零）。只对固定点（逆质量 0）有用。
 SN_API int32_t sn_physics_soft_body_pin(int32_t world, int32_t body, const uint32_t *vertices, const double *targets, uint32_t count, float delta_time);
+/// 风吹这一步：每个面沿法线受 drag · 面积 · (n·v)|n·v| 的力（v 是风相对这个面的速度，drag 是 ½·空气密度·阻力系数，约 0.6），冲量平分给
+/// 三个角（固定点不动）。每个物理步之前调一次；风不是 0 时叫醒软体。
+SN_API int32_t sn_physics_soft_body_wind(int32_t world, int32_t body, const float *wind, float drag, float delta_time);
 
 // ---------------------------------------------------------------------------------------------
 // 接触事件（Stride 的 IContactHandler）

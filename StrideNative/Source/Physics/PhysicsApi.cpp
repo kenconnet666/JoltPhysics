@@ -2281,6 +2281,51 @@ SN_API int32_t sn_physics_soft_body_pin(int32_t world, int32_t body, const uint3
 	return SN_OK;
 }
 
+SN_API int32_t sn_physics_soft_body_wind(int32_t world, int32_t body, const float *wind, float drag, float delta_time)
+{
+	World *w = GetWorld(world);
+	if (w == nullptr)
+		return SN_ERROR_INVALID_HANDLE;
+	BodyRecord *record = GetBody(*w, body);
+	if (record == nullptr)
+		return SN_ERROR_INVALID_ARGUMENT;
+	if (wind == nullptr || !(delta_time > 0.0f) || !(drag >= 0.0f))
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "sn_physics_soft_body_wind: wind, a positive delta_time and a drag of 0 or more are required");
+	Vec3 air(wind[0], wind[1], wind[2]);
+	{
+		BodyLockWrite lock(w->mSystem.GetBodyLockInterface(), record->mID);
+		if (!lock.Succeeded())
+			return SetLastError(SN_ERROR_FAILED, "soft body is locked");
+		SoftBodyMotionProperties *motion = SoftBodyOf(lock.GetBody());
+		if (motion == nullptr)
+			return SN_ERROR_INVALID_ARGUMENT;
+		Array<SoftBodyVertex> &vertices = motion->GetVertices();
+		// 每个面受的力沿法线：F = drag · 面积 · (n·v)|n·v|，v 是风相对这个面（三个角的平均速度）的速度，平分给三个角。按 |n·v| 线性化
+		// 以后隐式地积（k / (1 + k)）：角的速度改变不超过相对风速，相对速度再大（布被猛拽）也不过冲、不发散
+		for (const SoftBodySharedSettings::Face &face : motion->GetFaces())
+		{
+			SoftBodyVertex &a = vertices[face.mVertex[0]], &b = vertices[face.mVertex[1]], &c = vertices[face.mVertex[2]];
+			Vec3 cross = (b.mPosition - a.mPosition).Cross(c.mPosition - a.mPosition);
+			float twice_area = cross.Length();
+			if (twice_area < 1e-12f)
+				continue;
+			Vec3 normal = cross / twice_area;
+			float along = normal.Dot(air - (a.mVelocity + b.mVelocity + c.mVelocity) / 3.0f);
+			if (!std::isfinite(along))
+				continue;
+			float strength = drag * 0.5f * twice_area * std::abs(along) * delta_time / 3.0f;
+			for (SoftBodyVertex *vertex : { &a, &b, &c })
+			{
+				float k = strength * vertex->mInvMass;
+				vertex->mVelocity += normal * (along * k / (1.0f + k));
+			}
+		}
+	}
+	if (air.LengthSq() > 0.0f)
+		w->mSystem.GetBodyInterface().ActivateBody(record->mID);
+	return SN_OK;
+}
+
 SN_API int32_t sn_physics_body_set_contact_events(int32_t world, int32_t body, int32_t enabled)
 {
 	World *w = GetWorld(world);
