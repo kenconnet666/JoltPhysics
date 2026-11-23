@@ -169,7 +169,14 @@ namespace
 
 		void OnContactAdded(const Body &inBody1, const Body &inBody2, const ContactManifold &inManifold, ContactSettings &) override
 		{
-			Update(int32_t(inBody1.GetUserData()), int32_t(inBody2.GetUserData()), SubShapes(inManifold.mSubShapeID1, inManifold.mSubShapeID2), true);
+			// 接近的速度：碰撞求解之前两个物体在接触点上沿法线（从 1 指向 2）相对的速度，取各接触点最大的（可破碎物体按它判断撞得多狠）
+			float speed = 0.0f;
+			for (uint i = 0; i < inManifold.mRelativeContactPointsOn1.size(); ++i)
+			{
+				RVec3 point = inManifold.GetWorldSpaceContactPointOn1(i);
+				speed = std::max(speed, (inBody1.GetPointVelocity(point) - inBody2.GetPointVelocity(point)).Dot(inManifold.mWorldSpaceNormal));
+			}
+			Update(int32_t(inBody1.GetUserData()), int32_t(inBody2.GetUserData()), SubShapes(inManifold.mSubShapeID1, inManifold.mSubShapeID2), true, speed);
 			RecordDepth(int32_t(inBody1.GetUserData()), int32_t(inBody2.GetUserData()), inManifold.mPenetrationDepth);
 		}
 
@@ -184,7 +191,7 @@ namespace
 			std::lock_guard lock(mMutex);
 			for (const auto &[key, depth] : mDepths)
 				if (mPairs.count(key) != 0)
-					mEvents.push_back({ SN_CONTACT_TOUCHING, int32_t(key >> 32), int32_t(key & 0xffffffffu), depth });
+					mEvents.push_back({ SN_CONTACT_TOUCHING, int32_t(key >> 32), int32_t(key & 0xffffffffu), depth, 0.0f });
 			mDepths.clear();
 		}
 
@@ -231,7 +238,7 @@ namespace
 						pair->second.erase(sub_shapes);
 					if (pair->second.empty())
 					{
-						mEvents.push_back({ SN_CONTACT_STOPPED, int32_t(key >> 32), int32_t(key & 0xffffffffu), 0.0f });
+						mEvents.push_back({ SN_CONTACT_STOPPED, int32_t(key >> 32), int32_t(key & 0xffffffffu), 0.0f, 0.0f });
 						mPairs.erase(pair);
 					}
 				}
@@ -327,7 +334,7 @@ namespace
 			return inBody >= 0 && size_t(inBody) < mWanted.size() && mWanted[inBody] != 0;
 		}
 
-		void Update(int32_t inA, int32_t inB, uint64_t inSubShapes, bool inTouching)
+		void Update(int32_t inA, int32_t inB, uint64_t inSubShapes, bool inTouching, float inSpeed = 0.0f)
 		{
 			if (!Wanted(inA) && !Wanted(inB))
 				return;
@@ -339,6 +346,14 @@ namespace
 			std::lock_guard lock(mMutex);
 			std::unordered_set<uint64_t> &touching = mPairs[key];
 			bool before = !touching.empty();
+			// 复合形状的几对子形状在同一步里先后加入：开始的事件记最快的那一对
+			if (before && inTouching && !mEvents.empty())
+				for (auto event = mEvents.rbegin(); event != mEvents.rend(); ++event)
+					if (event->type == SN_CONTACT_STARTED && event->body_a == inA && event->body_b == inB)
+					{
+						event->speed = std::max(event->speed, inSpeed);
+						break;
+					}
 			if (inTouching)
 				touching.insert(inSubShapes);
 			else
@@ -351,9 +366,9 @@ namespace
 					mSuspended.erase(suspended);
 			}
 			if (!before && !touching.empty())
-				mEvents.push_back({ SN_CONTACT_STARTED, inA, inB, 0.0f });
+				mEvents.push_back({ SN_CONTACT_STARTED, inA, inB, 0.0f, inSpeed });
 			else if (before && touching.empty())
-				mEvents.push_back({ SN_CONTACT_STOPPED, inA, inB, 0.0f });
+				mEvents.push_back({ SN_CONTACT_STOPPED, inA, inB, 0.0f, 0.0f });
 			if (touching.empty())
 				mPairs.erase(key);
 		}

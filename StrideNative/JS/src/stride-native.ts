@@ -298,7 +298,7 @@ const BODY_CONTACT_EVENTS = 16;
 const BODY_TOUCHING_EVENTS = 32;
 const BODY_CONTINUOUS = 64;
 // sn_contact_event：type、body_a、body_b、depth（float）
-const CONTACT_EVENT_WORDS = 4;
+const CONTACT_EVENT_WORDS = 5;
 const CONTACT_TYPES = { 1: 'started', 2: 'stopped', 3: 'touching' } as const;
 // sn_constraint：type、body_a、body_b、offset_a[3]、offset_b[3]、axis_a[3]、axis_b[3]、basis_a[4]、basis_b[4]、minimum、maximum、
 // scale、target[4]、spring[2]、max_force
@@ -557,6 +557,8 @@ export interface ContactEvent {
 	readonly other: BodyId;
 	/** touching 时这一步最深的穿透深度（米）；别的是 0。 */
 	readonly depth: number;
+	/** started 时两者在接触点上互相接近的速度（米/秒，碰撞求解之前的、沿接触法线）；别的是 0。撞得多狠（可破碎物体、撞击声）按它。 */
+	readonly speed: number;
 }
 
 /** 射线和扫掠的结果；查询传入一个对象时就地改写它，不分配内存。 */
@@ -758,6 +760,7 @@ export class PhysicsWorld extends NativeObject<StrideNative> {
 				self: words[i * CONTACT_EVENT_WORDS + 1]! as BodyId,
 				other: words[i * CONTACT_EVENT_WORDS + 2]! as BodyId,
 				depth: floats[i * CONTACT_EVENT_WORDS + 3]!,
+				speed: floats[i * CONTACT_EVENT_WORDS + 4]!,
 			}));
 		});
 	}

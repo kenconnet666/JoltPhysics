@@ -532,11 +532,15 @@ describe('stride-native and stride-tools', () => {
 				world.step(1 / 60);
 				seen.push(...world.contactEvents());
 			}
-			assert.deepEqual(seen, [
+			// 开始接触时带着碰撞前的接近速度：落进触发器时掉了 3.5 米、落地时掉了 7.5 米（√(2gh)，按步长差一点）
+			assert.deepEqual(seen.map(({ speed, ...event }) => event), [
 				{ type: 'started', self: trigger, other: box, depth: 0 },
 				{ type: 'stopped', self: trigger, other: box, depth: 0 },
 				{ type: 'started', self: ground, other: box, depth: 0 },
 			]);
+			assert.ok(Math.abs(seen[0].speed - Math.sqrt(2 * 9.81 * 3.5)) < 0.4, `into the trigger at ${seen[0].speed} m/s`);
+			assert.equal(seen[1].speed, 0);
+			assert.ok(Math.abs(seen[2].speed - Math.sqrt(2 * 9.81 * 7.5)) < 0.4, `onto the ground at ${seen[2].speed} m/s`);
 			world.removeBodies([box, box]);
 			world.step(1 / 60);
 			assert.deepEqual(world.contactEvents(), []);
