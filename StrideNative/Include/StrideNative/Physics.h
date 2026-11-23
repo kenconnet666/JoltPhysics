@@ -68,6 +68,7 @@ enum
 	SN_BODY_SENSOR = 8,				///< 只检测、不产生碰撞响应（Stride 的 Trigger，或 ContactEventHandler.NoContactResponse）
 	SN_BODY_CONTACT_EVENTS = 16,	///< 报告开始和结束接触（Stride 的 ContactEventHandler）
 	SN_BODY_TOUCHING_EVENTS = 32,	///< 另外每步报正在接触的深度（Stride 的 IContactHandler.OnTouching），含 SN_BODY_CONTACT_EVENTS
+	SN_BODY_CONTINUOUS = 64,		///< 连续碰撞检测：沿这一步的位移扫过去找碰撞，快的小东西不穿过薄墙（Stride 的 ContinuousDetectionMode.Continuous，Jolt 的 LinearCast）
 };
 
 /// 角色参数（Stride 的 CharacterComponent），SN_MOTION_CHARACTER 的物体用。

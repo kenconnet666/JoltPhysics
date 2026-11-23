@@ -296,6 +296,7 @@ const BODY_NEVER_SLEEP = 4;
 const BODY_SENSOR = 8;
 const BODY_CONTACT_EVENTS = 16;
 const BODY_TOUCHING_EVENTS = 32;
+const BODY_CONTINUOUS = 64;
 // sn_contact_event：type、body_a、body_b、depth（float）
 const CONTACT_EVENT_WORDS = 4;
 const CONTACT_TYPES = { 1: 'started', 2: 'stopped', 3: 'touching' } as const;
@@ -380,6 +381,8 @@ export interface BodyDesc {
 	sensor?: boolean;
 	/** 报告开始和结束接触（contactEvents()）；'touching' 时另外每步报正在接触的深度。 */
 	contactEvents?: boolean | 'touching';
+	/** 连续碰撞检测：沿这一步的位移扫过去找碰撞，快的小东西不穿过薄墙（Stride 的 ContinuousDetectionMode.Continuous），动态物体用。 */
+	continuous?: boolean;
 	/** motion 为 'character' 时用。 */
 	character?: CharacterSettings;
 }
@@ -990,7 +993,8 @@ function writeBody(floats: Float32Array, words: Uint32Array, doubles: Float64Arr
 	if (!Number.isInteger(layer) || layer < 0 || layer > 31) throw new RangeError(`body ${index}: layer must be an integer 0..31, got ${layer}`);
 	words[o] = motion;
 	words[o + 1] = (body.interpolated ? BODY_INTERPOLATED : 0) | (body.gravity === false ? BODY_NO_GRAVITY : 0) | (body.neverSleep ? BODY_NEVER_SLEEP : 0)
-		| (body.sensor ? BODY_SENSOR : 0) | (body.contactEvents === 'touching' ? BODY_TOUCHING_EVENTS : body.contactEvents ? BODY_CONTACT_EVENTS : 0);
+		| (body.sensor ? BODY_SENSOR : 0) | (body.contactEvents === 'touching' ? BODY_TOUCHING_EVENTS : body.contactEvents ? BODY_CONTACT_EVENTS : 0)
+		| (body.continuous ? BODY_CONTINUOUS : 0);
 	words[o + 2] = body.transform ?? 0;
 	const position = body.position ?? ORIGIN, rotation = body.rotation ?? IDENTITY;
 	doubles.set([position[0]!, position[1]!, position[2]!], o / 2 + 2);

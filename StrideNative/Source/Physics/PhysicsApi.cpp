@@ -1146,6 +1146,8 @@ SN_API int32_t sn_physics_add_bodies(int32_t world, const sn_body *bodies, uint3
 			settings.mGravityFactor = (body.flags & SN_BODY_NO_GRAVITY) != 0 ? 0.0f : 1.0f;
 			settings.mAllowSleeping = (body.flags & SN_BODY_NEVER_SLEEP) == 0;
 			settings.mIsSensor = (body.flags & SN_BODY_SENSOR) != 0;
+			if ((body.flags & SN_BODY_CONTINUOUS) != 0)
+				settings.mMotionQuality = EMotionQuality::LinearCast;
 			// BodyComponent 能在动态和运动学之间切换；质量照动态的算，切过去时用得上。只有一个网格形状的按封闭网格算质量
 			// （Bepu 的动态网格，Stride 的 MeshCollider），质心挪到网格的质心；复合形状里有网格的只能是静态
 			const sn_shape &first_shape = shapes[body.first_shape];

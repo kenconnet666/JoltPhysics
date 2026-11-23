@@ -370,6 +370,31 @@ describe('stride-native and stride-tools', () => {
 		}
 	});
 
+	it('sweeps continuous bodies so a fast small one does not pass through a thin wall', () => {
+		const world = native.createPhysicsWorld(8);
+		try {
+			// 1 厘米厚的墙，2 厘米的球每步走 1 米：离散的穿过去，连续的停在墙前
+			const [, discrete, continuous] = world.addBodies([
+				{ shapes: [{ type: 'box', size: [0.01, 4, 4] }], position: [0, 0, 0] },
+				{ motion: 'dynamic', shapes: [{ type: 'sphere', radius: 0.01 }], position: [-2.5, 0, -1], gravity: false },
+				{ motion: 'dynamic', shapes: [{ type: 'sphere', radius: 0.01 }], position: [-2.5, 0, 1], gravity: false, continuous: true },
+			]);
+			world.setVelocity(discrete, [60, 0, 0]);
+			world.setVelocity(continuous, [60, 0, 0]);
+			for (let i = 0; i < 30; i++) world.step(1 / 60);
+			// 穿过去的照旧往 +x 飞；挡住的速度没了（或者弹回来）
+			const vx = (body) => {
+				const linear = [0, 0, 0];
+				world.velocity(body, linear, [0, 0, 0]);
+				return linear[0];
+			};
+			assert.ok(vx(discrete) > 50, `the discrete sphere passes through (vx = ${vx(discrete)})`);
+			assert.ok(vx(continuous) < 10, `the continuous sphere is stopped by the wall (vx = ${vx(continuous)})`);
+		} finally {
+			world.destroy();
+		}
+	});
+
 	it('keeps contacts of sleeping bodies, and ends them when the body wakes up somewhere else', () => {
 		const world = native.createPhysicsWorld(8);
 		try {
