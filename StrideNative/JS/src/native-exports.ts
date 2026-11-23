@@ -216,12 +216,32 @@ export interface NativeExports {
 	 */
 	_sn_nav_build(vertices: number, vertexCount: number, triangles: number, triangleCount: number, config: number): number;
 	/**
+	 * 并行任务：按给的三角形（坐标和导航网格相同）建 tiles_xy 列出的块（每块 x、y 两个数），三角形要盖住块加边缘（agent_radius
+	 * 加 3 格）；结果 0 是建好的一批块的句柄，在游戏线程上 sn_nav_commit_tiles 换进去或 sn_nav_discard_tiles 丢掉。没有三角形的
+	 * 块换上时只去掉旧的。输入在任务完成前要一直有效。sn_nav_build 建的导航网格也能这样重建块，加载的不能（不知道设置）。
+	 * C: Navigation.h
+	 */
+	_sn_nav_build_tiles(navmesh: number, vertices: number, vertexCount: number, triangles: number, triangleCount: number, tilesXy: number, tileCount: number): number;
+	/**
+	 * 换上建好的一批块（同一位置的旧块去掉，人群会按新的多边形重新找路）；返回有可走区域的块数。
+	 * C: Navigation.h
+	 */
+	_sn_nav_commit_tiles(batch: number): number;
+	/**
+	 * 空的分块导航网格（大世界按块流式地建、哪里变了重建哪里）：块 (x, y) 覆盖 x、z 方向 [x, x+1)、[y, y+1) 乘
+	 * tile_size × cell_size 米，原点在 (0, 0, 0)；最多同时有 max_tiles 块（1..2^20）。
+	 * C: Navigation.h
+	 */
+	_sn_nav_create_tiled(config: number, maxTiles: number): number;
+	/**
 	 * Fills a config with the Recast demo defaults for a human-sized agent.
 	 * C: Navigation.h
 	 */
 	_sn_nav_default_config(outConfig: number): void;
 	/** C: Navigation.h */
 	_sn_nav_destroy(navmesh: number): void;
+	/** C: Navigation.h */
+	_sn_nav_discard_tiles(batch: number): void;
 	/**
 	 * Straight path between two points (corners written as xyz). Returns the corner count.
 	 * C: Navigation.h
@@ -233,10 +253,20 @@ export interface NativeExports {
 	 */
 	_sn_nav_load(data: number, size: number): number;
 	/**
+	 * 去掉列出的块（走远了），返回去掉了几块。
+	 * C: Navigation.h
+	 */
+	_sn_nav_remove_tiles(navmesh: number, tilesXy: number, tileCount: number): number;
+	/**
 	 * Serializes a navmesh. Result buffer is allocated with sn_alloc; the caller frees it.
 	 * C: Navigation.h
 	 */
 	_sn_nav_serialize(navmesh: number, outData: number, outSize: number): number;
+	/**
+	 * 现在有几块。
+	 * C: Navigation.h
+	 */
+	_sn_nav_tile_count(navmesh: number): number;
 	/**
 	 * sn_shutdown 时调用 fn(user)（后注册的先调用），插件在这里释放自己的对象。注册一直有效，跨多次 init/shutdown，
 	 * 所以只注册一次（比如第一次用到时）。
@@ -490,6 +520,11 @@ export interface NativeExports {
 	 */
 	_sn_physics_sphere_cast(world: number, radius: number, origin: number, direction: number, maxDistance: number, mask: number, flags: number, hit: number): number;
 	/**
+	 * 取走最多 capacity 个记下的包围盒（每个 min xyz、max xyz 六个数），返回取走的个数；等于 capacity 时可能还有，再取。
+	 * C: Physics.h
+	 */
+	_sn_physics_static_changes(world: number, outBoxes: number, capacity: number): number;
+	/**
 	 * 静态物体表面的三角形（导航网格的输入，同 Stride 的 RecastMeshSystem 收集静态碰撞体）：mask 的第 n 位为 1 表示层 n 的物体参与，
 	 * 传感器（触发器）不算。三角形按世界坐标连续写，每个 9 个 float，从外面看是逆时针（法线朝外）。各种形状（盒、球、网格、
 	 * 复合……）都按 Jolt 的三角化。*out_vertices 用 sn_alloc 分配，调用方 sn_free（没有三角形时是 null）。返回三角形个数。
@@ -497,10 +532,21 @@ export interface NativeExports {
 	 */
 	_sn_physics_static_triangles(world: number, mask: number, outVertices: number): number;
 	/**
+	 * 包围盒（世界坐标）里静态物体（不含触发器，层在 mask 里）的三角形，顶点相对 origin（双精度，远离原点时保住精度）；网格、高度场只给
+	 * 和盒子相交的三角形，凸形状给全部。返回三角形数，*out_vertices 用 sn_free 释放（没有三角形时是空）。
+	 * C: Physics.h
+	 */
+	_sn_physics_static_triangles_in_box(world: number, mask: number, boxMin: number, boxMax: number, origin: number, outVertices: number): number;
+	/**
 	 * 步进一个固定步长：先跑角色逻辑，再 Jolt 步进，再更新角色的支撑状态，最后写回位姿（插值的物体记下前后两步）。
 	 * C: Physics.h
 	 */
 	_sn_physics_step(world: number, deltaTime: number, collisionSteps: number): number;
+	/**
+	 * 开关静态物体的变化记录：开着时加上、移除静态物体（不含触发器）记下它的世界包围盒（导航重建盖到的块用），关掉时清空。
+	 * C: Physics.h
+	 */
+	_sn_physics_track_static_changes(world: number, enabled: number): number;
 	/**
 	 * 驾驶的输入：forward -1..1（油门，负的是倒车）、right -1..1（转向）、brake 0..1、hand_brake 0..1。有输入时唤醒车身。
 	 * C: Physics.h
@@ -934,9 +980,12 @@ export const POINTER_SIGNATURES: Readonly<Record<string, string>> = {
 	sn_meshopt_decode: '_p__p___',
 	sn_meshopt_decode_batch: '_p_',
 	sn_nav_build: '_p_p_p',
+	sn_nav_build_tiles: '__p_p_p_',
+	sn_nav_create_tiled: '_p_',
 	sn_nav_default_config: '_p',
 	sn_nav_find_path: '__pppp_',
 	sn_nav_load: '_p_',
+	sn_nav_remove_tiles: '__p_',
 	sn_nav_serialize: '__pp',
 	sn_on_shutdown: '_pp',
 	sn_parallel_for: '___p',
@@ -970,7 +1019,9 @@ export const POINTER_SIGNATURES: Readonly<Record<string, string>> = {
 	sn_physics_soft_body_vertices: '___p_p',
 	sn_physics_soft_body_wind: '___p__',
 	sn_physics_sphere_cast: '___pp___p',
+	sn_physics_static_changes: '__p_',
 	sn_physics_static_triangles: '___p',
+	sn_physics_static_triangles_in_box: '___pppp',
 	sn_physics_vehicle_state: '___p_',
 	sn_run_task: '_p_pp',
 	sn_set_last_error: '__p',
@@ -1055,6 +1106,12 @@ export type RuntimeExport =
 	| 'sn_nav_load'
 	| 'sn_nav_serialize'
 	| 'sn_nav_destroy'
+	| 'sn_nav_create_tiled'
+	| 'sn_nav_build_tiles'
+	| 'sn_nav_commit_tiles'
+	| 'sn_nav_discard_tiles'
+	| 'sn_nav_remove_tiles'
+	| 'sn_nav_tile_count'
 	| 'sn_nav_find_path'
 	| 'sn_crowd_create'
 	| 'sn_crowd_destroy'
@@ -1115,6 +1172,9 @@ export type RuntimeExport =
 	| 'sn_physics_sphere_cast'
 	| 'sn_physics_overlap'
 	| 'sn_physics_static_triangles'
+	| 'sn_physics_static_triangles_in_box'
+	| 'sn_physics_track_static_changes'
+	| 'sn_physics_static_changes'
 	| 'sn_plugin_abi_version'
 	| 'sn_set_last_error'
 	| 'sn_parallel_for'

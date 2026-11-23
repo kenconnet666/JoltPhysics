@@ -1287,6 +1287,80 @@ describe('stride-native and stride-tools', () => {
 		built.destroy();
 	});
 
+	it('streams tiles of a tiled navmesh and rebuilds the tiles whose static bodies changed', async () => {
+		const world = native.createPhysicsWorld(16);
+		const navMesh = native.createTiledNavMesh({ tileSize: 32, cellSize: 0.3 }, 64);
+		try {
+			world.trackStaticChanges(true);
+			// 一条 100 x 20 的走廊；块是 9.6 米见方
+			world.addBody({ shapes: [{ type: 'box', size: [100, 1, 20] }], position: [0, -0.5, 0] });
+			const changes = world.staticChanges();
+			assert.equal(changes.length, 6);
+			assert.ok(Math.abs(changes[0] + 50) < 0.1 && Math.abs(changes[3] - 50) < 0.1);
+			assert.equal(world.staticChanges().length, 0, 'taken');
+			const tileSize = 9.6, margin = 2;
+			const tilesOver = (x0, x1, z0, z1) => {
+				const tiles = [];
+				for (let y = Math.floor(z0 / tileSize); y <= Math.floor(z1 / tileSize); ++y)
+					for (let x = Math.floor(x0 / tileSize); x <= Math.floor(x1 / tileSize); ++x) tiles.push(x, y);
+				return new Int32Array(tiles);
+			};
+			const rebuild = async (tiles) => {
+				let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+				for (let i = 0; i < tiles.length; i += 2) {
+					minX = Math.min(minX, tiles[i]); maxX = Math.max(maxX, tiles[i]);
+					minY = Math.min(minY, tiles[i + 1]); maxY = Math.max(maxY, tiles[i + 1]);
+				}
+				const vertices = world.staticTrianglesInBox([minX * tileSize - margin, -100, minY * tileSize - margin], [(maxX + 1) * tileSize + margin, 100, (maxY + 1) * tileSize + margin], [0, 0, 0]);
+				const batch = await navMesh.buildTiles(vertices, Int32Array.from({ length: vertices.length / 3 }, (_, i) => i), tiles);
+				return batch.commit();
+			};
+			// 只建 x 在 -20..20 的块（6 列 4 行）：那里能寻路，40 米外没有导航网格。最外两行只盖到走廊边上 0.4 米，按人的半径收进去以后
+			// 没有可走的地方
+			const around = tilesOver(-20, 20, -10, 10);
+			assert.equal(around.length / 2, 24);
+			assert.equal(await rebuild(around), 12);
+			assert.equal(navMesh.tileCount, 12);
+			const across = () => navMesh.findPath([-15, 0, 0], [15, 0, 0]);
+			assert.ok(Math.abs(across().at(-3) - 15) < 0.5);
+			assert.throws(() => navMesh.findPath([-15, 0, 0], [40, 0, 0]), /not on the navmesh/);
+			// 人群在旧的块上走，换块以后照样走
+			const crowd = navMesh.createCrowd(4, 0.6);
+			const agent = crowd.addAgent([-15, 0, 0]);
+			crowd.requestMove(agent, [15, 0, 0]);
+			// 横穿走廊的墙：只重建它盖到的块，路断了（只到墙前）
+			const wall = world.addBody({ shapes: [{ type: 'box', size: [1, 3, 20] }], position: [0, 1.5, 0] });
+			const box = world.staticChanges();
+			const dirty = tilesOver(box[0], box[3], box[2], box[5]);
+			assert.equal(dirty.length / 2, 2 * 4, 'two tile columns (the wall straddles x = 0) by four rows');
+			await rebuild(dirty);
+			assert.ok(across().at(-3) < 0, 'the path stops at the wall');
+			for (let i = 0; i < 300; ++i) crowd.update(1 / 30);
+			assert.ok(crowd.positions()[agent * 3] < 0, 'the agent waits behind the wall');
+			world.removeBodies([wall]);
+			const removed = world.staticChanges();
+			await rebuild(tilesOver(removed[0], removed[3], removed[2], removed[5]));
+			assert.ok(Math.abs(across().at(-3) - 15) < 0.5, 'open again');
+			crowd.requestMove(agent, [15, 0, 0]);
+			for (let i = 0; i < 600; ++i) crowd.update(1 / 30);
+			assert.ok(Math.abs(crowd.positions()[agent * 3] - 15) < 1, `the agent walks through: ${crowd.positions()[agent * 3]}`);
+			crowd.destroy();
+			// 走远了：去掉西边的块，那边不能寻路了
+			const west = tilesOver(-20, -10, -10, 10);
+			assert.equal(navMesh.removeTiles(west), 4);
+			assert.equal(navMesh.tileCount, 8);
+			assert.throws(() => across(), /not on the navmesh/);
+			// 没建完就丢掉的批不改导航网格；没有三角形的块换上时去掉旧的
+			(await navMesh.buildTiles(new Float32Array(0), new Int32Array(0), tilesOver(0, 0, 0, 0))).destroy();
+			assert.equal(navMesh.tileCount, 8);
+			assert.equal((await navMesh.buildTiles(new Float32Array(0), new Int32Array(0), tilesOver(0, 0, 0, 0))).commit(), 0);
+			assert.equal(navMesh.tileCount, 7);
+		} finally {
+			navMesh.destroy();
+			world.destroy();
+		}
+	});
+
 	it('builds a navmesh at runtime from the static bodies of a physics world (Stride RecastMeshSystem)', async () => {
 		const world = native.createPhysicsWorld(16);
 		try {

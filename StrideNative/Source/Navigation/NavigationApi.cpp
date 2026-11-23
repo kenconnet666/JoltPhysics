@@ -33,6 +33,8 @@ namespace
 		dtNavMesh *			mNavMesh = nullptr;
 		dtNavMeshQuery *	mQuery = nullptr;		///< Not thread-safe: one per thread that queries
 		dtQueryFilter		mFilter;
+		bool				mHasConfig = false;		///< Built here (not loaded): tiles can be rebuilt with mConfig
+		sn_nav_config		mConfig {};
 
 		~NavMesh()
 		{
@@ -62,10 +64,22 @@ namespace
 		}
 	};
 
-	int32_t AddNavMesh(dtNavMesh *inNavMesh, std::string &outError)
+	/// Tiles built by sn_nav_build_tiles, waiting for sn_nav_commit_tiles on the game thread
+	struct TileBatch
+	{
+		int32_t								mNavMesh = 0;
+		std::shared_ptr<NavMeshBuilder>		mBuilder;
+	};
+
+	int32_t AddNavMesh(dtNavMesh *inNavMesh, const sn_nav_config *inConfig, std::string &outError)
 	{
 		auto nav = std::make_unique<NavMesh>();
 		nav->mNavMesh = inNavMesh;
+		if (inConfig != nullptr)
+		{
+			nav->mHasConfig = true;
+			nav->mConfig = *inConfig;
+		}
 		nav->mQuery = dtAllocNavMeshQuery();
 		if (nav->mQuery == nullptr || dtStatusFailed(nav->mQuery->init(inNavMesh, cMaxQueryNodes)))
 		{
@@ -87,17 +101,18 @@ SN_API int32_t sn_nav_build(const float *vertices, uint32_t vertex_count, const 
 	if (!builder->Prepare(vertices, vertex_count, triangles, triangle_count, *config, error))
 		return SetLastError(SN_ERROR_INVALID_ARGUMENT, error);
 
+	sn_nav_config config_copy = *config;
 	return RunParallelTask("NavMeshBuild", builder->GetTileCount(), [builder](Task &ioTask, uint32_t inTile)
 	{
 		std::string tile_error;
 		if (!builder->BuildTile(inTile, tile_error))
 			ioTask.Fail(tile_error);
 	},
-	[builder](Task &ioTask)
+	[builder, config_copy](Task &ioTask)
 	{
 		std::string create_error;
 		dtNavMesh *nav_mesh = builder->CreateNavMesh(create_error);
-		int32_t handle = nav_mesh != nullptr ? AddNavMesh(nav_mesh, create_error) : SN_ERROR_FAILED;
+		int32_t handle = nav_mesh != nullptr ? AddNavMesh(nav_mesh, &config_copy, create_error) : SN_ERROR_FAILED;
 		if (handle < 0)
 		{
 			ioTask.Fail(create_error);
@@ -116,8 +131,106 @@ SN_API int32_t sn_nav_load(const void *data, uint32_t size)
 	dtNavMesh *nav_mesh = DeserializeNavMesh(data, size, error);
 	if (nav_mesh == nullptr)
 		return SetLastError(SN_ERROR_FAILED, error);
-	int32_t handle = AddNavMesh(nav_mesh, error);
+	int32_t handle = AddNavMesh(nav_mesh, nullptr, error);
 	return handle < 0 ? SetLastError(handle, error) : handle;
+}
+
+SN_API int32_t sn_nav_create_tiled(const sn_nav_config *config, uint32_t max_tiles)
+{
+	SN_REQUIRE_INIT(SN_ERROR_NOT_INITIALIZED);
+	if (config == nullptr)
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "config is null");
+	std::string error;
+	dtNavMesh *nav_mesh = CreateTiledNavMesh(*config, max_tiles, error);
+	if (nav_mesh == nullptr)
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, error);
+	int32_t handle = AddNavMesh(nav_mesh, config, error);
+	return handle < 0 ? SetLastError(handle, error) : handle;
+}
+
+SN_API int32_t sn_nav_build_tiles(int32_t navmesh, const float *vertices, uint32_t vertex_count, const int32_t *triangles, uint32_t triangle_count, const int32_t *tiles_xy, uint32_t tile_count)
+{
+	NavMesh *nav = Lookup<NavMesh>(navmesh, "navmesh");
+	if (nav == nullptr)
+		return SN_ERROR_INVALID_HANDLE;
+	if (!nav->mHasConfig)
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "sn_nav_build_tiles: the navmesh was loaded, its build settings are unknown");
+
+	auto builder = std::make_shared<NavMeshBuilder>();
+	std::string error;
+	if (!builder->PrepareTiles(vertices, vertex_count, triangles, triangle_count, nav->mConfig, nav->mNavMesh->getParams()->orig, tiles_xy, tile_count, error))
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, error);
+	// 只建块的数据（各块并行）；换进导航网格在游戏线程上（sn_nav_commit_tiles），查询、人群不和它抢。批的句柄在全部建好后才有
+	// （失败时不留下没人取走的批）
+	return RunParallelTask("NavMeshBuildTiles", builder->GetTileCount(), [builder](Task &ioTask, uint32_t inTile)
+	{
+		std::string tile_error;
+		if (!builder->BuildTile(inTile, tile_error))
+			ioTask.Fail(tile_error);
+	},
+	[builder, navmesh](Task &ioTask)
+	{
+		auto batch = std::make_unique<TileBatch>();
+		batch->mNavMesh = navmesh;
+		batch->mBuilder = builder;
+		ioTask.SetResult(0, GetTable<TileBatch>().Add(std::move(batch)));
+		return true;
+	});
+}
+
+SN_API int32_t sn_nav_commit_tiles(int32_t batch)
+{
+	TileBatch *b = Lookup<TileBatch>(batch, "tile batch");
+	if (b == nullptr)
+		return SN_ERROR_INVALID_HANDLE;
+	NavMesh *nav = Lookup<NavMesh>(b->mNavMesh, "navmesh");
+	if (nav == nullptr)
+	{
+		GetTable<TileBatch>().Remove(batch);
+		return SN_ERROR_INVALID_HANDLE;
+	}
+	std::string error;
+	int with_data = b->mBuilder->ReplaceTiles(*nav->mNavMesh, error);
+	GetTable<TileBatch>().Remove(batch);
+	return with_data < 0 ? SetLastError(SN_ERROR_FAILED, error) : with_data;
+}
+
+SN_API void sn_nav_discard_tiles(int32_t batch)
+{
+	GetTable<TileBatch>().Remove(batch);
+}
+
+SN_API int32_t sn_nav_remove_tiles(int32_t navmesh, const int32_t *tiles_xy, uint32_t tile_count)
+{
+	NavMesh *nav = Lookup<NavMesh>(navmesh, "navmesh");
+	if (nav == nullptr)
+		return SN_ERROR_INVALID_HANDLE;
+	if (tiles_xy == nullptr && tile_count > 0)
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "sn_nav_remove_tiles: tiles_xy is required");
+	int32_t removed = 0;
+	for (uint32_t i = 0; i < tile_count; ++i)
+		if (dtTileRef tile = nav->mNavMesh->getTileRefAt(tiles_xy[i * 2], tiles_xy[i * 2 + 1], 0))
+		{
+			nav->mNavMesh->removeTile(tile, nullptr, nullptr);
+			++removed;
+		}
+	return removed;
+}
+
+SN_API int32_t sn_nav_tile_count(int32_t navmesh)
+{
+	NavMesh *nav = Lookup<NavMesh>(navmesh, "navmesh");
+	if (nav == nullptr)
+		return SN_ERROR_INVALID_HANDLE;
+	int32_t count = 0;
+	const dtNavMesh &mesh = *nav->mNavMesh;
+	for (int i = 0; i < mesh.getMaxTiles(); ++i)
+	{
+		const dtMeshTile *tile = mesh.getTile(i);
+		if (tile != nullptr && tile->header != nullptr)
+			++count;
+	}
+	return count;
 }
 
 SN_API int32_t sn_nav_serialize(int32_t navmesh, void **out_data, uint32_t *out_size)

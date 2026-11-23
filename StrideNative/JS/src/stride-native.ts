@@ -172,6 +172,18 @@ export class StrideNative extends NativeModule<RuntimeExport> {
 		}));
 	}
 
+	/**
+	 * 空的分块导航网格：大世界按块流式地建（NavMesh.buildTiles、removeTiles），哪里的静态几何变了重建哪里。块 (x, y) 覆盖
+	 * x、z 方向 [x, x+1)、[y, y+1) 乘 tileSize × cellSize 米，原点在 (0, 0, 0)；最多同时 maxTiles 块。需要 navigation 功能。
+	 */
+	createTiledNavMesh(config: NavConfig = {}, maxTiles = 4096): NavMesh {
+		this.requireFeature('navigation', 'createTiledNavMesh');
+		return this.withScratch(NAV_CONFIG_SIZE, (cfg) => {
+			writeNavConfig(this, cfg, config);
+			return new NavMesh(this, this.check(this.module._sn_nav_create_tiled(cfg, maxTiles), 'sn_nav_create_tiled'));
+		});
+	}
+
 	/** 加载 NavMesh.serialize 或 stride-tools 烘焙出的导航网格。需要 navigation 功能。 */
 	loadNavMesh(bytes: Uint8Array): NavMesh {
 		this.requireFeature('navigation', 'loadNavMesh');
@@ -1123,6 +1135,50 @@ export class PhysicsWorld extends NativeObject<StrideNative> {
 		});
 	}
 
+	/**
+	 * 包围盒（世界坐标）里静态物体（不含触发器）的三角形，每个 9 个 float，顶点相对 origin（双精度，远离原点时保住精度）；网格、
+	 * 高度场只给和盒子相交的三角形，凸形状给全部。分块导航网格重建一块时用。
+	 */
+	staticTrianglesInBox(min: Vec3, max: Vec3, origin: Vec3, mask = ALL_LAYERS): Float32Array {
+		const n = this.native;
+		const box = new Float64Array([min[0]!, min[1]!, min[2]!, max[0]!, max[1]!, max[2]!, origin[0]!, origin[1]!, origin[2]!]);
+		return n.withArrays([box], (box) => n.withScratch(8, (out) => {
+			const count = n.check(n.module._sn_physics_static_triangles_in_box(this[HANDLE], mask >>> 0, box, box + 24, box + 48, out), 'sn_physics_static_triangles_in_box');
+			if (count === 0) return new Float32Array(0);
+			const data = n.readPointer(out);
+			const triangles = n.copyOut(Float32Array, data, count * 9);
+			n.free(data);
+			return triangles;
+		}));
+	}
+
+	/** 开关静态物体的变化记录（加上、移除静态物体时记下世界包围盒，staticChanges 取走）；关掉时清空。 */
+	trackStaticChanges(enabled: boolean): void {
+		this.native.check(this.native.module._sn_physics_track_static_changes(this[HANDLE], enabled ? 1 : 0), 'sn_physics_track_static_changes');
+	}
+
+	/** 取走记下的静态物体变化：每个 6 个 float（min xyz、max xyz，世界坐标）。 */
+	staticChanges(): Float32Array {
+		const n = this.native;
+		const capacity = 256;
+		const parts: Float32Array[] = [];
+		n.withScratch(capacity * 24, (out) => {
+			for (;;) {
+				const count = n.check(n.module._sn_physics_static_changes(this[HANDLE], out, capacity), 'sn_physics_static_changes');
+				if (count > 0) parts.push(n.copyOut(Float32Array, out, count * 6));
+				if (count < capacity) break;
+			}
+		});
+		if (parts.length === 1) return parts[0]!;
+		const all = new Float32Array(parts.reduce((sum, part) => sum + part.length, 0));
+		let at = 0;
+		for (const part of parts) {
+			all.set(part, at);
+			at += part.length;
+		}
+		return all;
+	}
+
 	/** 球体扫掠（Stride 的 SweepCast 加 Sphere），同 rayCast；默认从一开始就重叠的物体算距离 0 的命中（同 Bepu）。 */
 	sphereCast(radius: number, origin: Vec3, direction: Vec3, maxDistance: number, { mask = ALL_LAYERS, hit = new PhysicsHit(), ignoreInitialOverlap = false }: SweepOptions = {}): PhysicsHit | undefined {
 		this.#setQuery(origin, direction);
@@ -1620,6 +1676,32 @@ export class NavMesh extends NativeObject<StrideNative> {
 		return n.readOwnedBuffer((data, size) => n.module._sn_nav_serialize(this[HANDLE], data, size), 'sn_nav_serialize');
 	}
 
+	/**
+	 * 在工作线程上并行建 tiles 列出的块（每块 x、y 两个数）：三角形（坐标和导航网格相同，下标三个一组）要盖住这些块加边缘
+	 * （agentRadius 加 3 格）。建好的块不马上换进去：拿到的批在游戏线程上 commit（这期间照常寻路、走人群）。没有三角形的块换上时
+	 * 只去掉旧的。
+	 */
+	async buildTiles(vertices: Float32Array, triangles: Int32Array, tiles: Int32Array): Promise<NavTileBatch> {
+		const n = this.native;
+		const handle = this[HANDLE];
+		const empty = triangles.length === 0;
+		return n.withArraysAsync([empty ? null : vertices, empty ? null : triangles, tiles], (v, t, xy) =>
+			n.awaitTask(n.module._sn_nav_build_tiles(handle, v, empty ? 0 : vertices.length / 3, t, triangles.length / 3, xy, tiles.length / 2), 'sn_nav_build_tiles',
+				(task) => new NavTileBatch(n, task.result(0))));
+	}
+
+	/** 去掉列出的块（每块 x、y），返回去掉了几块。 */
+	removeTiles(tiles: Int32Array): number {
+		const n = this.native;
+		if (tiles.length === 0) return 0;
+		return n.withArrays([tiles], (xy) => n.check(n.module._sn_nav_remove_tiles(this[HANDLE], xy, tiles.length / 2), 'sn_nav_remove_tiles'));
+	}
+
+	/** 现在有几块。 */
+	get tileCount(): number {
+		return this.native.check(this.native.module._sn_nav_tile_count(this[HANDLE]), 'sn_nav_tile_count');
+	}
+
 	/** 导航网格要比人群活得久。 */
 	createCrowd(maxAgents: number, maxAgentRadius: number): Crowd {
 		const n = this.native;
@@ -1628,6 +1710,25 @@ export class NavMesh extends NativeObject<StrideNative> {
 
 	protected override release(): void {
 		this.native.module._sn_nav_destroy(this[HANDLE]);
+	}
+}
+
+/** NavMesh.buildTiles 建好、还没换进去的一批块：commit 换上，destroy 丢掉。 */
+export class NavTileBatch extends NativeObject<StrideNative> {
+	#committed = false;
+
+	/** 换进导航网格（同一位置的旧块去掉，人群按新的多边形重新找路），返回有可走区域的块数。只能调一次。 */
+	commit(): number {
+		const n = this.native;
+		const result = n.module._sn_nav_commit_tiles(this[HANDLE]);
+		// 原生不管成败都已经拿走了这批
+		this.#committed = true;
+		this.destroy();
+		return n.check(result, 'sn_nav_commit_tiles');
+	}
+
+	protected override release(): void {
+		if (!this.#committed) this.native.module._sn_nav_discard_tiles(this[HANDLE]);
 	}
 }
 

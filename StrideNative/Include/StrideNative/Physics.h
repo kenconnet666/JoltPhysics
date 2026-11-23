@@ -417,3 +417,10 @@ SN_API int32_t sn_physics_overlap(int32_t world, const double *origin, const sn_
 /// 传感器（触发器）不算。三角形按世界坐标连续写，每个 9 个 float，从外面看是逆时针（法线朝外）。各种形状（盒、球、网格、
 /// 复合……）都按 Jolt 的三角化。*out_vertices 用 sn_alloc 分配，调用方 sn_free（没有三角形时是 null）。返回三角形个数。
 SN_API int32_t sn_physics_static_triangles(int32_t world, uint32_t mask, float **out_vertices);
+/// 包围盒（世界坐标）里静态物体（不含触发器，层在 mask 里）的三角形，顶点相对 origin（双精度，远离原点时保住精度）；网格、高度场只给
+/// 和盒子相交的三角形，凸形状给全部。返回三角形数，*out_vertices 用 sn_free 释放（没有三角形时是空）。
+SN_API int32_t sn_physics_static_triangles_in_box(int32_t world, uint32_t mask, const double *box_min, const double *box_max, const double *origin, float **out_vertices);
+/// 开关静态物体的变化记录：开着时加上、移除静态物体（不含触发器）记下它的世界包围盒（导航重建盖到的块用），关掉时清空。
+SN_API int32_t sn_physics_track_static_changes(int32_t world, int32_t enabled);
+/// 取走最多 capacity 个记下的包围盒（每个 min xyz、max xyz 六个数），返回取走的个数；等于 capacity 时可能还有，再取。
+SN_API int32_t sn_physics_static_changes(int32_t world, float *out_boxes, uint32_t capacity);

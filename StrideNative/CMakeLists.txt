@@ -85,7 +85,9 @@ stride_third_party_library(sn_recast SOURCES ${RECAST_SOURCES} INCLUDES
 	${THIRD_PARTY}/recastnavigation/Recast/Include
 	${THIRD_PARTY}/recastnavigation/Detour/Include
 	${THIRD_PARTY}/recastnavigation/DetourCrowd/Include
-	${THIRD_PARTY}/recastnavigation/DetourTileCache/Include)
+	${THIRD_PARTY}/recastnavigation/DetourTileCache/Include
+	# 64 位的多边形引用：分块流式的大世界里块数不受 32 位引用的 22 位限制
+	DEFINES DT_POLYREF64=1)
 
 file(GLOB_RECURSE OZZ_RUNTIME_SOURCES ${THIRD_PARTY}/ozz-animation/src/base/*.cc ${THIRD_PARTY}/ozz-animation/src/animation/runtime/*.cc)
 stride_third_party_library(sn_ozz_runtime SOURCES ${OZZ_RUNTIME_SOURCES} INCLUDES ${THIRD_PARTY}/ozz-animation/include ${THIRD_PARTY}/ozz-animation/src)

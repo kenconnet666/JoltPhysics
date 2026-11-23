@@ -466,6 +466,9 @@ namespace
 		std::vector<int32_t>			mFreeBodies;
 		/// sn_physics_lod 冻结着的物体（编号；移除了的在下一次 lod 时去掉）
 		std::vector<int32_t>			mFrozen;
+		/// sn_physics_track_static_changes 开着时，加上、移除的静态物体（不含触发器）的世界包围盒，等导航取走去重建盖到的块
+		bool							mTrackStatics = false;
+		std::vector<AABox>				mStaticChanges;
 		std::vector<ConstraintRecord>	mConstraints;
 		struct VehicleRecord
 		{
@@ -509,6 +512,16 @@ namespace
 	size_t Capacity(const World &inWorld)
 	{
 		return inWorld.mPositions.size() / 3;
+	}
+
+	/// 静态物体（不含触发器）加上或移除时记下它的世界包围盒（sn_physics_static_changes）；物体要还在物理世界里
+	void NoteStaticChange(World &ioWorld, const BodyRecord &inRecord)
+	{
+		if (!ioWorld.mTrackStatics || inRecord.mMotion != SN_MOTION_STATIC || (inRecord.mFlags & SN_BODY_SENSOR) != 0)
+			return;
+		BodyLockRead lock(ioWorld.mSystem.GetBodyLockInterface(), inRecord.mID);
+		if (lock.Succeeded())
+			ioWorld.mStaticChanges.push_back(lock.GetBody().GetWorldSpaceBounds());
 	}
 
 	void WritePositions(World &ioWorld, size_t inFirst)
@@ -1286,8 +1299,11 @@ SN_API int32_t sn_physics_add_bodies(int32_t world, const sn_body *bodies, uint3
 		body_interface.AddBodiesFinalize(added.data(), int(added.size()), state, EActivation::Activate);
 	}
 	for (int32_t index : indices)
+	{
 		if (w->mBodies[index].mCharacter >= 0)
 			w->mCharacters[w->mBodies[index].mCharacter].mCharacter->AddToPhysicsSystem(EActivation::Activate);
+		NoteStaticChange(*w, w->mBodies[index]);
+	}
 	WritePositions(*w, size_t(*std::min_element(indices.begin(), indices.end())));
 	if (out_bodies != nullptr)
 		std::copy(indices.begin(), indices.end(), out_bodies);
@@ -1427,6 +1443,7 @@ SN_API int32_t sn_physics_remove_bodies(int32_t world, const int32_t *bodies, ui
 				vehicle.mConstraint = nullptr;
 			}
 		BodyRecord &record = w->mBodies[index];
+		NoteStaticChange(*w, record);
 		record.mRemoved = true;
 		w->mContacts.mWanted[index] = 0;
 		w->mContacts.mBreakSpeed[index] = 0.0f;
@@ -2795,6 +2812,74 @@ SN_API int32_t sn_physics_static_triangles(int32_t world, uint32_t mask, float *
 	std::memcpy(data, vertices.data(), vertices.size() * sizeof(Float3));
 	*out_vertices = static_cast<float *>(data);
 	return int32_t(vertices.size() / 3);
+}
+
+SN_API int32_t sn_physics_static_triangles_in_box(int32_t world, uint32_t mask, const double *box_min, const double *box_max, const double *origin, float **out_vertices)
+{
+	World *w = GetWorld(world);
+	if (w == nullptr)
+		return SN_ERROR_INVALID_HANDLE;
+	if (box_min == nullptr || box_max == nullptr || origin == nullptr || out_vertices == nullptr)
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "sn_physics_static_triangles_in_box: box_min, box_max, origin and out_vertices are required");
+	*out_vertices = nullptr;
+
+	class StaticSolids final : public BodyFilter
+	{
+	public:
+		bool ShouldCollideLocked(const Body &inBody) const override { return inBody.IsStatic() && !inBody.IsSensor(); }
+	};
+	// 宽相按包围盒找静态物体的叶子形状，网格、高度场只给盒子里的三角形（凸形状给全部）
+	AABox box(Vec3(LoadR3(box_min)), Vec3(LoadR3(box_max)));
+	RVec3 base = LoadR3(origin);
+	AllHitCollisionCollector<TransformedShapeCollector> leaves;
+	w->mSystem.GetNarrowPhaseQuery().CollectTransformedShapes(box, leaves, {}, MaskFilter(mask), StaticSolids());
+	std::vector<Float3> vertices;
+	constexpr int cBatch = Shape::cGetTrianglesMinTrianglesRequested;
+	Float3 batch[3 * cBatch];
+	for (const TransformedShape &leaf : leaves.mHits)
+	{
+		Shape::GetTrianglesContext context;
+		leaf.GetTrianglesStart(context, box, base);
+		for (int count; (count = leaf.GetTrianglesNext(context, cBatch, batch)) > 0;)
+			vertices.insert(vertices.end(), batch, batch + 3 * count);
+	}
+	if (vertices.empty())
+		return 0;
+	void *data = sn_alloc(uint32_t(vertices.size() * sizeof(Float3)));
+	if (data == nullptr)
+		return SetLastError(SN_ERROR_FAILED, "sn_physics_static_triangles_in_box: out of memory");
+	std::memcpy(data, vertices.data(), vertices.size() * sizeof(Float3));
+	*out_vertices = static_cast<float *>(data);
+	return int32_t(vertices.size() / 3);
+}
+
+SN_API int32_t sn_physics_track_static_changes(int32_t world, int32_t enabled)
+{
+	World *w = GetWorld(world);
+	if (w == nullptr)
+		return SN_ERROR_INVALID_HANDLE;
+	w->mTrackStatics = enabled != 0;
+	if (!w->mTrackStatics)
+		w->mStaticChanges.clear();
+	return SN_OK;
+}
+
+SN_API int32_t sn_physics_static_changes(int32_t world, float *out_boxes, uint32_t capacity)
+{
+	World *w = GetWorld(world);
+	if (w == nullptr)
+		return SN_ERROR_INVALID_HANDLE;
+	if (out_boxes == nullptr && capacity > 0)
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "sn_physics_static_changes: out_boxes is required");
+	uint32_t count = std::min(capacity, uint32_t(w->mStaticChanges.size()));
+	for (uint32_t i = 0; i < count; ++i)
+	{
+		const AABox &change = w->mStaticChanges[i];
+		change.mMin.StoreFloat3(reinterpret_cast<Float3 *>(out_boxes + i * 6));
+		change.mMax.StoreFloat3(reinterpret_cast<Float3 *>(out_boxes + i * 6 + 3));
+	}
+	w->mStaticChanges.erase(w->mStaticChanges.begin(), w->mStaticChanges.begin() + count);
+	return int32_t(count);
 }
 
 SN_API int32_t sn_physics_overlap(int32_t world, const double *origin, const sn_shape *shape, uint32_t mask, int32_t *out_bodies, int32_t capacity)

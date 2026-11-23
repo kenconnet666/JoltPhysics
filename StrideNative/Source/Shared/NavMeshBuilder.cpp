@@ -11,13 +11,15 @@
 #include <cmath>
 #include <cstring>
 #include <memory>
+#include <unordered_map>
 
 namespace StrideNative
 {
 	namespace
 	{
 		constexpr uint32_t cNavMagic = 'S' << 24 | 'N' << 16 | 'N' << 8 | 'V';
-		constexpr uint32_t cNavVersion = 1;
+		constexpr uint32_t cNavVersion = 2;	///< 2: 64-bit tile refs (DT_POLYREF64)
+		constexpr int cMaxPolysPerTile = 1 << 16;
 		constexpr unsigned short cWalkFlag = 1;
 
 		struct NavFileHeader
@@ -54,13 +56,6 @@ namespace StrideNative
 			return result;
 		}
 
-		int Log2(int inPowerOfTwo)
-		{
-			int result = 0;
-			while ((1 << result) < inPowerOfTwo)
-				++result;
-			return result;
-		}
 	}
 
 	NavMeshBuilder::~NavMeshBuilder()
@@ -70,7 +65,7 @@ namespace StrideNative
 				dtFree(tile.mData);
 	}
 
-	bool NavMeshBuilder::Prepare(const float *inVertices, uint32_t inVertexCount, const int32_t *inTriangles, uint32_t inTriangleCount, const sn_nav_config &inConfig, std::string &outError)
+	bool NavMeshBuilder::Validate(const float *inVertices, uint32_t inVertexCount, const int32_t *inTriangles, uint32_t inTriangleCount, const sn_nav_config &inConfig, std::string &outError)
 	{
 		if (inVertices == nullptr || inTriangles == nullptr || inVertexCount == 0 || inTriangleCount == 0)
 		{
@@ -88,17 +83,24 @@ namespace StrideNative
 				outError = "triangle index " + std::to_string(inTriangles[i]) + " is out of range";
 				return false;
 			}
-
 		mVertices = inVertices;
 		mVertexCount = inVertexCount;
 		mConfig = inConfig;
 		rcCalcBounds(inVertices, int(inVertexCount), mBoundsMin, mBoundsMax);
+		return true;
+	}
+
+	bool NavMeshBuilder::Prepare(const float *inVertices, uint32_t inVertexCount, const int32_t *inTriangles, uint32_t inTriangleCount, const sn_nav_config &inConfig, std::string &outError)
+	{
+		if (!Validate(inVertices, inVertexCount, inTriangles, inTriangleCount, inConfig, outError))
+			return false;
+		rcVcopy(mOrigin, mBoundsMin);
 
 		int grid_width = 0, grid_height = 0;
 		rcCalcGridSize(mBoundsMin, mBoundsMax, inConfig.cell_size, &grid_width, &grid_height);
 		mTilesX = (grid_width + inConfig.tile_size - 1) / inConfig.tile_size;
 		mTilesY = (grid_height + inConfig.tile_size - 1) / inConfig.tile_size;
-		if (mTilesX * mTilesY > (1 << 14))
+		if (mTilesX * mTilesY > (1 << 16))
 		{
 			outError = "too many navmesh tiles; raise tile_size or cell_size";
 			return false;
@@ -112,34 +114,83 @@ namespace StrideNative
 				tile.mX = x;
 				tile.mY = y;
 			}
+		BinTriangles(inTriangles, inTriangleCount);
+		return true;
+	}
 
-		// Bin each triangle into every tile its xz bounds touch, including the tile border.
-		const float tile_world_size = inConfig.tile_size * inConfig.cell_size;
-		const int border_cells = int(std::ceil(inConfig.agent_radius / inConfig.cell_size)) + 3;
-		const float border = border_cells * inConfig.cell_size;
+	bool NavMeshBuilder::PrepareTiles(const float *inVertices, uint32_t inVertexCount, const int32_t *inTriangles, uint32_t inTriangleCount, const sn_nav_config &inConfig,
+		const float inOrigin[3], const int32_t *inTilesXY, uint32_t inTileCount, std::string &outError)
+	{
+		if (inTilesXY == nullptr && inTileCount > 0)
+		{
+			outError = "tiles are required";
+			return false;
+		}
+		if (inTriangleCount > 0 && !Validate(inVertices, inVertexCount, inTriangles, inTriangleCount, inConfig, outError))
+			return false;
+		mConfig = inConfig;
+		rcVcopy(mOrigin, inOrigin);
+		mTiles.resize(inTileCount);
+		for (uint32_t i = 0; i < inTileCount; ++i)
+		{
+			mTiles[i].mX = inTilesXY[i * 2];
+			mTiles[i].mY = inTilesXY[i * 2 + 1];
+		}
+		if (inTriangleCount > 0)
+			BinTriangles(inTriangles, inTriangleCount);
+		return true;
+	}
+
+	void NavMeshBuilder::BinTriangles(const int32_t *inTriangles, uint32_t inTriangleCount)
+	{
+		const float tile_world_size = mConfig.tile_size * mConfig.cell_size;
+		const int border_cells = int(std::ceil(mConfig.agent_radius / mConfig.cell_size)) + 3;
+		const float border = border_cells * mConfig.cell_size;
+		// 整个网格（Prepare）按下标直接找；指定的块（PrepareTiles）按坐标查表
+		const bool grid = mTilesX > 0;
+		std::unordered_map<int64_t, uint32_t> listed;
+		if (!grid)
+			for (uint32_t i = 0; i < mTiles.size(); ++i)
+				listed.emplace(int64_t(mTiles[i].mX) << 32 | uint32_t(mTiles[i].mY), i);
 		for (uint32_t t = 0; t < inTriangleCount; ++t)
 		{
 			const int32_t *tri = inTriangles + t * 3;
-			float min_x = inVertices[tri[0] * 3], max_x = min_x, min_z = inVertices[tri[0] * 3 + 2], max_z = min_z;
+			float min_x = mVertices[tri[0] * 3], max_x = min_x, min_z = mVertices[tri[0] * 3 + 2], max_z = min_z;
 			for (int corner = 1; corner < 3; ++corner)
 			{
-				min_x = std::min(min_x, inVertices[tri[corner] * 3]);
-				max_x = std::max(max_x, inVertices[tri[corner] * 3]);
-				min_z = std::min(min_z, inVertices[tri[corner] * 3 + 2]);
-				max_z = std::max(max_z, inVertices[tri[corner] * 3 + 2]);
+				min_x = std::min(min_x, mVertices[tri[corner] * 3]);
+				max_x = std::max(max_x, mVertices[tri[corner] * 3]);
+				min_z = std::min(min_z, mVertices[tri[corner] * 3 + 2]);
+				max_z = std::max(max_z, mVertices[tri[corner] * 3 + 2]);
 			}
-			int x0 = std::max(0, int(std::floor((min_x - border - mBoundsMin[0]) / tile_world_size)));
-			int x1 = std::min(mTilesX - 1, int(std::floor((max_x + border - mBoundsMin[0]) / tile_world_size)));
-			int y0 = std::max(0, int(std::floor((min_z - border - mBoundsMin[2]) / tile_world_size)));
-			int y1 = std::min(mTilesY - 1, int(std::floor((max_z + border - mBoundsMin[2]) / tile_world_size)));
+			int x0 = int(std::floor((min_x - border - mOrigin[0]) / tile_world_size));
+			int x1 = int(std::floor((max_x + border - mOrigin[0]) / tile_world_size));
+			int y0 = int(std::floor((min_z - border - mOrigin[2]) / tile_world_size));
+			int y1 = int(std::floor((max_z + border - mOrigin[2]) / tile_world_size));
+			if (grid)
+			{
+				x0 = std::max(0, x0);
+				x1 = std::min(mTilesX - 1, x1);
+				y0 = std::max(0, y0);
+				y1 = std::min(mTilesY - 1, y1);
+			}
 			for (int y = y0; y <= y1; ++y)
 				for (int x = x0; x <= x1; ++x)
 				{
-					std::vector<int32_t> &tris = mTiles[size_t(y) * mTilesX + x].mTriangles;
+					uint32_t index;
+					if (grid)
+						index = uint32_t(y) * mTilesX + x;
+					else
+					{
+						auto found = listed.find(int64_t(x) << 32 | uint32_t(y));
+						if (found == listed.end())
+							continue;
+						index = found->second;
+					}
+					std::vector<int32_t> &tris = mTiles[index].mTriangles;
 					tris.insert(tris.end(), tri, tri + 3);
 				}
 		}
-		return true;
 	}
 
 	bool NavMeshBuilder::BuildTile(uint32_t inTileIndex, std::string &outError)
@@ -171,10 +222,10 @@ namespace StrideNative
 		const float tile_world_size = cfg.tileSize * cfg.cs;
 		rcVcopy(cfg.bmin, mBoundsMin);
 		rcVcopy(cfg.bmax, mBoundsMax);
-		cfg.bmin[0] = mBoundsMin[0] + tile.mX * tile_world_size - cfg.borderSize * cfg.cs;
-		cfg.bmin[2] = mBoundsMin[2] + tile.mY * tile_world_size - cfg.borderSize * cfg.cs;
-		cfg.bmax[0] = mBoundsMin[0] + (tile.mX + 1) * tile_world_size + cfg.borderSize * cfg.cs;
-		cfg.bmax[2] = mBoundsMin[2] + (tile.mY + 1) * tile_world_size + cfg.borderSize * cfg.cs;
+		cfg.bmin[0] = mOrigin[0] + tile.mX * tile_world_size - cfg.borderSize * cfg.cs;
+		cfg.bmin[2] = mOrigin[2] + tile.mY * tile_world_size - cfg.borderSize * cfg.cs;
+		cfg.bmax[0] = mOrigin[0] + (tile.mX + 1) * tile_world_size + cfg.borderSize * cfg.cs;
+		cfg.bmax[2] = mOrigin[2] + (tile.mY + 1) * tile_world_size + cfg.borderSize * cfg.cs;
 
 		rcContext context(false);
 		auto fail = [&](const char *inStep)
@@ -262,13 +313,12 @@ namespace StrideNative
 
 	dtNavMesh *NavMeshBuilder::CreateNavMesh(std::string &outError)
 	{
-		int tile_bits = Log2(NextPowerOfTwo(mTilesX * mTilesY));
 		dtNavMeshParams params {};
-		rcVcopy(params.orig, mBoundsMin);
+		rcVcopy(params.orig, mOrigin);
 		params.tileWidth = mConfig.tile_size * mConfig.cell_size;
 		params.tileHeight = mConfig.tile_size * mConfig.cell_size;
-		params.maxTiles = 1 << tile_bits;
-		params.maxPolys = 1 << (22 - tile_bits);
+		params.maxTiles = NextPowerOfTwo(std::max(1, mTilesX * mTilesY));
+		params.maxPolys = cMaxPolysPerTile;
 
 		dtNavMesh *nav_mesh = dtAllocNavMesh();
 		if (nav_mesh == nullptr || dtStatusFailed(nav_mesh->init(&params)))
@@ -288,6 +338,53 @@ namespace StrideNative
 				return nullptr;
 			}
 			tile.mData = nullptr; // Owned by the navmesh now
+		}
+		return nav_mesh;
+	}
+
+	int NavMeshBuilder::ReplaceTiles(dtNavMesh &ioNavMesh, std::string &outError)
+	{
+		int with_data = 0;
+		for (Tile &tile : mTiles)
+		{
+			if (dtTileRef old = ioNavMesh.getTileRefAt(tile.mX, tile.mY, 0))
+				ioNavMesh.removeTile(old, nullptr, nullptr);
+			if (tile.mData == nullptr)
+				continue;
+			if (dtStatusFailed(ioNavMesh.addTile(tile.mData, tile.mDataSize, DT_TILE_FREE_DATA, 0, nullptr)))
+			{
+				outError = "dtNavMesh::addTile failed for tile " + std::to_string(tile.mX) + "," + std::to_string(tile.mY) + " (max_tiles reached?)";
+				return -1;
+			}
+			tile.mData = nullptr; // Owned by the navmesh now
+			++with_data;
+		}
+		return with_data;
+	}
+
+	dtNavMesh *CreateTiledNavMesh(const sn_nav_config &inConfig, uint32_t inMaxTiles, std::string &outError)
+	{
+		if (inConfig.cell_size <= 0.0f || inConfig.cell_height <= 0.0f || inConfig.tile_size <= 0)
+		{
+			outError = "cell_size, cell_height and tile_size must be positive";
+			return nullptr;
+		}
+		if (inMaxTiles == 0 || inMaxTiles > (1u << 20))
+		{
+			outError = "max_tiles must be 1..1048576";
+			return nullptr;
+		}
+		dtNavMeshParams params {};
+		params.tileWidth = inConfig.tile_size * inConfig.cell_size;
+		params.tileHeight = inConfig.tile_size * inConfig.cell_size;
+		params.maxTiles = NextPowerOfTwo(int(inMaxTiles));
+		params.maxPolys = cMaxPolysPerTile;
+		dtNavMesh *nav_mesh = dtAllocNavMesh();
+		if (nav_mesh == nullptr || dtStatusFailed(nav_mesh->init(&params)))
+		{
+			dtFreeNavMesh(nav_mesh);
+			outError = "dtNavMesh::init failed";
+			return nullptr;
 		}
 		return nav_mesh;
 	}
