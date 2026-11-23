@@ -1604,8 +1604,10 @@ export class AnimationBatch implements Disposable {
 	#opCount = 0;
 	#requestCount = 0;
 	#skinCount = 0;
-	/** 当前实例的请求下标。 */
+	/** 当前实例的请求下标；posed 的实例没有请求，是 -1。 */
 	#current = -1;
+	/** 当前实例（skin 用）。 */
+	#currentInstance = -1;
 
 	constructor(native: StrideNative) {
 		this.#native = native;
@@ -1614,6 +1616,7 @@ export class AnimationBatch implements Disposable {
 	clear(): this {
 		this.#opCount = this.#requestCount = this.#skinCount = 0;
 		this.#current = -1;
+		this.#currentInstance = -1;
 		return this;
 	}
 
@@ -1626,6 +1629,17 @@ export class AnimationBatch implements Disposable {
 		view[2] = 0;
 		view[3] = 0;
 		this.#current = this.#requestCount++;
+		this.#currentInstance = instance[HANDLE];
+		return this;
+	}
+
+	/**
+	 * 关节矩阵已经在别处写好的实例（布娃娃的姿势，PhysicsWorld.ragdollPose）：不求值，之后的 skin 照常按它的矩阵算蒙皮。
+	 * 不能再加操作。
+	 */
+	posed(instance: AnimationInstance): this {
+		this.#current = -1;
+		this.#currentInstance = instance[HANDLE];
 		return this;
 	}
 
@@ -1651,11 +1665,11 @@ export class AnimationBatch implements Disposable {
 
 	/** 求值之后，把当前实例的蒙皮矩阵写进 palette。 */
 	skin(skin: Skin, palette: SkinPalette): this {
-		if (this.#current < 0) throw new NativeError('AnimationBatch.skin: call instance() first', -1);
+		if (this.#currentInstance < 0) throw new NativeError('AnimationBatch.skin: call instance() or posed() first', -1);
 		if (palette.jointCount !== skin.jointCount) throw new NativeError(`AnimationBatch.skin: the palette holds ${palette.jointCount} joints, the skin has ${skin.jointCount}`, -1);
 		const at = this.#skins.ensure(this.#native, this.#skinCount + 1) + this.#skinCount * 24;
 		const view = this.#native.i32(at, 6);
-		view[0] = this.#native.i32(this.#requests.address + this.#current * 16, 1)[0]!;
+		view[0] = this.#currentInstance;
 		view[1] = skin[HANDLE];
 		this.#native.writePointer(at + 8, palette.address);
 		view[4] = 0;

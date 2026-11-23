@@ -1216,6 +1216,11 @@ describe('stride-native and stride-tools', () => {
 			const length = Math.hypot(...legFromHips);
 			assert.ok(Math.abs(length - 0.9) < 1e-3, `the leg keeps its offset from the hips: ${length}`);
 			assert.notDeepEqual([...leg], [...legBefore]);
+			// posed：矩阵已经写好的实例不求值（不会被静止姿势盖掉）
+			const written = [...instance.modelMatrices()];
+			batch.clear().posed(instance);
+			batch.evaluate();
+			assert.deepEqual([...instance.modelMatrices()], written);
 			assert.throws(() => world.addRagdoll([part(0, 0, [0, 1, 0])], instance, modelToWorld), /only root/);
 			world.removeRagdoll(ragdoll);
 			assert.throws(() => world.ragdollRoot(ragdoll), /does not exist/);
