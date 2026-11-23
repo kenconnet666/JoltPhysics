@@ -1344,6 +1344,18 @@ describe('stride-native and stride-tools', () => {
 			crowd.requestMove(agent, [15, 0, 0]);
 			for (let i = 0; i < 600; ++i) crowd.update(1 / 30);
 			assert.ok(Math.abs(crowd.positions()[agent * 3] - 15) < 1, `the agent walks through: ${crowd.positions()[agent * 3]}`);
+			// 没有导航网格的地方加不进人群（DetourCrowd 会加成永远不动的 INVALID）
+			assert.throws(() => crowd.addAgent([40, 0, 0]), /off the navmesh/);
+			// 脚下的块去掉（人成了 INVALID）、再建回来：人放回去，接着往原来的目标走
+			crowd.requestMove(agent, [-15, 0, 0]);
+			for (let i = 0; i < 30; ++i) crowd.update(1 / 30);
+			const x = crowd.positions()[agent * 3];
+			const under = tilesOver(x - 3, x + 3, -3, 3);
+			navMesh.removeTiles(under);
+			for (let i = 0; i < 10; ++i) crowd.update(1 / 30);
+			await rebuild(under);
+			for (let i = 0; i < 600; ++i) crowd.update(1 / 30);
+			assert.ok(Math.abs(crowd.positions()[agent * 3] + 15) < 1, `the agent walks on after its tiles came back: ${crowd.positions()[agent * 3]}`);
 			crowd.destroy();
 			// 走远了：去掉西边的块，那边不能寻路了
 			const west = tilesOver(-20, -10, -10, 10);

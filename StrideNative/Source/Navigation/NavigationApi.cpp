@@ -8,6 +8,7 @@
 #include <StrideNative/Navigation.h>
 #include <StrideNative/Plugin.h>
 
+#include <DetourCommon.h>
 #include <DetourCrowd.h>
 #include <DetourNavMesh.h>
 #include <DetourNavMeshQuery.h>
@@ -335,7 +336,13 @@ SN_API int32_t sn_crowd_add_agent(int32_t crowd, const float *position3, float r
 	params.obstacleAvoidanceType = c->mQuality;
 	int agent = c->mCrowd->addAgent(position3, &params);
 	if (agent < 0)
-		return SetLastError(SN_ERROR_FAILED, "crowd is full or position is off the navmesh");
+		return SetLastError(SN_ERROR_FAILED, "crowd is full");
+	// DetourCrowd 找不到脚下的多边形时照样加上、状态是 INVALID，以后也不会自己好：不加，让调用方等导航网格建到这里再加
+	if (c->mCrowd->getAgent(agent)->state == DT_CROWDAGENT_STATE_INVALID)
+	{
+		c->mCrowd->removeAgent(agent);
+		return SetLastError(SN_ERROR_FAILED, "position is off the navmesh");
+	}
 	c->WritePosition(agent);
 	return agent;
 }
@@ -374,6 +381,32 @@ SN_API void sn_crowd_update(int32_t crowd, float delta_time)
 	SN_DEBUG_SCOPE("navigation.crowd");
 	if (DebugEnabled())
 		sn_debug_set_counter("navigation.agents", c->mCrowd->getAgentCount());
+	// 脚下的块被换掉、去掉时 DetourCrowd 找不到多边形就把人标成 INVALID、以后不再管：导航网格又有了脚下的多边形时放回去，接着去原来的目标
+	const dtNavMeshQuery *query = c->mCrowd->getNavMeshQuery();
+	const float *extents = c->mCrowd->getQueryExtents();
+	for (int index = 0; index < c->mCrowd->getAgentCount(); ++index)
+	{
+		dtCrowdAgent *agent = c->mCrowd->getEditableAgent(index);
+		if (!agent->active || agent->state != DT_CROWDAGENT_STATE_INVALID)
+			continue;
+		const dtQueryFilter *filter = c->mCrowd->getFilter(agent->params.queryFilterType);
+		dtPolyRef ref = 0;
+		float nearest[3];
+		query->findNearestPoly(agent->npos, extents, filter, &ref, nearest);
+		if (ref == 0)
+			continue;
+		agent->corridor.reset(ref, nearest);
+		agent->boundary.reset();
+		dtVcopy(agent->npos, nearest);
+		agent->state = DT_CROWDAGENT_STATE_WALKING;
+		if (agent->targetState == DT_CROWDAGENT_TARGET_NONE)
+			continue;
+		dtPolyRef target_ref = 0;
+		float target_point[3];
+		query->findNearestPoly(agent->targetPos, extents, filter, &target_ref, target_point);
+		if (target_ref != 0)
+			c->mCrowd->requestMoveTarget(index, target_ref, target_point);
+	}
 	c->mCrowd->update(delta_time, nullptr);
 	for (int agent = 0; agent < c->mCrowd->getAgentCount(); ++agent)
 		c->WritePosition(agent);
