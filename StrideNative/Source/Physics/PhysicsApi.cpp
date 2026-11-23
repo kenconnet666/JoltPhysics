@@ -888,12 +888,13 @@ SN_API int32_t sn_physics_create(uint32_t max_bodies, int32_t transforms, const 
 
 	// Resting bodies touch several others (a box in a stack has up to four neighbours and the
 	// ground), so pairs and contacts need headroom over the body count.
-	// Jolt reserves every pair and contact up front (~0.6 KB each), and most bodies in a big world are static
-	// and never touch each other, so the reservation is capped at 65536 (8 contacts for each of 8192 touching
-	// bodies): with 8 per body a million bodies took a 4.9 GB heap, capped it is 577 MB (65536 bodies: 111 MB).
+	// Jolt reserves every pair and contact up front (~0.5 KB each), and most bodies in a big world are static
+	// and never touch each other, so the reservation is capped at 32768 (8 contacts for each of 4096 touching
+	// bodies, what the old default of 4096 bodies reserved): with 8 per body a million bodies took a 4.9 GB heap.
+	// What is allocated then grows only with the body arrays (4096 bodies 14 MB, 65536 about 26 MB).
 	// Running out only drops the contacts that don't fit, it never fails.
 	constexpr uint32_t cContactsPerBody = 8;
-	constexpr uint32_t cMaxContacts = 1u << 16;
+	constexpr uint32_t cMaxContacts = 1u << 15;
 	const uint32_t maxContacts = uint32_t(std::min<uint64_t>(uint64_t(max_bodies) * cContactsPerBody, cMaxContacts));
 	world->mSystem.Init(max_bodies, 0, maxContacts, maxContacts,
 		world->mBroadPhaseLayers, world->mObjectVsBroadPhase, world->mObjectPairs);
