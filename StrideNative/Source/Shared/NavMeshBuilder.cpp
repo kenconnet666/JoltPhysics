@@ -8,6 +8,7 @@
 #include <Recast.h>
 
 #include <algorithm>
+#include <cfloat>
 #include <cmath>
 #include <cstring>
 #include <memory>
@@ -220,8 +221,17 @@ namespace StrideNative
 		cfg.detailSampleMaxError = cfg.ch * c.detail_sample_max_error;
 
 		const float tile_world_size = cfg.tileSize * cfg.cs;
-		rcVcopy(cfg.bmin, mBoundsMin);
-		rcVcopy(cfg.bmax, mBoundsMax);
+		// 高度的范围按这一块自己的三角形算：Recast 的高度场最多 8191 格高（格高 0.2 米时 1.6 公里），按整个输入算时山区、或者
+		// 一批里有一个很深很高的静态物体，地面就落到范围外、整块没有可走的地方
+		float min_y = FLT_MAX, max_y = -FLT_MAX;
+		for (int32_t vertex : tile.mTriangles)
+		{
+			min_y = std::min(min_y, mVertices[vertex * 3 + 1]);
+			max_y = std::max(max_y, mVertices[vertex * 3 + 1]);
+		}
+		// 这一块自己还是超出时留最上面的那一段（走的地面在上面，往下很深的东西——地基、深坑的底——切掉）
+		cfg.bmin[1] = std::max(min_y, max_y - (RC_SPAN_MAX_HEIGHT - 1) * cfg.ch);
+		cfg.bmax[1] = max_y;
 		cfg.bmin[0] = mOrigin[0] + tile.mX * tile_world_size - cfg.borderSize * cfg.cs;
 		cfg.bmin[2] = mOrigin[2] + tile.mY * tile_world_size - cfg.borderSize * cfg.cs;
 		cfg.bmax[0] = mOrigin[0] + (tile.mX + 1) * tile_world_size + cfg.borderSize * cfg.cs;

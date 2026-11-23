@@ -1311,10 +1311,14 @@ describe('stride-native and stride-tools', () => {
 					minX = Math.min(minX, tiles[i]); maxX = Math.max(maxX, tiles[i]);
 					minY = Math.min(minY, tiles[i + 1]); maxY = Math.max(maxY, tiles[i + 1]);
 				}
-				const vertices = world.staticTrianglesInBox([minX * tileSize - margin, -100, minY * tileSize - margin], [(maxX + 1) * tileSize + margin, 100, (maxY + 1) * tileSize + margin], [0, 0, 0]);
+				const vertices = world.staticTrianglesInBox([minX * tileSize - margin, -1e6, minY * tileSize - margin], [(maxX + 1) * tileSize + margin, 1e6, (maxY + 1) * tileSize + margin], [0, 0, 0]);
 				const batch = await navMesh.buildTiles(vertices, Int32Array.from({ length: vertices.length / 3 }, (_, i) => i), tiles);
 				return batch.commit();
 			};
+			// 一批里有个很深的东西（地下 3 公里的柱子，Recast 的高度场最多 1.6 公里高）：块的高度范围按块自己的三角形算、超出时留上面那段，
+			// 走廊照样有路
+			world.addBody({ shapes: [{ type: 'box', size: [1, 1000, 1] }], position: [-15, -3000, 5] });
+			world.staticChanges();
 			// 只建 x 在 -20..20 的块（6 列 4 行）：那里能寻路，40 米外没有导航网格。最外两行只盖到走廊边上 0.4 米，按人的半径收进去以后
 			// 没有可走的地方
 			const around = tilesOver(-20, 20, -10, 10);
