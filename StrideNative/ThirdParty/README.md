@@ -22,4 +22,8 @@ When upstream ships a security or serious bug fix, compare against the commit be
 | [stb](https://github.com/nothings/stb) | master, `9600522de539` | MIT or public domain | `stb_truetype.h`, `stb_image.h` | tools |
 | [libwebp](https://chromium.googlesource.com/webm/libwebp) | v1.6.0, `4fa219123383` | BSD-3-Clause (plus `PATENTS`) | the decoder only (`libwebpdecoder` in `makefile.unix`): `src/dec/`, the decoder's `src/dsp/` and `src/utils/` files, all `src/dsp/*.h` and `src/utils/*.h`, `src/webp/` headers | tools (WebP images, SOG splats) |
 
-Local changes to these sources: none. If one becomes necessary, list it here with the reason.
+Local changes to these sources (marked `StrideNative:` in the code); list any new one here with the reason:
+
+- basis_universal `encoder/basisu_enc.cpp`, `get_num_hardware_threads`: `set_num_wasi_threads` also caps non-WASI builds. A threaded
+  encode otherwise builds a pool of `hardware_concurrency` threads per call, all beyond the Emscripten pthread pool, and concurrent
+  encodes hung; `Source/Tools/TextureApi.cpp` caps it to the job system's threads.

@@ -5351,7 +5351,8 @@ namespace basisu
 #ifdef __wasi__
 		int num_threads = g_num_wasi_threads;
 #else
-		int num_threads = std::thread::hardware_concurrency();
+		// StrideNative: set_num_wasi_threads also caps Emscripten builds, whose pthread pool is sized to the job system
+		int num_threads = g_num_wasi_threads > 0 ? g_num_wasi_threads : (int)std::thread::hardware_concurrency();
 #endif
 				
 		return num_threads;

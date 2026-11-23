@@ -204,7 +204,8 @@ enum
 {
 	ST_BASIS_FLAG_SRGB = 1,
 	ST_BASIS_FLAG_MIPMAPS = 2,
-	/// Let the encoder use its own thread pool (one big texture on an otherwise idle machine; with many textures in flight leave it off).
+	/// Let the encoder use its own thread pool (as many threads as the job system) if no other encode is using it; otherwise this
+	/// one encodes single-threaded in its task, so a batch is parallel across textures and never multiplies the threads.
 	ST_BASIS_FLAG_THREADED = 4,
 };
 
