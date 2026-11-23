@@ -330,6 +330,41 @@ describe('stride-native and stride-tools', () => {
 		}
 	});
 
+	it('drives a wheeled vehicle: throttle moves it along its forward axis, wheels rest on the ground, steering turns it', () => {
+		const world = native.createPhysicsWorld(8);
+		try {
+			world.addBody({ shapes: [{ type: 'box', size: [400, 1, 400] }], position: [0, -0.5, 0] });
+			const body = world.addBody({ motion: 'dynamic', shapes: [{ type: 'box', size: [1.8, 0.6, 4], mass: 1200 }], position: [0, 1, 0] });
+			const wheel = (x, z, front) => ({ position: [x, -0.1, z], radius: 0.35, width: 0.25, suspensionMin: 0.1, suspensionMax: 0.4, maxSteerAngle: front ? 0.5 : 0, maxHandBrakeTorque: front ? 0 : 4000 });
+			// 车头朝 -Z：前轴在 -Z 那头
+			const car = world.addVehicle({ body, wheels: [wheel(-0.8, -1.4, true), wheel(0.8, -1.4, true), wheel(-0.8, 1.4, false), wheel(0.8, 1.4, false)], drive: 'rear' });
+			for (let i = 0; i < 60; i++) world.step(1 / 60);
+			let state = world.vehicleState(car, 4);
+			assert.equal(state.grounded, 4, 'all four wheels touch the ground after settling');
+			const z0 = world.positions()[body * 3 + 2];
+			for (let i = 0; i < 180; i++) {
+				world.vehicleInput(car, 1, 0);
+				world.step(1 / 60);
+			}
+			state = world.vehicleState(car, 4);
+			const z1 = world.positions()[body * 3 + 2];
+			assert.ok(z1 < z0 - 5, `full throttle for 3 s drives it forward (-Z): z ${z0} -> ${z1}`);
+			assert.ok(state.speed > 3 && state.gear >= 1 && state.rpm > 0, `moving forward in a forward gear: ${JSON.stringify({ speed: state.speed, gear: state.gear, rpm: state.rpm })}`);
+			assert.ok(state.wheels[0].position[2] < 0 && state.wheels[2].position[2] > 0, 'wheel transforms are relative to the body');
+			const x1 = world.positions()[body * 3];
+			for (let i = 0; i < 120; i++) {
+				world.vehicleInput(car, 0.5, 1);
+				world.step(1 / 60);
+			}
+			assert.ok(world.positions()[body * 3] > x1 + 1, 'steering right turns it towards +X');
+			assert.throws(() => world.addVehicle({ body, wheels: [wheel(0, 0, false)] }), /even number of wheels/);
+			world.removeBodies([body]);
+			assert.throws(() => world.vehicleInput(car, 1, 0), /does not exist/);
+		} finally {
+			world.destroy();
+		}
+	});
+
 	it('controls BodyComponent-style bodies: convex hulls, kinematic switching, teleport, velocity, impulse, gravity', () => {
 		using transforms = native.createTransforms(4);
 		const [slot] = transforms.allocate(1);

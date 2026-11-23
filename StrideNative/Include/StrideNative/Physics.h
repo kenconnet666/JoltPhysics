@@ -207,6 +207,55 @@ SN_API int32_t sn_physics_add_constraint(int32_t world, const sn_constraint *con
 SN_API int32_t sn_physics_remove_constraint(int32_t world, int32_t constraint);
 
 // ---------------------------------------------------------------------------------------------
+// 轮式车（Stride 没有；Jolt 的 VehicleConstraint 加 WheeledVehicleController）：车身是一个动态物体，轮子不是物体，
+// 每步沿悬挂往下投一个圆柱找地面，悬挂、轮胎摩擦、发动机、自动变速箱、差速器、防倾杆都在 Jolt 里算。
+// ---------------------------------------------------------------------------------------------
+
+enum
+{
+	SN_VEHICLE_DRIVE_FRONT = 0,	///< 第一对轮子（前轴）驱动
+	SN_VEHICLE_DRIVE_REAR = 1,	///< 最后一对轮子（后轴）驱动
+	SN_VEHICLE_DRIVE_ALL = 2,	///< 每一对都驱动，发动机的扭矩平分
+};
+
+/// 一个轮子；位置、方向都在车身的本地空间。轮子按轴成对给：0、1 是第一根轴的左、右，2、3 是第二根轴的，依此类推。
+typedef struct sn_vehicle_wheel
+{
+	float position[3];			///< 悬挂的上端（悬挂伸到最长时轮心在它下面 suspension_max）
+	float radius;
+	float width;
+	float suspension_min;		///< 悬挂压到最短的长度（米）
+	float suspension_max;		///< 悬挂伸到最长的长度（米）
+	float suspension_frequency;	///< 悬挂弹簧的频率（Hz），1～2 是轿车
+	float suspension_damping;	///< 阻尼比，0.5 左右
+	float max_steer_angle;		///< 最大转向角（弧度），0 是不转向的轮子
+	float max_brake_torque;		///< 刹车（牛·米）
+	float max_hand_brake_torque;	///< 手刹（牛·米），一般只给后轮
+} sn_vehicle_wheel;
+
+/// 车的整体设置；方向在车身的本地空间。
+typedef struct sn_vehicle
+{
+	int32_t body;				///< 车身（动态物体）
+	uint32_t drive;				///< SN_VEHICLE_DRIVE_*
+	float forward[3];			///< 车头朝哪（单位向量）；上方是 +Y
+	float max_engine_torque;	///< 发动机最大扭矩（牛·米），500 是普通轿车
+	float max_rpm;				///< 最高转速
+	float max_pitch_roll_angle;	///< 车身倾斜不超过这个角度（弧度），防翻车；>= π 是不限
+	float anti_roll_stiffness;	///< 每根轴的防倾杆（牛/米），0 是没有
+} sn_vehicle;
+
+/// 加一辆车，返回车的句柄（> 0）。车身被移除时车一起移除。轮子至少 2 个、个数是偶数。
+SN_API int32_t sn_physics_add_vehicle(int32_t world, const sn_vehicle *vehicle, const sn_vehicle_wheel *wheels, uint32_t wheel_count);
+/// 移除车（车身留着）；移除过的忽略。
+SN_API int32_t sn_physics_remove_vehicle(int32_t world, int32_t vehicle);
+/// 驾驶的输入：forward -1..1（油门，负的是倒车）、right -1..1（转向）、brake 0..1、hand_brake 0..1。有输入时唤醒车身。
+SN_API int32_t sn_physics_vehicle_input(int32_t world, int32_t vehicle, float forward, float right, float brake, float hand_brake);
+/// 车的状态：out[0] 发动机转速、out[1] 挡位（负的是倒挡）、out[2] 沿车头方向的速度（米/秒）、out[3] 着地的轮子数；
+/// 之后每个轮子 8 个数：相对车身的位置 xyz、旋转 xyzw（轮子模型的轮轴沿本地 X）、悬挂现在的长度。capacity 是 out 能放几个数。
+SN_API int32_t sn_physics_vehicle_state(int32_t world, int32_t vehicle, float *out, uint32_t capacity);
+
+// ---------------------------------------------------------------------------------------------
 // 接触事件（Stride 的 IContactHandler）
 // ---------------------------------------------------------------------------------------------
 

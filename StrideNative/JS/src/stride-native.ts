@@ -428,6 +428,62 @@ export interface SweepOptions extends QueryOptions {
 
 const CAST_IGNORE_INITIAL_OVERLAP = 1;
 
+/** 用 PhysicsWorld.addVehicle 建的车。 */
+export type PhysicsVehicle = Branded<number, 'PhysicsVehicle'>;
+
+/** 车的一个轮子（车身本地空间）。轮子按轴成对：0、1 是第一根轴（一般是前轴）的左、右，2、3 是下一根轴的。 */
+export interface VehicleWheelDesc {
+	/** 悬挂的上端；悬挂伸到最长时轮心在它下面 suspensionMax。 */
+	position: Vec3;
+	radius: number;
+	width: number;
+	/** 悬挂最短、最长的长度（米），默认 0.3、0.5。 */
+	suspensionMin?: number;
+	suspensionMax?: number;
+	/** 悬挂弹簧的频率（Hz）和阻尼比，默认 1.5、0.5。 */
+	suspensionFrequency?: number;
+	suspensionDamping?: number;
+	/** 最大转向角（弧度），默认 0（不转向）。 */
+	maxSteerAngle?: number;
+	/** 刹车、手刹的最大扭矩（牛·米），默认 1500、0。 */
+	maxBrakeTorque?: number;
+	maxHandBrakeTorque?: number;
+}
+
+/** 轮式车（Jolt 的 VehicleConstraint、WheeledVehicleController）：车身是动态物体，轮子沿悬挂往下投圆柱找地面。 */
+export interface VehicleDesc {
+	body: BodyId;
+	wheels: readonly VehicleWheelDesc[];
+	/** 哪根轴驱动，默认 'rear'。 */
+	drive?: 'front' | 'rear' | 'all';
+	/** 车头朝哪（车身本地），默认 -Z（同相机看的方向）。 */
+	forward?: Vec3;
+	/** 发动机最大扭矩（牛·米），默认 500；最高转速，默认 6000。 */
+	maxEngineTorque?: number;
+	maxRpm?: number;
+	/** 车身倾斜不超过这个角（弧度），防翻车；默认不限。 */
+	maxPitchRollAngle?: number;
+	/** 每根轴的防倾杆（牛/米），默认 1000，0 是没有。 */
+	antiRollStiffness?: number;
+}
+
+/** 车的状态（vehicleState）。 */
+export interface VehicleState {
+	rpm: number;
+	/** 挡位，负的是倒挡，0 是空挡。 */
+	gear: number;
+	/** 沿车头方向的速度（米/秒），倒车是负的。 */
+	speed: number;
+	/** 着地的轮子数。 */
+	grounded: number;
+	/** 每个轮子相对车身的位置、旋转（xyzw；轮子模型的轮轴沿本地 X）、悬挂现在的长度。 */
+	wheels: { position: [number, number, number]; rotation: [number, number, number, number]; suspension: number }[];
+}
+
+const VEHICLE_DRIVES = { front: 0, rear: 1, all: 2 } as const;
+const VEHICLE_WORDS = 9;
+const WHEEL_WORDS = 12;
+
 /** 用 PhysicsWorld.addConstraint 建的约束。 */
 export type PhysicsConstraint = Branded<number, 'PhysicsConstraint'>;
 
@@ -538,6 +594,55 @@ export class PhysicsWorld extends NativeObject<StrideNative> {
 		return n.withScratch(CONSTRAINT_WORDS * 4, (address) => {
 			writeConstraint(n.f32(address, CONSTRAINT_WORDS), n.i32(address, CONSTRAINT_WORDS), desc);
 			return n.check(n.module._sn_physics_add_constraint(this[HANDLE], address), 'sn_physics_add_constraint') as PhysicsConstraint;
+		});
+	}
+
+	/** 加一辆车。车身被移除时车一起移除。 */
+	addVehicle(desc: VehicleDesc): PhysicsVehicle {
+		const n = this.native;
+		const count = desc.wheels.length;
+		return n.withScratch((VEHICLE_WORDS + count * WHEEL_WORDS) * 4, (address) => {
+			const floats = n.f32(address, VEHICLE_WORDS + count * WHEEL_WORDS), ints = n.i32(address, VEHICLE_WORDS + count * WHEEL_WORDS), words = n.u32(address, VEHICLE_WORDS);
+			const forward = desc.forward ?? [0, 0, -1];
+			ints[0] = desc.body;
+			words[1] = VEHICLE_DRIVES[desc.drive ?? 'rear'];
+			floats.set([forward[0]!, forward[1]!, forward[2]!, desc.maxEngineTorque ?? 500, desc.maxRpm ?? 6000, desc.maxPitchRollAngle ?? Math.PI, desc.antiRollStiffness ?? 1000], 2);
+			desc.wheels.forEach((wheel, i) => {
+				floats.set([
+					wheel.position[0]!, wheel.position[1]!, wheel.position[2]!, wheel.radius, wheel.width,
+					wheel.suspensionMin ?? 0.3, wheel.suspensionMax ?? 0.5, wheel.suspensionFrequency ?? 1.5, wheel.suspensionDamping ?? 0.5,
+					wheel.maxSteerAngle ?? 0, wheel.maxBrakeTorque ?? 1500, wheel.maxHandBrakeTorque ?? 0,
+				], VEHICLE_WORDS + i * WHEEL_WORDS);
+			});
+			const wheels = address + VEHICLE_WORDS * 4;
+			return n.check(n.module._sn_physics_add_vehicle(this[HANDLE], address, wheels, count), 'sn_physics_add_vehicle') as PhysicsVehicle;
+		});
+	}
+
+	/** 移除车（车身留着）；移除过的忽略。 */
+	removeVehicle(vehicle: PhysicsVehicle): void {
+		this.native.check(this.native.module._sn_physics_remove_vehicle(this[HANDLE], vehicle), 'sn_physics_remove_vehicle');
+	}
+
+	/** 驾驶的输入：油门 -1..1（负的倒车）、转向 -1..1（正的向右）、刹车 0..1、手刹 0..1。 */
+	vehicleInput(vehicle: PhysicsVehicle, forward: number, right: number, brake = 0, handBrake = 0): void {
+		this.native.check(this.native.module._sn_physics_vehicle_input(this[HANDLE], vehicle, forward, right, brake, handBrake), 'sn_physics_vehicle_input');
+	}
+
+	/** 车的状态：转速、挡位、速度、每个轮子相对车身的位姿。wheelCount 是建车时的轮子数。 */
+	vehicleState(vehicle: PhysicsVehicle, wheelCount: number): VehicleState {
+		const n = this.native;
+		const size = 4 + 8 * wheelCount;
+		return n.withScratch(size * 4, (address) => {
+			n.check(n.module._sn_physics_vehicle_state(this[HANDLE], vehicle, address, size), 'sn_physics_vehicle_state');
+			const f = n.f32(address, size);
+			return {
+				rpm: f[0]!, gear: f[1]!, speed: f[2]!, grounded: f[3]!,
+				wheels: Array.from({ length: wheelCount }, (_, i) => {
+					const at = 4 + 8 * i;
+					return { position: [f[at]!, f[at + 1]!, f[at + 2]!], rotation: [f[at + 3]!, f[at + 4]!, f[at + 5]!, f[at + 6]!], suspension: f[at + 7]! };
+				}),
+			};
 		});
 	}
 

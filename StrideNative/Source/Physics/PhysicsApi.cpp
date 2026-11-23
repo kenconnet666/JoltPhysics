@@ -39,6 +39,9 @@
 #include <Jolt/Physics/Collision/Shape/SphereShape.h>
 #include <Jolt/Physics/Collision/Shape/StaticCompoundShape.h>
 #include <Jolt/Physics/PhysicsSystem.h>
+#include <Jolt/Physics/Vehicle/VehicleCollisionTester.h>
+#include <Jolt/Physics/Vehicle/VehicleConstraint.h>
+#include <Jolt/Physics/Vehicle/WheeledVehicleController.h>
 #include <Jolt/RegisterTypes.h>
 
 #include <algorithm>
@@ -404,6 +407,13 @@ namespace
 		/// 移除过的物体的编号，加物体时先复用
 		std::vector<int32_t>			mFreeBodies;
 		std::vector<ConstraintRecord>	mConstraints;
+		struct VehicleRecord
+		{
+			Ref<VehicleConstraint>	mConstraint;			///< 移除了是 nullptr
+			int32_t					mBody = -1;
+			Vec3						mForward = Vec3::sAxisZ();	///< 车头方向（车身本地）：报速度用
+		};
+		std::vector<VehicleRecord>		mVehicles;
 	};
 
 	World *GetWorld(int32_t inHandle)
@@ -1328,12 +1338,19 @@ SN_API int32_t sn_physics_remove_bodies(int32_t world, const int32_t *bodies, ui
 		int32_t index = bodies[i];
 		if (index < 0 || size_t(index) >= w->mBodies.size() || w->mBodies[index].mRemoved)
 			continue;
-		// 先拿走连着它的约束（Jolt 要求约束比物体先移除）
+		// 先拿走连着它的约束、车（Jolt 要求约束比物体先移除）
 		for (World::ConstraintRecord &constraint : w->mConstraints)
 			if (constraint.mConstraint != nullptr && (constraint.mBodyA == index || constraint.mBodyB == index))
 			{
 				w->mSystem.RemoveConstraint(constraint.mConstraint);
 				constraint.mConstraint = nullptr;
+			}
+		for (World::VehicleRecord &vehicle : w->mVehicles)
+			if (vehicle.mConstraint != nullptr && vehicle.mBody == index)
+			{
+				w->mSystem.RemoveStepListener(vehicle.mConstraint);
+				w->mSystem.RemoveConstraint(vehicle.mConstraint);
+				vehicle.mConstraint = nullptr;
 			}
 		BodyRecord &record = w->mBodies[index];
 		record.mRemoved = true;
@@ -1627,6 +1644,177 @@ SN_API int32_t sn_physics_remove_constraint(int32_t world, int32_t constraint)
 	for (int32_t body : { record.mBodyA, record.mBodyB })
 		if (body >= 0 && !w->mBodies[body].mRemoved)
 			bodies.ActivateBody(w->mBodies[body].mID);
+	return SN_OK;
+}
+
+namespace
+{
+	/// 车的句柄换成记录；没有、移除过的是 nullptr。
+	World::VehicleRecord *GetVehicle(World &w, int32_t vehicle)
+	{
+		if (vehicle <= 0 || size_t(vehicle) > w.mVehicles.size())
+			return nullptr;
+		World::VehicleRecord &record = w.mVehicles[vehicle - 1];
+		return record.mConstraint == nullptr ? nullptr : &record;
+	}
+}
+
+SN_API int32_t sn_physics_add_vehicle(int32_t world, const sn_vehicle *vehicle, const sn_vehicle_wheel *wheels, uint32_t wheel_count)
+{
+	World *w = GetWorld(world);
+	if (w == nullptr)
+		return SN_ERROR_INVALID_HANDLE;
+	if (vehicle == nullptr || wheels == nullptr || wheel_count < 2 || wheel_count % 2 != 0)
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "a vehicle needs its settings and an even number of wheels (left, right per axle), at least 2");
+	if (vehicle->drive > SN_VEHICLE_DRIVE_ALL)
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "unknown vehicle drive " + std::to_string(vehicle->drive));
+	BodyRecord *body = GetBody(*w, vehicle->body);
+	if (body == nullptr)
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "the vehicle body does not exist");
+	if (!Moves(body->mMotion))
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "the vehicle body must be dynamic");
+	Vec3 forward = Load3(vehicle->forward);
+	if (forward.LengthSq() < 1.0e-6f)
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "the vehicle forward direction is zero");
+	forward = forward.Normalized();
+
+	VehicleConstraintSettings settings;
+	settings.mUp = Vec3::sAxisY();
+	settings.mForward = forward;
+	settings.mMaxPitchRollAngle = vehicle->max_pitch_roll_angle > 0.0f ? std::min(vehicle->max_pitch_roll_angle, JPH_PI) : JPH_PI;
+	for (uint32_t i = 0; i < wheel_count; ++i)
+	{
+		const sn_vehicle_wheel &in = wheels[i];
+		if (!(in.radius > 0.0f) || !(in.width > 0.0f) || in.suspension_min < 0.0f || in.suspension_max < in.suspension_min)
+			return SetLastError(SN_ERROR_INVALID_ARGUMENT, "wheel " + std::to_string(i) + ": radius and width must be positive and 0 <= suspension_min <= suspension_max");
+		WheelSettingsWV *wheel = new WheelSettingsWV;
+		wheel->mPosition = Load3(in.position);
+		wheel->mWheelForward = forward;
+		wheel->mRadius = in.radius;
+		wheel->mWidth = in.width;
+		wheel->mSuspensionMinLength = in.suspension_min;
+		wheel->mSuspensionMaxLength = in.suspension_max;
+		if (in.suspension_frequency > 0.0f)
+			wheel->mSuspensionSpring = SpringSettings(ESpringMode::FrequencyAndDamping, in.suspension_frequency, in.suspension_damping);
+		wheel->mMaxSteerAngle = std::max(0.0f, in.max_steer_angle);
+		wheel->mMaxBrakeTorque = std::max(0.0f, in.max_brake_torque);
+		wheel->mMaxHandBrakeTorque = std::max(0.0f, in.max_hand_brake_torque);
+		settings.mWheels.push_back(wheel);
+	}
+	uint32_t axles = wheel_count / 2;
+	Ref<WheeledVehicleControllerSettings> controller = new WheeledVehicleControllerSettings;
+	if (vehicle->max_engine_torque > 0.0f)
+		controller->mEngine.mMaxTorque = vehicle->max_engine_torque;
+	if (vehicle->max_rpm > controller->mEngine.mMinRPM)
+		controller->mEngine.mMaxRPM = vehicle->max_rpm;
+	uint32_t first = vehicle->drive == SN_VEHICLE_DRIVE_REAR ? axles - 1 : 0, last = vehicle->drive == SN_VEHICLE_DRIVE_FRONT ? 0 : axles - 1;
+	for (uint32_t axle = first; axle <= last; ++axle)
+	{
+		VehicleDifferentialSettings differential;
+		differential.mLeftWheel = int(axle * 2);
+		differential.mRightWheel = int(axle * 2 + 1);
+		differential.mEngineTorqueRatio = 1.0f / float(last - first + 1);
+		controller->mDifferentials.push_back(differential);
+	}
+	settings.mController = controller;
+	if (vehicle->anti_roll_stiffness > 0.0f)
+		for (uint32_t axle = 0; axle < axles; ++axle)
+		{
+			VehicleAntiRollBar bar;
+			bar.mLeftWheel = int(axle * 2);
+			bar.mRightWheel = int(axle * 2 + 1);
+			bar.mStiffness = vehicle->anti_roll_stiffness;
+			settings.mAntiRollBars.push_back(bar);
+		}
+
+	Ref<VehicleConstraint> constraint;
+	{
+		BodyLockWrite lock(w->mSystem.GetBodyLockInterface(), body->mID);
+		if (!lock.Succeeded())
+			return SetLastError(SN_ERROR_INVALID_ARGUMENT, "the vehicle body is not in the physics system");
+		constraint = new VehicleConstraint(lock.GetBody(), settings);
+		// 轮子按车身的层投圆柱：车身能撞到的东西轮子都能压上去
+		constraint->SetVehicleCollisionTester(new VehicleCollisionTesterCastCylinder(lock.GetBody().GetObjectLayer()));
+	}
+	w->mSystem.AddConstraint(constraint);
+	w->mSystem.AddStepListener(constraint);
+	World::VehicleRecord record;
+	record.mConstraint = constraint;
+	record.mBody = vehicle->body;
+	record.mForward = forward;
+	w->mVehicles.push_back(record);
+	return int32_t(w->mVehicles.size());
+}
+
+SN_API int32_t sn_physics_remove_vehicle(int32_t world, int32_t vehicle)
+{
+	World *w = GetWorld(world);
+	if (w == nullptr)
+		return SN_ERROR_INVALID_HANDLE;
+	World::VehicleRecord *record = GetVehicle(*w, vehicle);
+	if (record == nullptr)
+		return SN_OK;
+	w->mSystem.RemoveStepListener(record->mConstraint);
+	w->mSystem.RemoveConstraint(record->mConstraint);
+	record->mConstraint = nullptr;
+	return SN_OK;
+}
+
+SN_API int32_t sn_physics_vehicle_input(int32_t world, int32_t vehicle, float forward, float right, float brake, float hand_brake)
+{
+	World *w = GetWorld(world);
+	if (w == nullptr)
+		return SN_ERROR_INVALID_HANDLE;
+	World::VehicleRecord *record = GetVehicle(*w, vehicle);
+	if (record == nullptr)
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "vehicle " + std::to_string(vehicle) + " does not exist");
+	auto clamp = [](float value, float low) { return std::clamp(std::isfinite(value) ? value : 0.0f, low, 1.0f); };
+	static_cast<WheeledVehicleController *>(record->mConstraint->GetController())->SetDriverInput(clamp(forward, -1.0f), clamp(right, -1.0f), clamp(brake, 0.0f), clamp(hand_brake, 0.0f));
+	// 停着的车睡着了，踩油门、打方向要叫醒
+	if (forward != 0.0f || right != 0.0f || brake != 0.0f || hand_brake != 0.0f)
+		w->mSystem.GetBodyInterface().ActivateBody(w->mBodies[record->mBody].mID);
+	return SN_OK;
+}
+
+SN_API int32_t sn_physics_vehicle_state(int32_t world, int32_t vehicle, float *out, uint32_t capacity)
+{
+	World *w = GetWorld(world);
+	if (w == nullptr)
+		return SN_ERROR_INVALID_HANDLE;
+	World::VehicleRecord *record = GetVehicle(*w, vehicle);
+	if (record == nullptr)
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "vehicle " + std::to_string(vehicle) + " does not exist");
+	const VehicleConstraint &constraint = *record->mConstraint;
+	const Wheels &wheels = constraint.GetWheels();
+	if (out == nullptr || capacity < 4 + 8 * wheels.size())
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "the vehicle state needs " + std::to_string(4 + 8 * wheels.size()) + " floats");
+	const WheeledVehicleController &controller = static_cast<const WheeledVehicleController &>(*constraint.GetController());
+	BodyInterface &bodies = w->mSystem.GetBodyInterface();
+	BodyID id = w->mBodies[record->mBody].mID;
+	Vec3 forward = bodies.GetRotation(id) * record->mForward;
+	uint32_t grounded = 0;
+	for (const Wheel *wheel : wheels)
+		grounded += wheel->HasContact() ? 1 : 0;
+	out[0] = controller.GetEngine().GetCurrentRPM();
+	out[1] = float(controller.GetTransmission().GetCurrentGear());
+	out[2] = bodies.GetLinearVelocity(id).Dot(forward);
+	out[3] = float(grounded);
+	for (uint32_t i = 0; i < wheels.size(); ++i)
+	{
+		// 轮子模型的轮轴沿本地 X、上方 +Y：左右两边的轮子用同一个模型
+		Mat44 local = constraint.GetWheelLocalTransform(i, Vec3::sAxisX(), Vec3::sAxisY());
+		float *wheel = out + 4 + 8 * i;
+		Vec3 position = local.GetTranslation();
+		wheel[0] = position.GetX();
+		wheel[1] = position.GetY();
+		wheel[2] = position.GetZ();
+		Quat rotation = local.GetQuaternion();
+		wheel[3] = rotation.GetX();
+		wheel[4] = rotation.GetY();
+		wheel[5] = rotation.GetZ();
+		wheel[6] = rotation.GetW();
+		wheel[7] = wheels[i]->GetSuspensionLength();
+	}
 	return SN_OK;
 }
 
