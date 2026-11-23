@@ -382,6 +382,21 @@ export class StrideTools extends NativeModule<ToolsExport> {
 			})));
 	}
 
+	/**
+	 * 可破坏物体的预先切块（Voronoi）：包围盒里按 seed 撒 pieceCount 个点，每块是实体被它和别的点的中垂面切下来的那一份。
+	 * 网格先合并成封闭的实体，不是封闭的时切它的凸包；空的块去掉。interior 是切出来的面（里面，用里面的材质）。
+	 */
+	fractureMesh({ positions, indices }: { positions: Float32Array; indices: Uint32Array }, pieceCount: number, seed = 1): Promise<{ positions: Float32Array; indices: Uint32Array; pieceOfTriangle: Uint32Array; interior: Uint32Array; pieceCount: number }> {
+		return this.withArraysAsync([positions, indices], (p, i) =>
+			this.awaitTask(this.module._st_mesh_fracture(p, positions.length / 3, i, indices.length, pieceCount, seed), 'st_mesh_fracture', (task) => ({
+				positions: task.output(Float32Array, 0),
+				indices: task.output(Uint32Array, 1),
+				pieceOfTriangle: task.output(Uint32Array, 2),
+				interior: task.output(Uint32Array, 3),
+				pieceCount: task.result(1),
+			})));
+	}
+
 	/** 关卡白盒：按顺序把笔刷加上、减掉、求交（Manifold），得到一个封闭的网格。 */
 	brushCsg(brushes: readonly Brush[]): Promise<BrushSolid> {
 		const KINDS = { box: 0, prism: 1, cylinder: 2, sphere: 3 } as const;

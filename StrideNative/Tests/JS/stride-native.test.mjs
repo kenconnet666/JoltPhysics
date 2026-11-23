@@ -1369,6 +1369,26 @@ describe('stride-native and stride-tools', () => {
 		}
 	});
 
+	it('fractures a closed mesh into Voronoi pieces that fill its volume, marking the cut faces', async () => {
+		const at = (x, y, z) => [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, y, z, 1];
+		const box = await tools.brushCsg([{ kind: 'box', operation: 'add', transform: at(0, 0, 0), size: [2, 1, 1] }]);
+		const result = await tools.fractureMesh(box, 8, 7);
+		assert.ok(result.pieceCount >= 6 && result.pieceCount <= 8, `pieces: ${result.pieceCount}`);
+		// 体积守恒：各块的体积加起来是 2 立方米（按三角形的有符号体积算）
+		let volume = 0;
+		const p = result.positions, idx = result.indices;
+		for (let t = 0; t < idx.length; t += 3) {
+			const [a, b, c] = [idx[t] * 3, idx[t + 1] * 3, idx[t + 2] * 3];
+			volume += (p[a] * (p[b + 1] * p[c + 2] - p[b + 2] * p[c + 1]) - p[a + 1] * (p[b] * p[c + 2] - p[b + 2] * p[c]) + p[a + 2] * (p[b] * p[c + 1] - p[b + 1] * p[c])) / 6;
+		}
+		assert.ok(Math.abs(volume - 2) < 1e-3, `volume ${volume}`);
+		const interior = result.interior.reduce((sum, flag) => sum + flag, 0);
+		assert.ok(interior > 0 && interior < result.interior.length, `cut faces: ${interior} of ${result.interior.length}`);
+		// 同一个种子每次一样
+		const again = await tools.fractureMesh(box, 8, 7);
+		assert.deepEqual([...again.pieceOfTriangle], [...result.pieceOfTriangle]);
+	});
+
 	it('combines greybox brushes (Manifold) and reports whose surface each triangle is', async () => {
 		const at = (x, y, z) => [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, y, z, 1];
 		const solid = await tools.brushCsg([

@@ -684,6 +684,15 @@ export interface NativeExports {
 	 * C: Tools.h
 	 */
 	_st_image_resize(rgba: number, width: number, height: number, outWidth: number, outHeight: number): number;
+	/**
+	 * Pre-fractures a mesh for breakable objects (Voronoi): piece_count seeds at deterministic random points in the bounds, each
+	 * piece is the solid cut by the planes halfway to every other seed. The mesh is merged into a closed solid first; when it is not
+	 * one, its convex hull is fractured instead. Empty cells are dropped. Inputs must stay alive until the task finishes.
+	 * Outputs: [0] float3 positions, [1] uint32 triangle indices, [2] uint32 piece index per triangle, [3] uint32 1 for faces made
+	 * by the cuts (the inside, for an interior material), else 0. Results: [0] triangle count, [1] piece count.
+	 * C: Tools.h
+	 */
+	_st_mesh_fracture(positions: number, vertexCount: number, indices: number, indexCount: number, pieceCount: number, seed: number): number;
 	/** C: Tools.h */
 	_st_meshopt_encode_index_bound(indexCount: number, vertexCount: number): number;
 	/** C: Tools.h */
@@ -902,6 +911,7 @@ export const POINTER_SIGNATURES: Readonly<Record<string, string>> = {
 	st_generate_tangents: '_pppp_p',
 	st_image_decode: '_p_',
 	st_image_resize: '_p____',
+	st_mesh_fracture: '_p_p___',
 	st_meshopt_encode_indices: '_p_p_',
 	st_meshopt_encode_vertices: '_p_p__',
 	st_meshopt_optimize: '_p_p__',
@@ -1080,6 +1090,7 @@ export type ToolsExport =
 	| 'st_meshopt_encode_indices'
 	| 'st_uv_unwrap'
 	| 'st_brush_csg'
+	| 'st_mesh_fracture'
 	| 'st_sdf_mesh'
 	| 'st_convex_decompose'
 	| 'st_image_decode'

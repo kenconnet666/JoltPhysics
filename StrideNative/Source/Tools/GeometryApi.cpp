@@ -323,6 +323,120 @@ SN_API int32_t st_brush_csg(const float *brushes, uint32_t float_count)
 	});
 }
 
+SN_API int32_t st_mesh_fracture(const float *positions, uint32_t vertex_count, const uint32_t *indices, uint32_t index_count, uint32_t piece_count, uint32_t seed)
+{
+	SN_REQUIRE_INIT(SN_ERROR_NOT_INITIALIZED);
+	if (positions == nullptr || indices == nullptr || vertex_count < 4 || index_count < 12 || index_count % 3 != 0)
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "a mesh to fracture needs positions and at least 4 triangles");
+	if (piece_count < 2 || piece_count > 256)
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "piece_count must be 2..256");
+
+	return RunTask("MeshFracture", [=](Task &ioTask)
+	{
+		// 网格换成 Manifold 的实体：导入的模型在接缝处有重复的顶点，先合并；还不是封闭的实体时用它的凸包
+		manifold::MeshGL input;
+		input.numProp = 3;
+		input.vertProperties.assign(positions, positions + size_t(vertex_count) * 3);
+		input.triVerts.assign(indices, indices + index_count);
+		input.Merge();
+		manifold::Manifold solid(input);
+		if (solid.Status() != manifold::Manifold::Error::NoError || solid.IsEmpty())
+		{
+			std::vector<manifold::vec3> points(vertex_count);
+			for (uint32_t v = 0; v < vertex_count; ++v)
+				points[v] = manifold::vec3(positions[v * 3], positions[v * 3 + 1], positions[v * 3 + 2]);
+			solid = manifold::Manifold::Hull(points);
+		}
+		if (solid.IsEmpty())
+		{
+			ioTask.Fail("the mesh has no volume to fracture");
+			return false;
+		}
+
+		// 种子：包围盒里确定的随机点（同一个 seed 每次一样）
+		manifold::Box bounds = solid.BoundingBox();
+		uint32_t state = seed * 747796405u + 2891336453u;
+		auto random = [&state]() {
+			state = state * 747796405u + 2891336453u;
+			uint32_t word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+			return double((word >> 22u) ^ word) / 4294967296.0;
+		};
+		std::vector<manifold::vec3> seeds(piece_count);
+		for (manifold::vec3 &point : seeds)
+			point = manifold::vec3(bounds.min.x + random() * (bounds.max.x - bounds.min.x), bounds.min.y + random() * (bounds.max.y - bounds.min.y), bounds.min.z + random() * (bounds.max.z - bounds.min.z));
+
+		// 每个种子的 Voronoi 格子：实体按它和每个别的种子的中垂面切，留靠它的一边
+		struct Piece { manifold::MeshGL mesh; std::vector<manifold::vec4> planes; };
+		std::vector<Piece> pieces;
+		for (uint32_t i = 0; i < piece_count; ++i)
+		{
+			manifold::Manifold cell = solid;
+			std::vector<manifold::vec4> planes;
+			for (uint32_t j = 0; j < piece_count && !cell.IsEmpty(); ++j)
+			{
+				if (j == i)
+					continue;
+				manifold::vec3 normal = seeds[i] - seeds[j];
+				double length = manifold::la::length(normal);
+				if (length < 1e-9)
+					continue;
+				normal /= length;
+				double offset = manifold::la::dot(normal, (seeds[i] + seeds[j]) * 0.5);
+				cell = cell.TrimByPlane(normal, offset);
+				planes.push_back(manifold::vec4(normal, offset));
+			}
+			if (!cell.IsEmpty())
+				pieces.push_back({ cell.GetMeshGL(), std::move(planes) });
+		}
+
+		size_t total_vertices = 0, total_triangles = 0;
+		for (const Piece &piece : pieces)
+		{
+			total_vertices += piece.mesh.NumVert();
+			total_triangles += piece.mesh.NumTri();
+		}
+		float *out_positions = static_cast<float *>(ioTask.AddOutput(total_vertices * 3 * sizeof(float)));
+		uint32_t *out_indices = static_cast<uint32_t *>(ioTask.AddOutput(total_triangles * 3 * sizeof(uint32_t)));
+		uint32_t *out_piece = static_cast<uint32_t *>(ioTask.AddOutput(total_triangles * sizeof(uint32_t)));
+		uint32_t *out_interior = static_cast<uint32_t *>(ioTask.AddOutput(total_triangles * sizeof(uint32_t)));
+		size_t vertex_base = 0, triangle_base = 0;
+		for (uint32_t p = 0; p < pieces.size(); ++p)
+		{
+			const manifold::MeshGL &mesh = pieces[p].mesh;
+			for (size_t v = 0; v < mesh.NumVert(); ++v)
+				for (int k = 0; k < 3; ++k)
+					out_positions[(vertex_base + v) * 3 + k] = mesh.vertProperties[v * mesh.numProp + k];
+			for (size_t t = 0; t < mesh.NumTri(); ++t)
+			{
+				manifold::vec3 corners[3];
+				for (int k = 0; k < 3; ++k)
+				{
+					uint32_t vertex = mesh.triVerts[t * 3 + k];
+					out_indices[(triangle_base + t) * 3 + k] = uint32_t(vertex_base + vertex);
+					corners[k] = manifold::vec3(mesh.vertProperties[vertex * mesh.numProp], mesh.vertProperties[vertex * mesh.numProp + 1], mesh.vertProperties[vertex * mesh.numProp + 2]);
+				}
+				// 切出来的面：三个角都在这个格子的某个中垂面上（朝外的法线是 -normal）
+				manifold::vec3 centre = (corners[0] + corners[1] + corners[2]) / 3.0;
+				double size = manifold::la::length(bounds.max - bounds.min);
+				bool interior = false;
+				for (const manifold::vec4 &plane : pieces[p].planes)
+					if (std::abs(manifold::la::dot(manifold::vec3(plane.x, plane.y, plane.z), centre) - plane.w) < 1e-5 * size)
+					{
+						interior = true;
+						break;
+					}
+				out_piece[triangle_base + t] = p;
+				out_interior[triangle_base + t] = interior ? 1 : 0;
+			}
+			vertex_base += mesh.NumVert();
+			triangle_base += mesh.NumTri();
+		}
+		ioTask.SetResult(0, int32_t(total_triangles));
+		ioTask.SetResult(1, int32_t(pieces.size()));
+		return true;
+	});
+}
+
 namespace
 {
 	/// One shape of st_sdf_mesh: where it is (world -> local) and its distance function in local space.

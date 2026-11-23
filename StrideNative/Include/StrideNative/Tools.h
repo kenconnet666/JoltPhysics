@@ -163,6 +163,13 @@ enum
 /// Result [0]: triangle count.
 SN_API int32_t st_brush_csg(const float *brushes, uint32_t float_count);
 
+/// Pre-fractures a mesh for breakable objects (Voronoi): piece_count seeds at deterministic random points in the bounds, each
+/// piece is the solid cut by the planes halfway to every other seed. The mesh is merged into a closed solid first; when it is not
+/// one, its convex hull is fractured instead. Empty cells are dropped. Inputs must stay alive until the task finishes.
+/// Outputs: [0] float3 positions, [1] uint32 triangle indices, [2] uint32 piece index per triangle, [3] uint32 1 for faces made
+/// by the cuts (the inside, for an interior material), else 0. Results: [0] triangle count, [1] piece count.
+SN_API int32_t st_mesh_fracture(const float *positions, uint32_t vertex_count, const uint32_t *indices, uint32_t index_count, uint32_t piece_count, uint32_t seed);
+
 enum
 {
 	ST_SDF_SPHERE = 0,				///< params: radius
