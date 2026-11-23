@@ -41,6 +41,8 @@
 #include <Jolt/Physics/PhysicsSystem.h>
 #include <Jolt/Physics/Constraints/SwingTwistConstraint.h>
 #include <Jolt/Physics/Ragdoll/Ragdoll.h>
+#include <Jolt/Physics/SoftBody/SoftBodyCreationSettings.h>
+#include <Jolt/Physics/SoftBody/SoftBodyMotionProperties.h>
 #include <Jolt/Skeleton/Skeleton.h>
 #include <Jolt/Physics/Vehicle/VehicleCollisionTester.h>
 #include <Jolt/Physics/Vehicle/VehicleConstraint.h>
@@ -2084,6 +2086,198 @@ SN_API int32_t sn_physics_ragdoll_impulse(int32_t world, int32_t ragdoll, int32_
 		w->mSystem.GetBodyInterface().AddImpulse(record->mRagdoll->GetBodyID(part), value);
 	else
 		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "ragdoll part " + std::to_string(part) + " does not exist");
+	return SN_OK;
+}
+
+SN_API int32_t sn_physics_add_soft_body(int32_t world, const sn_soft_body *desc, const float *vertices, const float *inv_masses, uint32_t vertex_count,
+	const uint32_t *indices, uint32_t index_count)
+{
+	World *w = GetWorld(world);
+	if (w == nullptr)
+		return SN_ERROR_INVALID_HANDLE;
+	if (desc == nullptr || vertices == nullptr || inv_masses == nullptr || indices == nullptr || vertex_count < 3 || index_count < 3 || index_count % 3 != 0)
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "a soft body needs vertices, inverse masses and at least one triangle");
+	if (desc->layer >= cLayerCount)
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "soft body layer must be 0..31");
+	if (desc->bend_type > 2 || desc->long_range > 2)
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "soft body bend_type must be 0..2 and long_range 0..2");
+	for (uint32_t i = 0; i < index_count; ++i)
+		if (indices[i] >= vertex_count)
+			return SetLastError(SN_ERROR_INVALID_ARGUMENT, "soft body triangle " + std::to_string(i / 3) + " refers to vertex " + std::to_string(indices[i]) + " of " + std::to_string(vertex_count));
+	if (w->mBodies.size() + 1 > Capacity(*w) + w->mFreeBodies.size())
+		return SetLastError(SN_ERROR_FAILED, "body limit reached");
+
+	Ref<SoftBodySharedSettings> shared = new SoftBodySharedSettings;
+	shared->mVertices.resize(vertex_count);
+	for (uint32_t v = 0; v < vertex_count; ++v)
+	{
+		shared->mVertices[v].mPosition = Float3(vertices[v * 3], vertices[v * 3 + 1], vertices[v * 3 + 2]);
+		shared->mVertices[v].mInvMass = std::max(0.0f, inv_masses[v]);
+	}
+	for (uint32_t t = 0; t < index_count; t += 3)
+	{
+		// 退化的三角形（两个角是同一个点）Jolt 不收
+		if (indices[t] == indices[t + 1] || indices[t + 1] == indices[t + 2] || indices[t] == indices[t + 2])
+			continue;
+		shared->AddFace(SoftBodySharedSettings::Face(indices[t], indices[t + 1], indices[t + 2]));
+	}
+	SoftBodySharedSettings::VertexAttributes attributes(desc->compliance, desc->shear_compliance, desc->bend_compliance < 0.0f ? FLT_MAX : desc->bend_compliance,
+		desc->long_range == 2 ? SoftBodySharedSettings::ELRAType::GeodesicDistance : desc->long_range == 1 ? SoftBodySharedSettings::ELRAType::EuclideanDistance : SoftBodySharedSettings::ELRAType::None);
+	SoftBodySharedSettings::EBendType bend = desc->bend_compliance < 0.0f || desc->bend_type == 0 ? SoftBodySharedSettings::EBendType::None
+		: desc->bend_type == 2 ? SoftBodySharedSettings::EBendType::Dihedral : SoftBodySharedSettings::EBendType::Distance;
+	shared->CreateConstraints(&attributes, 1, bend);
+	shared->Optimize();
+
+	SoftBodyCreationSettings settings(shared, LoadR3(desc->position), LoadQuat(desc->rotation), ToObjectLayer(desc->layer, true));
+	int32_t index;
+	if (!w->mFreeBodies.empty())
+	{
+		index = w->mFreeBodies.back();
+		w->mFreeBodies.pop_back();
+	}
+	else
+	{
+		index = int32_t(w->mBodies.size());
+		w->mBodies.emplace_back().mRemoved = true;
+	}
+	settings.mUserData = uint64(index);
+	settings.mNumIterations = desc->iterations > 0 ? desc->iterations : 5;
+	settings.mLinearDamping = desc->linear_damping;
+	settings.mFriction = desc->friction;
+	settings.mPressure = desc->pressure;
+	settings.mGravityFactor = desc->gravity_factor;
+	settings.mVertexRadius = desc->vertex_radius;
+	settings.mAllowSleeping = (desc->flags & SN_SOFT_NEVER_SLEEP) == 0;
+	settings.mFacesDoubleSided = (desc->flags & SN_SOFT_DOUBLE_SIDED) != 0;
+	BodyInterface &body_interface = w->mSystem.GetBodyInterface();
+	Body *created = body_interface.CreateSoftBody(settings);
+	if (created == nullptr)
+	{
+		w->mFreeBodies.push_back(index);
+		return SetLastError(SN_ERROR_FAILED, "body limit reached");
+	}
+	BodyRecord record;
+	record.mMotion = SN_MOTION_DYNAMIC;
+	record.mID = created->GetID();
+	record.mPosition = record.mPreviousPosition = record.mWrittenPosition = created->GetPosition();
+	body_interface.AddBody(record.mID, EActivation::Activate);
+	w->mContacts.mIndexOfBodyID[record.mID.GetIndex()] = index;
+	w->mContacts.mBreakSpeed[index] = 0.0f;
+	w->mContacts.mWanted[index] = 0;
+	w->mBodies[index] = record;
+	WritePositions(*w, size_t(index));
+	return index;
+}
+
+namespace
+{
+	/// 软体的运动属性；不是软体时报错、返回 nullptr
+	SoftBodyMotionProperties *SoftBodyOf(const Body &inBody)
+	{
+		if (!inBody.IsSoftBody())
+		{
+			StrideNative::SetLastError(SN_ERROR_INVALID_ARGUMENT, "body is not a soft body");
+			return nullptr;
+		}
+		return static_cast<SoftBodyMotionProperties *>(const_cast<MotionProperties *>(inBody.GetMotionProperties()));
+	}
+}
+
+SN_API int32_t sn_physics_soft_body_vertices(int32_t world, int32_t body, float *out, uint32_t stride, double *out_origin)
+{
+	World *w = GetWorld(world);
+	if (w == nullptr)
+		return SN_ERROR_INVALID_HANDLE;
+	BodyRecord *record = GetBody(*w, body);
+	if (record == nullptr)
+		return SN_ERROR_INVALID_ARGUMENT;
+	if (out == nullptr || out_origin == nullptr || stride < 6)
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "sn_physics_soft_body_vertices: out, out_origin and a stride of at least 6 are required");
+	BodyLockRead lock(w->mSystem.GetBodyLockInterface(), record->mID);
+	if (!lock.Succeeded())
+		return SetLastError(SN_ERROR_FAILED, "soft body is locked");
+	const Body &soft = lock.GetBody();
+	const SoftBodyMotionProperties *motion = SoftBodyOf(soft);
+	if (motion == nullptr)
+		return SN_ERROR_INVALID_ARGUMENT;
+	// 顶点相对质心；质心的旋转是单位旋转（mMakeRotationIdentity）
+	RVec3 origin = soft.GetCenterOfMassPosition();
+	out_origin[0] = origin.GetX();
+	out_origin[1] = origin.GetY();
+	out_origin[2] = origin.GetZ();
+	const Array<SoftBodyVertex> &vertices = motion->GetVertices();
+	for (size_t v = 0; v < vertices.size(); ++v)
+	{
+		float *at = out + v * stride;
+		at[0] = vertices[v].mPosition.GetX();
+		at[1] = vertices[v].mPosition.GetY();
+		at[2] = vertices[v].mPosition.GetZ();
+		at[3] = at[4] = at[5] = 0.0f;
+	}
+	// 法线：每个面的叉积（长度是两倍面积）加到三个角上，再归一化
+	for (const SoftBodySharedSettings::Face &face : motion->GetFaces())
+	{
+		Vec3 a = vertices[face.mVertex[0]].mPosition, b = vertices[face.mVertex[1]].mPosition, c = vertices[face.mVertex[2]].mPosition;
+		Vec3 normal = (b - a).Cross(c - a);
+		for (uint32 corner : face.mVertex)
+		{
+			float *at = out + size_t(corner) * stride + 3;
+			at[0] += normal.GetX();
+			at[1] += normal.GetY();
+			at[2] += normal.GetZ();
+		}
+	}
+	for (size_t v = 0; v < vertices.size(); ++v)
+	{
+		float *at = out + v * stride + 3;
+		float length = std::sqrt(at[0] * at[0] + at[1] * at[1] + at[2] * at[2]);
+		if (length > 1e-12f)
+			for (int k = 0; k < 3; ++k)
+				at[k] /= length;
+		else
+			at[1] = 1.0f;
+	}
+	return int32_t(vertices.size());
+}
+
+SN_API int32_t sn_physics_soft_body_pin(int32_t world, int32_t body, const uint32_t *vertices, const double *targets, uint32_t count, float delta_time)
+{
+	World *w = GetWorld(world);
+	if (w == nullptr)
+		return SN_ERROR_INVALID_HANDLE;
+	BodyRecord *record = GetBody(*w, body);
+	if (record == nullptr)
+		return SN_ERROR_INVALID_ARGUMENT;
+	if (count > 0 && (vertices == nullptr || targets == nullptr))
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "sn_physics_soft_body_pin: vertices and targets are required");
+	if (!(delta_time > 0.0f))
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "sn_physics_soft_body_pin: delta_time must be positive");
+	bool moved = false;
+	{
+		BodyLockWrite lock(w->mSystem.GetBodyLockInterface(), record->mID);
+		if (!lock.Succeeded())
+			return SetLastError(SN_ERROR_FAILED, "soft body is locked");
+		Body &soft = lock.GetBody();
+		SoftBodyMotionProperties *motion = SoftBodyOf(soft);
+		if (motion == nullptr)
+			return SN_ERROR_INVALID_ARGUMENT;
+		RVec3 origin = soft.GetCenterOfMassPosition();
+		Array<SoftBodyVertex> &soft_vertices = motion->GetVertices();
+		for (uint32_t i = 0; i < count; ++i)
+		{
+			if (vertices[i] >= soft_vertices.size())
+				return SetLastError(SN_ERROR_INVALID_ARGUMENT, "soft body has no vertex " + std::to_string(vertices[i]));
+			SoftBodyVertex &vertex = soft_vertices[vertices[i]];
+			if (vertex.mInvMass > 0.0f)
+				continue;
+			Vec3 target = Vec3(RVec3(targets[i * 3], targets[i * 3 + 1], targets[i * 3 + 2]) - origin);
+			vertex.mVelocity = (target - vertex.mPosition) / delta_time;
+			moved |= vertex.mVelocity.LengthSq() > 0.0f;
+		}
+	}
+	// 睡着的软体不步进：固定点要走时叫醒（锁放开以后）
+	if (moved)
+		w->mSystem.GetBodyInterface().ActivateBody(record->mID);
 	return SN_OK;
 }
 

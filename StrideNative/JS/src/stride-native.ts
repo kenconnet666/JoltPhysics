@@ -483,6 +483,44 @@ export interface VehicleState {
 const VEHICLE_DRIVES = { front: 0, rear: 1, all: 2 } as const;
 
 /** 用 PhysicsWorld.addRagdoll 建的布娃娃。 */
+/**
+ * 软体、布料的设置（Jolt 的 SoftBody）。柔度是 XPBD 的 compliance（米/牛，0 是不可伸长，越大越软）。顶点在 position、rotation
+ * 给的空间里。
+ */
+export interface SoftBodyDesc {
+	/** 顶点 xyz。 */
+	readonly vertices: Float32Array;
+	/** 每个顶点的逆质量（1/千克）；0 是固定点（钉住，或按 softBodyPin 走）。 */
+	readonly inverseMasses: Float32Array;
+	/** 三角形（逆时针为正面）；边、剪切、弯曲约束按它自动建。 */
+	readonly indices: Uint32Array;
+	readonly position?: readonly [number, number, number];
+	readonly rotation?: readonly [number, number, number, number];
+	readonly layer?: number;
+	/** 每步解约束几遍，默认 5。 */
+	readonly iterations?: number;
+	/** 边的柔度，默认 0（不可伸长）。 */
+	readonly compliance?: number;
+	readonly shearCompliance?: number;
+	/** 弯曲的柔度；undefined 是不加弯曲约束。 */
+	readonly bendCompliance?: number;
+	/** 'distance' 便宜，'dihedral' 准（默认）。 */
+	readonly bendType?: 'distance' | 'dihedral';
+	/** 长程拉住：每个点离最近的固定点不超过静止时的距离（布料不被拉长）。 */
+	readonly longRange?: 'none' | 'euclidean' | 'geodesic';
+	/** 封闭软体里气体的压力（n·R·T），气球、球用；默认 0。 */
+	readonly pressure?: number;
+	readonly friction?: number;
+	readonly linearDamping?: number;
+	readonly gravityFactor?: number;
+	/** 顶点离碰到的表面留多远（米）。 */
+	readonly vertexRadius?: number;
+	/** 查询时三角形算双面的（布料）。 */
+	readonly doubleSided?: boolean;
+	/** 一直醒着（风吹的旗子）。 */
+	readonly neverSleep?: boolean;
+}
+
 export type PhysicsRagdoll = Branded<number, 'PhysicsRagdoll'>;
 
 /** 布娃娃的一部分（骨架的一个关节）；部分按父在前排，第一个是根。 */
@@ -640,6 +678,54 @@ export class PhysicsWorld extends NativeObject<StrideNative> {
 			const wheels = address + VEHICLE_WORDS * 4;
 			return n.check(n.module._sn_physics_add_vehicle(this[HANDLE], address, wheels, count), 'sn_physics_add_vehicle') as PhysicsVehicle;
 		});
+	}
+
+	/** 加一个软体（布料、软的东西）：返回物体编号，和刚体一样用 removeBodies 移除。 */
+	addSoftBody(desc: SoftBodyDesc): BodyId {
+		const n = this.native;
+		const count = desc.vertices.length / 3;
+		if (desc.inverseMasses.length !== count) throw new RangeError(`addSoftBody: ${desc.inverseMasses.length} inverse masses for ${count} vertices`);
+		return n.withScratch(96, (address) => {
+			const position = desc.position ?? [0, 0, 0], rotation = desc.rotation ?? [0, 0, 0, 1];
+			n.f64(address, 3).set(position);
+			const floats = n.f32(address + 24, 18), words = n.u32(address + 24, 18);
+			floats.set(rotation, 0);
+			words[4] = desc.layer ?? 0;
+			words[5] = desc.iterations ?? 5;
+			floats[6] = desc.compliance ?? 0;
+			floats[7] = desc.shearCompliance ?? 0;
+			floats[8] = desc.bendCompliance ?? -1;
+			words[9] = desc.bendType === 'distance' ? 1 : 2;
+			words[10] = desc.longRange === 'euclidean' ? 1 : desc.longRange === 'geodesic' ? 2 : 0;
+			floats[11] = desc.pressure ?? 0;
+			floats[12] = desc.friction ?? 0.2;
+			floats[13] = desc.linearDamping ?? 0.1;
+			floats[14] = desc.gravityFactor ?? 1;
+			floats[15] = desc.vertexRadius ?? 0;
+			words[16] = (desc.doubleSided ? 1 : 0) | (desc.neverSleep ? 2 : 0);
+			return n.withArrays([desc.vertices, desc.inverseMasses, desc.indices], (v, m, i) =>
+				n.check(n.module._sn_physics_add_soft_body(this[HANDLE], address, v, m, count, i, desc.indices.length), 'sn_physics_add_soft_body') as BodyId);
+		});
+	}
+
+	/**
+	 * 软体现在的顶点写进 out（每个顶点 stride 个 float：先位置、再法线，位置相对返回的原点——质心的世界位置），返回原点。out 的
+	 * 长度至少是顶点数乘 stride。
+	 */
+	softBodyVertices(body: BodyId, out: Float32Array, stride: number): [number, number, number] {
+		const n = this.native;
+		return n.withScratch(out.byteLength + 24, (address) => {
+			const count = n.check(n.module._sn_physics_soft_body_vertices(this[HANDLE], body, address + 24, stride, address), 'sn_physics_soft_body_vertices');
+			out.set(n.f32(address + 24, Math.min(out.length, count * stride)));
+			const origin = n.f64(address, 3);
+			return [origin[0]!, origin[1]!, origin[2]!];
+		});
+	}
+
+	/** 固定点这一步走到哪：targets 每个顶点三个数（世界位置）；按 (目标 − 现在) / deltaTime 设速度，下一次步进正好走到。 */
+	softBodyPin(body: BodyId, vertices: Uint32Array, targets: Float64Array, deltaTime: number): void {
+		const n = this.native;
+		n.withArrays([vertices, targets], (v, t) => n.check(n.module._sn_physics_soft_body_pin(this[HANDLE], body, v, t, vertices.length, deltaTime), 'sn_physics_soft_body_pin'));
 	}
 
 	/** 移除车（车身留着）；移除过的忽略。 */

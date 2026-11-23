@@ -220,6 +220,12 @@ export interface NativeExports {
 	 */
 	_sn_physics_add_ragdoll(world: number, parts: number, partCount: number, modelMatrices: number, jointCount: number, modelToWorld: number, layer: number): number;
 	/**
+	 * 加一个软体：vertices 是 xyz（desc 的空间里），inv_masses 每个顶点一个（0 是固定点，钉在原地或按 sn_physics_soft_body_pin 走），
+	 * indices 每三个一个三角形（逆时针为正面）；边、剪切、弯曲约束按三角形自动建。返回物体编号（和刚体同一套：sn_physics_remove_bodies 移除）。
+	 * C: Physics.h
+	 */
+	_sn_physics_add_soft_body(world: number, desc: number, vertices: number, invMasses: number, vertexCount: number, indices: number, indexCount: number): number;
+	/**
 	 * 加一辆车，返回车的句柄（> 0）。车身被移除时车一起移除。轮子至少 2 个、个数是偶数。
 	 * C: Physics.h
 	 */
@@ -410,6 +416,18 @@ export interface NativeExports {
 	 * C: Physics.h
 	 */
 	_sn_physics_set_gravity(world: number, gravity: number): number;
+	/**
+	 * 固定点这一步走到哪：vertices 是顶点下标，targets 每个三个 double（世界位置）；按 (目标 − 现在) / delta_time 设它们的速度，下一次步进
+	 * 正好走到。只对固定点（逆质量 0）有用。
+	 * C: Physics.h
+	 */
+	_sn_physics_soft_body_pin(world: number, body: number, vertices: number, targets: number, count: number, deltaTime: number): number;
+	/**
+	 * 软体现在的顶点：out 每个顶点 stride 个 float，开头写位置（相对 out_origin 的 xyz），接着写法线（按三角形面积加权）；out_origin 是
+	 * 软体的质心的世界位置（双精度）。stride 至少 6。
+	 * C: Physics.h
+	 */
+	_sn_physics_soft_body_vertices(world: number, body: number, out: number, stride: number, outOrigin: number): number;
 	/**
 	 * 球体扫掠（Stride 的 SweepCast 加 Sphere），同 sn_physics_ray_cast；flags 是 SN_CAST_*。
 	 * C: Physics.h
@@ -864,6 +882,7 @@ export const POINTER_SIGNATURES: Readonly<Record<string, string>> = {
 	sn_physics_add_bodies: '__p_p_p_p',
 	sn_physics_add_constraint: '__p',
 	sn_physics_add_ragdoll: '__p_p_p_',
+	sn_physics_add_soft_body: '__ppp_p_',
 	sn_physics_add_vehicle: '__pp_',
 	sn_physics_body_apply_buoyancy: '___pp___p_p',
 	sn_physics_body_apply_impulse: '___pp',
@@ -885,6 +904,8 @@ export const POINTER_SIGNATURES: Readonly<Record<string, string>> = {
 	sn_physics_ray_cast_all: '__pp__p_',
 	sn_physics_remove_bodies: '__p_',
 	sn_physics_set_gravity: '__p',
+	sn_physics_soft_body_pin: '___pp__',
+	sn_physics_soft_body_vertices: '___p_p',
 	sn_physics_sphere_cast: '___pp___p',
 	sn_physics_static_triangles: '___p',
 	sn_physics_vehicle_state: '___p_',
@@ -1013,6 +1034,9 @@ export type RuntimeExport =
 	| 'sn_physics_ragdoll_root'
 	| 'sn_physics_ragdoll_pose'
 	| 'sn_physics_ragdoll_impulse'
+	| 'sn_physics_add_soft_body'
+	| 'sn_physics_soft_body_vertices'
+	| 'sn_physics_soft_body_pin'
 	| 'sn_physics_body_set_contact_events'
 	| 'sn_physics_body_set_break_speed'
 	| 'sn_physics_body_set_sensor'

@@ -561,6 +561,51 @@ describe('stride-native and stride-tools', () => {
 		}
 	});
 
+	it('simulates cloth as a soft body: pinned corners hold, the rest hangs; pinned vertices follow targets', () => {
+		const world = native.createPhysicsWorld(8);
+		try {
+			// 1 米见方、11 × 11 个点的布，水平放在 3 米高，两个角钉住
+			const side = 11, spacing = 0.1;
+			const vertices = new Float32Array(side * side * 3), inverseMasses = new Float32Array(side * side).fill(1 / 0.01);
+			for (let z = 0; z < side; z++) for (let x = 0; x < side; x++) vertices.set([x * spacing - 0.5, 0, z * spacing - 0.5], (z * side + x) * 3);
+			inverseMasses[0] = 0;
+			inverseMasses[side - 1] = 0;
+			const indices = [];
+			for (let z = 0; z + 1 < side; z++) for (let x = 0; x + 1 < side; x++) {
+				const a = z * side + x;
+				indices.push(a, a + side, a + side + 1, a, a + side + 1, a + 1);
+			}
+			const cloth = world.addSoftBody({ vertices, inverseMasses, indices: Uint32Array.from(indices), position: [0, 3, 0], compliance: 1e-5, shearCompliance: 1e-5, bendCompliance: 1e-3, longRange: 'geodesic', doubleSided: true });
+			const out = new Float32Array(side * side * 8);
+			let origin = [0, 0, 0];
+			const at = (v) => [0, 1, 2].map((k) => origin[k] + out[v * 8 + k]);
+			// 像单摆一样荡：对边的中间最低垂到钉子下面约 1 米（布长），离钉子不超过布的对角线（不伸长）
+			let lowest = Infinity, farthest = 0;
+			for (let i = 0; i < 240; i++) {
+				world.step(1 / 60);
+				origin = world.softBodyVertices(cloth, out, 8);
+				const far = at(side * side - 1 - 5);
+				lowest = Math.min(lowest, far[1]);
+				farthest = Math.max(farthest, Math.hypot(far[0] + 0.5, far[1] - 3, far[2] + 0.5));
+			}
+			assert.ok(Math.hypot(...at(0).map((value, k) => value - [-0.5, 3, -0.5][k])) < 0.01, `pinned corner at ${at(0)}`);
+			assert.ok(lowest < 2.1, `far edge hangs down to y = ${lowest}`);
+			assert.ok(farthest < Math.hypot(0.5, 1) * 1.03, `cloth stretched to ${farthest}`);
+			// 法线是单位向量
+			for (let v = 0; v < side * side; v++) assert.ok(Math.abs(Math.hypot(out[v * 8 + 3], out[v * 8 + 4], out[v * 8 + 5]) - 1) < 1e-4);
+			// 固定点按目标走：两个角往 +x 移 0.5 米，一步到
+			world.softBodyPin(cloth, Uint32Array.of(0, side - 1), Float64Array.of(0, 3, -0.5, 1, 3, -0.5), 1 / 60);
+			world.step(1 / 60);
+			origin = world.softBodyVertices(cloth, out, 8);
+			assert.ok(Math.abs(at(0)[0]) < 0.01 && Math.abs(at(side - 1)[0] - 1) < 0.01, `pinned corners moved to ${at(0)} and ${at(side - 1)}`);
+			assert.throws(() => world.softBodyVertices(0 === cloth ? 1 : 0, out, 8), /does not exist|not a soft body/);
+			world.removeBodies([cloth]);
+			assert.throws(() => world.softBodyVertices(cloth, out, 8), /does not exist/);
+		} finally {
+			world.destroy();
+		}
+	});
+
 	it('lets a fast enough hit through a body with a break speed (no collision response that step)', () => {
 		const fall = (breakSpeed) => {
 			const world = native.createPhysicsWorld(8);

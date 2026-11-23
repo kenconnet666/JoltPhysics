@@ -286,6 +286,47 @@ SN_API int32_t sn_physics_ragdoll_pose(int32_t world, int32_t ragdoll, const dou
 SN_API int32_t sn_physics_ragdoll_impulse(int32_t world, int32_t ragdoll, int32_t part, const float *impulse);
 
 // ---------------------------------------------------------------------------------------------
+// 软体和布料（Jolt 的 SoftBody：顶点是质点，边、剪切、弯曲是 XPBD 的距离约束）
+// ---------------------------------------------------------------------------------------------
+
+enum
+{
+	SN_SOFT_DOUBLE_SIDED = 1,		///< 射线、形状查询把三角形当双面的（布料）
+	SN_SOFT_NEVER_SLEEP = 2,		///< 一直醒着（风吹的旗子停不下来）
+};
+
+/// 软体的设置。柔度是 XPBD 的 compliance（米/牛，0 是不可伸长；越大越软）。
+typedef struct sn_soft_body
+{
+	double position[3];				///< 顶点所在空间的原点在世界里的位置
+	float rotation[4];				///< 顶点所在空间的旋转（xyzw），建的时候烘进顶点
+	uint32_t layer;					///< 碰撞层，0..31
+	uint32_t iterations;			///< 每步解约束几遍；0 是 5
+	float compliance;				///< 边（拉伸）
+	float shear_compliance;			///< 剪切（四边形的对角线）
+	float bend_compliance;			///< 弯曲；负数是不加弯曲约束
+	uint32_t bend_type;				///< 1 距离（便宜），2 二面角（准，初始不共面也行）
+	uint32_t long_range;			///< 长程拉住（每个点离最近的固定点不超过静止时的距离，不伸长）：0 不加，1 直线距离，2 沿边的距离
+	float pressure;					///< 封闭的软体里气体的压力（n·R·T），0 没有；气球、球
+	float friction;
+	float linear_damping;
+	float gravity_factor;
+	float vertex_radius;			///< 顶点离碰到的表面留多远（米），防止贴着表面闪
+	uint32_t flags;					///< SN_SOFT_*
+} sn_soft_body;
+
+/// 加一个软体：vertices 是 xyz（desc 的空间里），inv_masses 每个顶点一个（0 是固定点，钉在原地或按 sn_physics_soft_body_pin 走），
+/// indices 每三个一个三角形（逆时针为正面）；边、剪切、弯曲约束按三角形自动建。返回物体编号（和刚体同一套：sn_physics_remove_bodies 移除）。
+SN_API int32_t sn_physics_add_soft_body(int32_t world, const sn_soft_body *desc, const float *vertices, const float *inv_masses, uint32_t vertex_count,
+	const uint32_t *indices, uint32_t index_count);
+/// 软体现在的顶点：out 每个顶点 stride 个 float，开头写位置（相对 out_origin 的 xyz），接着写法线（按三角形面积加权）；out_origin 是
+/// 软体的质心的世界位置（双精度）。stride 至少 6。
+SN_API int32_t sn_physics_soft_body_vertices(int32_t world, int32_t body, float *out, uint32_t stride, double *out_origin);
+/// 固定点这一步走到哪：vertices 是顶点下标，targets 每个三个 double（世界位置）；按 (目标 − 现在) / delta_time 设它们的速度，下一次步进
+/// 正好走到。只对固定点（逆质量 0）有用。
+SN_API int32_t sn_physics_soft_body_pin(int32_t world, int32_t body, const uint32_t *vertices, const double *targets, uint32_t count, float delta_time);
+
+// ---------------------------------------------------------------------------------------------
 // 接触事件（Stride 的 IContactHandler）
 // ---------------------------------------------------------------------------------------------
 
