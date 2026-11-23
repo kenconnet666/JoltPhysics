@@ -741,6 +741,14 @@ export class PhysicsWorld extends NativeObject<StrideNative> {
 		this.native.check(this.native.module._sn_physics_body_set_contact_events(this[HANDLE], body, mode), 'sn_physics_body_set_contact_events');
 	}
 
+	/**
+	 * 破碎速度（米/秒，0 是不碎）：和别的物体开始接触时接近的速度（ContactEvent.speed）到它，这一对这一步不做碰撞响应——物体要换成
+	 * 碎块了，撞它的东西带着原来的速度穿进去、撞上碎块。配合接触事件用。
+	 */
+	setBreakSpeed(body: BodyId, speed: number): void {
+		this.native.check(this.native.module._sn_physics_body_set_break_speed(this[HANDLE], body, speed), 'sn_physics_body_set_break_speed');
+	}
+
 	/** 设成或取消传感器（建物体时用 BodyDesc.sensor）。 */
 	setSensor(body: BodyId, sensor: boolean): void {
 		this.native.check(this.native.module._sn_physics_body_set_sensor(this[HANDLE], body, sensor ? 1 : 0), 'sn_physics_body_set_sensor');

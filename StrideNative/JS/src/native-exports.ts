@@ -248,6 +248,12 @@ export interface NativeExports {
 	 */
 	_sn_physics_body_set_awake(world: number, body: number, awake: number): number;
 	/**
+	 * 物体的破碎速度（米/秒，0 是不碎）：和别的物体开始接触时接近的速度（sn_contact_event.speed）到它，这一对这一步不做碰撞响应——
+	 * 物体要换成碎块了，撞它的东西带着原来的速度穿进去、撞上碎块。要配合接触事件用（看 STARTED 的 speed 换碎块）。
+	 * C: Physics.h
+	 */
+	_sn_physics_body_set_break_speed(world: number, body: number, speed: number): number;
+	/**
 	 * 打开或关掉某个物体的接触事件：0 关掉，1 报开始和结束（SN_BODY_CONTACT_EVENTS），2 另外每步报正在接触的深度
 	 * （SN_BODY_TOUCHING_EVENTS）。
 	 * C: Physics.h
@@ -1008,6 +1014,7 @@ export type RuntimeExport =
 	| 'sn_physics_ragdoll_pose'
 	| 'sn_physics_ragdoll_impulse'
 	| 'sn_physics_body_set_contact_events'
+	| 'sn_physics_body_set_break_speed'
 	| 'sn_physics_body_set_sensor'
 	| 'sn_physics_contact_events'
 	| 'sn_physics_character_move'

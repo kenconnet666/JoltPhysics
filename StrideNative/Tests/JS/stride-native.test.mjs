@@ -561,6 +561,39 @@ describe('stride-native and stride-tools', () => {
 		}
 	});
 
+	it('lets a fast enough hit through a body with a break speed (no collision response that step)', () => {
+		const fall = (breakSpeed) => {
+			const world = native.createPhysicsWorld(8);
+			try {
+				const [crate, rock] = world.addBodies([
+					{ shapes: [{ type: 'box', size: [1, 1, 1] }], position: [0, 0.5, 0], contactEvents: true },
+					{ motion: 'dynamic', shapes: [{ type: 'sphere', radius: 0.2 }], position: [0, 4, 0] },
+				]);
+				world.setBreakSpeed(crate, breakSpeed);
+				let speed = 0, after;
+				for (let i = 0; i < 120 && after === undefined; i++) {
+					world.step(1 / 60);
+					const started = world.contactEvents().find((e) => e.type === 'started' && e.other === rock);
+					if (started) {
+						speed = started.speed;
+						const linear = [0, 0, 0], angular = [0, 0, 0];
+						world.velocity(rock, linear, angular);
+						after = linear[1];
+					}
+				}
+				return { speed, after };
+			} finally {
+				world.destroy();
+			}
+		};
+		// 不碎时这一步就被挡住（几乎停下）；破碎速度够低时照原速度穿进去
+		const blocked = fall(0), through = fall(3);
+		assert.ok(blocked.speed > 6 && through.speed > 6, `hit at ${blocked.speed}, ${through.speed} m/s`);
+		assert.ok(Math.abs(blocked.after) < 2, `blocked: ${blocked.after} m/s after the hit`);
+		assert.ok(through.after < -6, `through: ${through.after} m/s after the hit`);
+		assert.ok(fall(50).after > -2, 'a break speed above the hit blocks it');
+	});
+
 	it('reports the contact depth every step while touching when asked (Stride IContactHandler.OnTouching)', () => {
 		const world = native.createPhysicsWorld(8);
 		try {

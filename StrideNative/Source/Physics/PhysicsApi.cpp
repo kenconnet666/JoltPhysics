@@ -164,10 +164,12 @@ namespace
 		std::vector<int32_t>			mIndexOfBodyID;
 		/// 每个物体（按编号）报哪些接触事件：0 不报，1 开始和结束，2 另外每步报正在接触的深度
 		std::vector<uint8_t>			mWanted;
+		/// 每个物体（按编号）的破碎速度：开始接触时接近的速度到它时这一对不做碰撞响应（物体要碎了，让撞它的东西穿过去、撞上碎块）；0 是不碎
+		std::vector<float>				mBreakSpeed;
 		std::vector<sn_contact_event>	mEvents;
 		const PhysicsSystem *			mSystem = nullptr;
 
-		void OnContactAdded(const Body &inBody1, const Body &inBody2, const ContactManifold &inManifold, ContactSettings &) override
+		void OnContactAdded(const Body &inBody1, const Body &inBody2, const ContactManifold &inManifold, ContactSettings &ioSettings) override
 		{
 			// 接近的速度：碰撞求解之前两个物体在接触点上沿法线（从 1 指向 2）相对的速度，取各接触点最大的（可破碎物体按它判断撞得多狠）
 			float speed = 0.0f;
@@ -176,6 +178,8 @@ namespace
 				RVec3 point = inManifold.GetWorldSpaceContactPointOn1(i);
 				speed = std::max(speed, (inBody1.GetPointVelocity(point) - inBody2.GetPointVelocity(point)).Dot(inManifold.mWorldSpaceNormal));
 			}
+			if (Breaks(int32_t(inBody1.GetUserData()), speed) || Breaks(int32_t(inBody2.GetUserData()), speed))
+				ioSettings.mIsSensor = true;
 			Update(int32_t(inBody1.GetUserData()), int32_t(inBody2.GetUserData()), SubShapes(inManifold.mSubShapeID1, inManifold.mSubShapeID2), true, speed);
 			RecordDepth(int32_t(inBody1.GetUserData()), int32_t(inBody2.GetUserData()), inManifold.mPenetrationDepth);
 		}
@@ -327,6 +331,11 @@ namespace
 		{
 			uint32_t index = inID.GetIndex();
 			return index < mIndexOfBodyID.size() ? mIndexOfBodyID[index] : -1;
+		}
+
+		bool Breaks(int32_t inBody, float inSpeed) const
+		{
+			return inBody >= 0 && size_t(inBody) < mBreakSpeed.size() && mBreakSpeed[inBody] > 0.0f && inSpeed >= mBreakSpeed[inBody];
 		}
 
 		bool Wanted(int32_t inBody) const
@@ -945,6 +954,7 @@ SN_API int32_t sn_physics_create(uint32_t max_bodies, int32_t transforms, const 
 	world->mPositions.resize(size_t(max_bodies) * 3);
 	world->mContacts.mIndexOfBodyID.assign(max_bodies, -1);
 	world->mContacts.mWanted.assign(max_bodies, 0);
+	world->mContacts.mBreakSpeed.assign(max_bodies, 0.0f);
 	world->mContacts.mSystem = &world->mSystem;
 	world->mSystem.SetContactListener(&world->mContacts);
 	return GetTable<World>().Add(std::move(world));
@@ -1231,6 +1241,7 @@ SN_API int32_t sn_physics_add_bodies(int32_t world, const sn_body *bodies, uint3
 			added.push_back(record.mID);
 		}
 		w->mContacts.mIndexOfBodyID[record.mID.GetIndex()] = index;
+		w->mContacts.mBreakSpeed[index] = 0.0f;
 		w->mContacts.mWanted[index] = (body.flags & SN_BODY_TOUCHING_EVENTS) != 0 ? 2 : (body.flags & SN_BODY_CONTACT_EVENTS) != 0 ? 1 : 0;
 		w->mBodies[index] = record;
 	}
@@ -1385,6 +1396,7 @@ SN_API int32_t sn_physics_remove_bodies(int32_t world, const int32_t *bodies, ui
 		BodyRecord &record = w->mBodies[index];
 		record.mRemoved = true;
 		w->mContacts.mWanted[index] = 0;
+		w->mContacts.mBreakSpeed[index] = 0.0f;
 		w->mContacts.mIndexOfBodyID[record.mID.GetIndex()] = -1;
 		w->mContacts.Forget(index);
 		if (record.mCharacter >= 0)
@@ -2086,6 +2098,19 @@ SN_API int32_t sn_physics_body_set_contact_events(int32_t world, int32_t body, i
 	if (enabled < 0 || enabled > 2)
 		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "sn_physics_body_set_contact_events: enabled must be 0, 1 or 2");
 	w->mContacts.mWanted[body] = uint8_t(enabled);
+	return SN_OK;
+}
+
+SN_API int32_t sn_physics_body_set_break_speed(int32_t world, int32_t body, float speed)
+{
+	World *w = GetWorld(world);
+	if (w == nullptr)
+		return SN_ERROR_INVALID_HANDLE;
+	if (GetBody(*w, body) == nullptr)
+		return SN_ERROR_INVALID_ARGUMENT;
+	if (!(speed >= 0.0f))
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "sn_physics_body_set_break_speed: speed must be 0 or more");
+	w->mContacts.mBreakSpeed[body] = speed;
 	return SN_OK;
 }
 
