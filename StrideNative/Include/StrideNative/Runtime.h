@@ -277,6 +277,12 @@ enum
 {
 	SN_ANIM_IK_TWO_BONE = 0,		///< joints: start (thigh), mid (knee), end (foot); the end reaches target
 	SN_ANIM_IK_AIM = 1,				///< joints[0] turns so that its forward axis points at target (head look-at)
+	SN_ANIM_IK_OFFSET = 2,			///< joints[0] moves by target (model space), its children with it (hips down for foot placement)
+};
+
+enum
+{
+	SN_ANIM_IK_RELATIVE = 1,		///< two-bone, aim: target is an offset from where the end joint (aim: the joint) is when this IK runs
 };
 
 typedef struct sn_anim_ik
@@ -291,6 +297,8 @@ typedef struct sn_anim_ik
 	float weight;					///< 0 no correction, 1 full
 	float soften;					///< two-bone: 1 is no softening, below 1 slows down when the chain is nearly straight
 	float twist;					///< radians around the target direction
+	uint32_t flags;					///< SN_ANIM_IK_*
+	uint32_t reserved;
 } sn_anim_ik;
 
 /// Sets the IK applied after every evaluation of this instance (copied; count 0 clears it). Returns the

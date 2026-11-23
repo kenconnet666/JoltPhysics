@@ -1699,8 +1699,8 @@ export class Animation extends NativeObject<StrideNative> {
 	}
 }
 
-/** 一个 sn_anim_ik 占的 32 位字数（88 字节）。 */
-const IK_WORDS = 22;
+/** 一个 sn_anim_ik 占的 32 位字数（96 字节）。 */
+const IK_WORDS = 24;
 
 /** 两段骨的 IK：end 关节够到 target，mid 关节（膝、肘）朝 pole 弯，绕 midAxis（mid 关节本地的轴）转。 */
 export interface TwoBoneIk {
@@ -1713,6 +1713,16 @@ export interface TwoBoneIk {
 	/** 1 不软化；小于 1 时链快伸直时放慢，膝盖不突然弹直。 */
 	readonly soften?: number;
 	readonly twist?: number;
+	/** target 是相对这一步开始时 end 关节位置的偏移（脚贴地：动画里的脚往上抬多少），不是模型空间的位置。 */
+	readonly relative?: boolean;
+}
+
+/** 平移一个关节（连同它的子关节）：模型空间的 offset 乘 weight（脚贴地时髋往下沉）。 */
+export interface OffsetIk {
+	readonly type: 'offset';
+	readonly joint: number;
+	readonly offset: readonly [number, number, number];
+	readonly weight?: number;
 }
 
 /** 看向：joint 转到它的 forward 轴（本地）指向 target，up 轴（本地）尽量朝 pole（模型空间的上）。 */
@@ -1729,7 +1739,7 @@ export interface AimIk {
 	readonly twist?: number;
 }
 
-export type AnimationIk = TwoBoneIk | AimIk;
+export type AnimationIk = TwoBoneIk | AimIk | OffsetIk;
 
 export class AnimationInstance extends NativeObject<StrideNative> {
 	readonly jointCount: number;
@@ -1749,17 +1759,36 @@ export class AnimationInstance extends NativeObject<StrideNative> {
 			const floats = n.f32(address, iks.length * IK_WORDS), ints = n.i32(address, iks.length * IK_WORDS);
 			iks.forEach((ik, k) => {
 				const o = k * IK_WORDS;
-				ints[o] = ik.type === 'twoBone' ? 0 : 1;
-				const joints = ik.type === 'twoBone' ? ik.joints : [ik.joint, 0, 0];
-				ints.set(joints, o + 1);
-				floats.set(ik.target, o + 4);
-				floats.set(ik.pole ?? [0, 1, 0], o + 7);
-				floats.set(ik.type === 'twoBone' ? (ik.midAxis ?? [0, 0, 1]) : (ik.forward ?? [1, 0, 0]), o + 10);
-				floats.set(ik.type === 'aim' ? (ik.up ?? [0, 1, 0]) : [0, 1, 0], o + 13);
-				floats.set(ik.type === 'aim' ? (ik.offset ?? [0, 0, 0]) : [0, 0, 0], o + 16);
+				floats.fill(0, o, o + IK_WORDS);
 				floats[o + 19] = ik.weight ?? 1;
-				floats[o + 20] = ik.type === 'twoBone' ? (ik.soften ?? 1) : 1;
-				floats[o + 21] = ik.twist ?? 0;
+				floats[o + 20] = 1;
+				switch (ik.type) {
+					case 'twoBone':
+						ints[o] = 0;
+						ints.set(ik.joints, o + 1);
+						floats.set(ik.target, o + 4);
+						floats.set(ik.pole ?? [0, 1, 0], o + 7);
+						floats.set(ik.midAxis ?? [0, 0, 1], o + 10);
+						floats[o + 20] = ik.soften ?? 1;
+						floats[o + 21] = ik.twist ?? 0;
+						ints[o + 22] = ik.relative ? 1 : 0;
+						break;
+					case 'aim':
+						ints[o] = 1;
+						ints[o + 1] = ik.joint;
+						floats.set(ik.target, o + 4);
+						floats.set(ik.pole ?? [0, 1, 0], o + 7);
+						floats.set(ik.forward ?? [1, 0, 0], o + 10);
+						floats.set(ik.up ?? [0, 1, 0], o + 13);
+						floats.set(ik.offset ?? [0, 0, 0], o + 16);
+						floats[o + 21] = ik.twist ?? 0;
+						break;
+					case 'offset':
+						ints[o] = 2;
+						ints[o + 1] = ik.joint;
+						floats.set(ik.offset, o + 4);
+						break;
+				}
 			});
 			n.check(n.module._sn_anim_instance_set_ik(this[HANDLE], address, iks.length), 'sn_anim_instance_set_ik');
 		});

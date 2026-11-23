@@ -1390,6 +1390,15 @@ describe('stride-native and stride-tools', () => {
 		instance.setIk([{ type: 'aim', joint: 4, target: [1, 0.7, 0], forward: [0, 0, 1], weight: 0 }]);
 		evaluate();
 		assert.ok(instance.modelMatrices()[4 * 16 + 10] > 0.99);
+		// 脚贴地：髋往下沉 0.2，脚相对动画里的位置往上抬 0.1（地面比脚底高）：膝弯起来
+		instance.setIk([
+			{ type: 'offset', joint: 0, offset: [0, -0.2, 0] },
+			{ type: 'twoBone', joints: [1, 2, 3], target: [0, 0.1 + 0.2, 0], relative: true, pole: [0, 0, 1], midAxis: [1, 0, 0] },
+		]);
+		evaluate();
+		assert.ok(Math.abs(position(0)[1] + 0.2) < 1e-4, `hips down: ${position(0)}`);
+		assert.ok(Math.abs(position(3)[1] + 0.9) < 1e-3, `foot raised to -0.9: ${position(3)}`);
+		assert.ok(position(2)[2] > 0.05, 'knee bends');
 		instance.setIk([]);
 		evaluate();
 		assert.deepEqual(position(3).map((v) => +v.toFixed(4)), [0.1, -1, 0]);

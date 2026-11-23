@@ -246,10 +246,30 @@ namespace
 			if (ik.weight <= 0.0f)
 				continue;
 			int from = ik.joints[0];
-			if (ik.type == SN_ANIM_IK_TWO_BONE)
+			// 相对的目标：加在这一步开始时末端关节（看向：那个关节）的位置上
+			ozz::math::SimdFloat4 target = Load3(ik.target, 1.0f);
+			if ((ik.flags & SN_ANIM_IK_RELATIVE) != 0)
+			{
+				int end = ik.type == SN_ANIM_IK_TWO_BONE ? ik.joints[2] : ik.joints[0];
+				target = ozz::math::SetW(ioInstance.mModels[size_t(end)].cols[3] + Load3(ik.target, 0.0f), ozz::math::simd_float4::one());
+			}
+			if (ik.type == SN_ANIM_IK_OFFSET)
+			{
+				// 模型空间的平移换到父关节空间：父关节的逆矩阵作用到方向上（根关节的父空间就是模型空间）
+				int parent = skeleton.joint_parents()[ik.joints[0]];
+				ozz::math::SimdFloat4 offset = Load3(ik.target, 0.0f) * ozz::math::simd_float4::Load1(std::min(ik.weight, 1.0f));
+				if (parent != ozz::animation::Skeleton::kNoParent)
+					offset = ozz::math::TransformVector(ozz::math::Invert(ioInstance.mModels[size_t(parent)]), offset);
+				SoaTransform &soa = locals[size_t(ik.joints[0]) / 4];
+				ozz::math::SimdFloat4 translations[4];
+				ozz::math::Transpose3x4(&soa.translation.x, translations);
+				translations[ik.joints[0] & 3] = translations[ik.joints[0] & 3] + offset;
+				ozz::math::Transpose4x3(translations, &soa.translation.x);
+			}
+			else if (ik.type == SN_ANIM_IK_TWO_BONE)
 			{
 				ozz::animation::IKTwoBoneJob job;
-				job.target = Load3(ik.target, 1.0f);
+				job.target = target;
 				job.pole_vector = Load3(ik.pole, 0.0f);
 				job.mid_axis = Load3(ik.axis, 0.0f);
 				job.weight = std::min(ik.weight, 1.0f);
@@ -269,7 +289,7 @@ namespace
 			else
 			{
 				ozz::animation::IKAimJob job;
-				job.target = Load3(ik.target, 1.0f);
+				job.target = target;
 				job.forward = Load3(ik.axis, 0.0f);
 				job.up = Load3(ik.up, 0.0f);
 				job.offset = Load3(ik.offset, 1.0f);
@@ -466,7 +486,7 @@ SN_API int32_t sn_anim_instance_set_ik(int32_t instance, const sn_anim_ik *iks, 
 	for (uint32_t k = 0; k < count; ++k)
 	{
 		const sn_anim_ik &ik = iks[k];
-		if (ik.type != SN_ANIM_IK_TWO_BONE && ik.type != SN_ANIM_IK_AIM)
+		if (ik.type != SN_ANIM_IK_TWO_BONE && ik.type != SN_ANIM_IK_AIM && ik.type != SN_ANIM_IK_OFFSET)
 			return SetLastError(SN_ERROR_INVALID_ARGUMENT, "ik " + std::to_string(k) + ": unknown type " + std::to_string(ik.type));
 		int used = ik.type == SN_ANIM_IK_TWO_BONE ? 3 : 1;
 		for (int j = 0; j < used; ++j)
