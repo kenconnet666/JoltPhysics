@@ -132,10 +132,17 @@ namespace StrideNative
 		mConfig = inConfig;
 		rcVcopy(mOrigin, inOrigin);
 		mTiles.resize(inTileCount);
+		std::unordered_map<int64_t, uint32_t> listed;
 		for (uint32_t i = 0; i < inTileCount; ++i)
 		{
 			mTiles[i].mX = inTilesXY[i * 2];
 			mTiles[i].mY = inTilesXY[i * 2 + 1];
+			// 同一块列两次时只有第一份分到三角形，换上时后面那份（空的）会把它去掉
+			if (!listed.emplace(int64_t(mTiles[i].mX) << 32 | uint32_t(mTiles[i].mY), i).second)
+			{
+				outError = "tile " + std::to_string(mTiles[i].mX) + "," + std::to_string(mTiles[i].mY) + " is listed twice";
+				return false;
+			}
 		}
 		if (inTriangleCount > 0)
 			BinTriangles(inTriangles, inTriangleCount);

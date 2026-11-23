@@ -1366,6 +1366,7 @@ describe('stride-native and stride-tools', () => {
 			assert.equal(navMesh.removeTiles(west), 4);
 			assert.equal(navMesh.tileCount, 8);
 			assert.throws(() => across(), /not on the navmesh/);
+			await assert.rejects(navMesh.buildTiles(new Float32Array(0), new Int32Array(0), new Int32Array([0, 0, 0, 0])), /listed twice/);
 			// 没建完就丢掉的批不改导航网格；没有三角形的块换上时去掉旧的
 			(await navMesh.buildTiles(new Float32Array(0), new Int32Array(0), tilesOver(0, 0, 0, 0))).destroy();
 			assert.equal(navMesh.tileCount, 8);
