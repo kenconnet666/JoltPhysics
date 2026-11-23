@@ -360,6 +360,10 @@ SN_API int32_t sn_physics_body_set_contact_events(int32_t world, int32_t body, i
 /// 物体的破碎速度（米/秒，0 是不碎）：和别的物体开始接触时接近的速度（sn_contact_event.speed）到它，这一对这一步不做碰撞响应——
 /// 物体要换成碎块了，撞它的东西带着原来的速度穿进去、撞上碎块。要配合接触事件用（看 STARTED 的 speed 换碎块）。
 SN_API int32_t sn_physics_body_set_break_speed(int32_t world, int32_t body, float speed);
+/// 远处物理的降级：醒着的动态物体、软体离 focus（世界位置）超过 sleep_distance 的冻结（让它睡下，软体的钉子、风也不叫醒它），
+/// 冻结着的回到 wake_distance 以内时叫醒；冻结着的被别的东西撞醒了就不再算冻结（还远的下一次再冻上）。只看醒着的和冻结着的，
+/// 隔一会儿调一次（比如每 0.25 秒）。out_counts（可以是 null）写冻结着的个数、这次冻上的、这次叫醒的。
+SN_API int32_t sn_physics_lod(int32_t world, const double *focus, float sleep_distance, float wake_distance, uint32_t *out_counts);
 /// 设成或取消传感器（SN_BODY_SENSOR）。
 SN_API int32_t sn_physics_body_set_sensor(int32_t world, int32_t body, int32_t sensor);
 /// 上一次 sn_physics_step 里产生的事件：开始和结束按发生的顺序，正在接触的在最后（每对物体一个）；地址在下一次步进前有效。

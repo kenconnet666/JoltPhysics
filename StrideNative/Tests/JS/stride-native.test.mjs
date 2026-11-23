@@ -623,6 +623,34 @@ describe('stride-native and stride-tools', () => {
 		}
 	});
 
+	it('freezes awake bodies far from the focus and wakes them when it comes back (physics level of detail)', () => {
+		const world = native.createPhysicsWorld(8);
+		try {
+			const [near, far] = world.addBodies([
+				{ motion: 'dynamic', shapes: [{ type: 'sphere', radius: 0.5 }], position: [0, 50, 0] },
+				{ motion: 'dynamic', shapes: [{ type: 'sphere', radius: 0.5 }], position: [500, 50, 0] },
+			]);
+			world.setVelocity(near, [1, 0, 0]);
+			world.setVelocity(far, [1, 0, 0]);
+			world.step(1 / 60);
+			assert.deepEqual(world.lod([0, 0, 0], 200, 150), { frozen: 1, slept: 1, woken: 0 });
+			const before = world.positions().slice(0, 6);
+			for (let i = 0; i < 30; i++) world.step(1 / 60);
+			const after = world.positions();
+			// 近的接着落，远的停在原处
+			assert.ok(after[1] < before[1] - 0.5, `near body fell from ${before[1]} to ${after[1]}`);
+			assert.equal(after[4], before[4]);
+			assert.deepEqual(world.lod([0, 0, 0], 200, 150), { frozen: 1, slept: 0, woken: 0 });
+			// 关注点挪过去：远的叫醒、接着落，近的冻上
+			assert.deepEqual(world.lod([480, 0, 0], 200, 150), { frozen: 1, slept: 1, woken: 1 });
+			for (let i = 0; i < 30; i++) world.step(1 / 60);
+			assert.ok(world.positions()[4] < before[4] - 0.5, 'far body falls again after waking');
+			assert.throws(() => world.lod([0, 0, 0], 100, 150), /wake_distance/);
+		} finally {
+			world.destroy();
+		}
+	});
+
 	it('lets a fast enough hit through a body with a break speed (no collision response that step)', () => {
 		const fall = (breakSpeed) => {
 			const world = native.createPhysicsWorld(8);

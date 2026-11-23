@@ -852,6 +852,20 @@ export class PhysicsWorld extends NativeObject<StrideNative> {
 		this.native.check(this.native.module._sn_physics_body_set_break_speed(this[HANDLE], body, speed), 'sn_physics_body_set_break_speed');
 	}
 
+	/**
+	 * 远处物理的降级：醒着的动态物体、软体离 focus 超过 sleepDistance 的冻结（睡下，软体的钉子、风也不叫醒它），冻结着的回到
+	 * wakeDistance 以内时叫醒。隔一会儿调一次；返回冻结着的个数、这次冻上的、这次叫醒的。
+	 */
+	lod(focus: readonly [number, number, number], sleepDistance: number, wakeDistance: number): { frozen: number; slept: number; woken: number } {
+		const n = this.native;
+		return n.withScratch(40, (address) => {
+			n.f64(address, 3).set(focus);
+			n.check(n.module._sn_physics_lod(this[HANDLE], address, sleepDistance, wakeDistance, address + 24), 'sn_physics_lod');
+			const counts = n.u32(address + 24, 3);
+			return { frozen: counts[0]!, slept: counts[1]!, woken: counts[2]! };
+		});
+	}
+
 	/** 设成或取消传感器（建物体时用 BodyDesc.sensor）。 */
 	setSensor(body: BodyId, sensor: boolean): void {
 		this.native.check(this.native.module._sn_physics_body_set_sensor(this[HANDLE], body, sensor ? 1 : 0), 'sn_physics_body_set_sensor');

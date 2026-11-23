@@ -350,6 +350,13 @@ export interface NativeExports {
 	 */
 	_sn_physics_interpolate(world: number, alpha: number): number;
 	/**
+	 * 远处物理的降级：醒着的动态物体、软体离 focus（世界位置）超过 sleep_distance 的冻结（让它睡下，软体的钉子、风也不叫醒它），
+	 * 冻结着的回到 wake_distance 以内时叫醒；冻结着的被别的东西撞醒了就不再算冻结（还远的下一次再冻上）。只看醒着的和冻结着的，
+	 * 隔一会儿调一次（比如每 0.25 秒）。out_counts（可以是 null）写冻结着的个数、这次冻上的、这次叫醒的。
+	 * C: Physics.h
+	 */
+	_sn_physics_lod(world: number, focus: number, sleepDistance: number, wakeDistance: number, outCounts: number): number;
+	/**
 	 * 形状的重叠查询（Stride 的 BepuSimulation.Overlap）：查询的世界位置是 origin（双精度），shape 的 position、rotation 是相对它的
 	 * 位姿（size、mesh 同 sn_shape，网格不缩放），mask 同射线。和它重叠的物体编号（去掉重复）写进 out_bodies，最多 capacity 个；返回重叠的物体总数（可能比 capacity 多），
 	 * 负数是错误。触发器也算（同 Bepu）。
@@ -901,6 +908,7 @@ export const POINTER_SIGNATURES: Readonly<Record<string, string>> = {
 	sn_physics_create_heightfield: '__p__',
 	sn_physics_create_hull: '__p_',
 	sn_physics_create_mesh: '__p_p_',
+	sn_physics_lod: '__p__p',
 	sn_physics_overlap: '__pp_p_',
 	sn_physics_positions: 'p_',
 	sn_physics_ragdoll_impulse: '____p',
@@ -1047,6 +1055,7 @@ export type RuntimeExport =
 	| 'sn_physics_soft_body_wind'
 	| 'sn_physics_body_set_contact_events'
 	| 'sn_physics_body_set_break_speed'
+	| 'sn_physics_lod'
 	| 'sn_physics_body_set_sensor'
 	| 'sn_physics_contact_events'
 	| 'sn_physics_character_move'

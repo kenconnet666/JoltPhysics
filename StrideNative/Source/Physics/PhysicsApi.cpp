@@ -148,6 +148,7 @@ namespace
 		int32_t mCharacter = -1;			///< mCharacters 里的下标
 		RVec3 mPreviousPosition, mPosition;	///< 插值用：上一步和这一步的位姿
 		Quat mPreviousRotation = Quat::sIdentity(), mRotation = Quat::sIdentity();
+		bool mFrozen = false;				///< 离关注点太远、被 sn_physics_lod 冻结（让它睡下）的；回到近处时叫醒
 		RVec3 mWrittenPosition;				///< 最后写进槽位的世界位姿：运动学物体靠它看出变换被物理以外的代码改过
 		Quat mWrittenRotation = Quat::sIdentity();
 	};
@@ -463,6 +464,8 @@ namespace
 		};
 		/// 移除过的物体的编号，加物体时先复用
 		std::vector<int32_t>			mFreeBodies;
+		/// sn_physics_lod 冻结着的物体（编号；移除了的在下一次 lod 时去掉）
+		std::vector<int32_t>			mFrozen;
 		std::vector<ConstraintRecord>	mConstraints;
 		struct VehicleRecord
 		{
@@ -2280,6 +2283,9 @@ SN_API int32_t sn_physics_soft_body_pin(int32_t world, int32_t body, const uint3
 		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "sn_physics_soft_body_pin: vertices and targets are required");
 	if (!(delta_time > 0.0f))
 		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "sn_physics_soft_body_pin: delta_time must be positive");
+	// 远处冻结着的不动（也不叫醒）
+	if (record->mFrozen)
+		return SN_OK;
 	bool moved = false;
 	{
 		BodyLockWrite lock(w->mSystem.GetBodyLockInterface(), record->mID);
@@ -2319,6 +2325,8 @@ SN_API int32_t sn_physics_soft_body_wind(int32_t world, int32_t body, const floa
 		return SN_ERROR_INVALID_ARGUMENT;
 	if (wind == nullptr || !(delta_time > 0.0f) || !(drag >= 0.0f))
 		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "sn_physics_soft_body_wind: wind, a positive delta_time and a drag of 0 or more are required");
+	if (record->mFrozen)
+		return SN_OK;
 	Vec3 air(wind[0], wind[1], wind[2]);
 	{
 		BodyLockWrite lock(w->mSystem.GetBodyLockInterface(), record->mID);
@@ -2365,6 +2373,75 @@ SN_API int32_t sn_physics_body_set_contact_events(int32_t world, int32_t body, i
 	if (enabled < 0 || enabled > 2)
 		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "sn_physics_body_set_contact_events: enabled must be 0, 1 or 2");
 	w->mContacts.mWanted[body] = uint8_t(enabled);
+	return SN_OK;
+}
+
+SN_API int32_t sn_physics_lod(int32_t world, const double *focus, float sleep_distance, float wake_distance, uint32_t *out_counts)
+{
+	World *w = GetWorld(world);
+	if (w == nullptr)
+		return SN_ERROR_INVALID_HANDLE;
+	if (focus == nullptr || !(sleep_distance > 0.0f) || !(wake_distance >= 0.0f) || wake_distance > sleep_distance)
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "sn_physics_lod: focus and 0 <= wake_distance <= sleep_distance, sleep_distance > 0 are required");
+	BodyInterface &bodies = w->mSystem.GetBodyInterfaceNoLock();
+	RVec3 center(focus[0], focus[1], focus[2]);
+	double sleep2 = double(sleep_distance) * sleep_distance, wake2 = double(wake_distance) * wake_distance;
+	auto distance2 = [&](BodyID inID) { return (bodies.GetCenterOfMassPosition(inID) - center).LengthSq(); };
+
+	// 冻结着的：回到近处的叫醒；移除了的、被别的东西撞醒的不再算冻结（撞醒的下一轮还远就再冻上）
+	std::vector<BodyID> wake;
+	size_t kept = 0;
+	for (int32_t index : w->mFrozen)
+	{
+		BodyRecord &record = w->mBodies[index];
+		if (record.mRemoved || !record.mFrozen)
+			continue;
+		if (distance2(record.mID) < wake2)
+		{
+			record.mFrozen = false;
+			wake.push_back(record.mID);
+			continue;
+		}
+		if (bodies.IsActive(record.mID))
+		{
+			record.mFrozen = false;
+			continue;
+		}
+		w->mFrozen[kept++] = index;
+	}
+	w->mFrozen.resize(kept);
+
+	// 醒着的动态物体、软体：太远的让它睡下（角色、运动学的不动）
+	std::vector<BodyID> sleep;
+	for (EBodyType type : { EBodyType::RigidBody, EBodyType::SoftBody })
+	{
+		const BodyID *active = w->mSystem.GetActiveBodiesUnsafe(type);
+		for (uint32 i = 0, n = w->mSystem.GetNumActiveBodies(type); i < n; ++i)
+		{
+			BodyID id = active[i];
+			int32_t index = w->mContacts.mIndexOfBodyID[id.GetIndex()];
+			if (index < 0 || size_t(index) >= w->mBodies.size())
+				continue;
+			BodyRecord &record = w->mBodies[index];
+			if (record.mRemoved || record.mFrozen || record.mCharacter >= 0 || record.mMotion != SN_MOTION_DYNAMIC)
+				continue;
+			if (distance2(id) <= sleep2)
+				continue;
+			record.mFrozen = true;
+			w->mFrozen.push_back(index);
+			sleep.push_back(id);
+		}
+	}
+	if (!sleep.empty())
+		bodies.DeactivateBodies(sleep.data(), int(sleep.size()));
+	if (!wake.empty())
+		bodies.ActivateBodies(wake.data(), int(wake.size()));
+	if (out_counts != nullptr)
+	{
+		out_counts[0] = uint32_t(w->mFrozen.size());
+		out_counts[1] = uint32_t(sleep.size());
+		out_counts[2] = uint32_t(wake.size());
+	}
 	return SN_OK;
 }
 
