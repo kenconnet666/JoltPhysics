@@ -282,7 +282,7 @@ SN_API int32_t sn_physics_ragdoll_root(int32_t world, int32_t ragdoll, double *p
 /// 物理的姿势写回骨架：model_to_world 是模型现在的位姿，model_matrices（joint_count 个，进来是上一次的姿势）里布娃娃的关节
 /// 换成物体的位姿，别的关节跟着父关节（保持和父关节原来的相对位姿）；parents 是骨架每个关节的父关节（-1 是根，父在前）。
 SN_API int32_t sn_physics_ragdoll_pose(int32_t world, int32_t ragdoll, const double *model_to_world, float *model_matrices, const int32_t *parents, uint32_t joint_count);
-/// 给一部分加冲量（世界空间，牛·秒），比如被撞的那一下；part 是 -1 时加在所有部分上（按质量分）。
+/// 给一部分加冲量（世界空间，牛·秒），比如被撞的那一下；part 是 -1 时是全身的冲量，按质量分给每一部分（全身的速度变化是 冲量 / 总质量）。
 SN_API int32_t sn_physics_ragdoll_impulse(int32_t world, int32_t ragdoll, int32_t part, const float *impulse);
 
 // ---------------------------------------------------------------------------------------------

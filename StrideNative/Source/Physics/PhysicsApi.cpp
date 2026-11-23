@@ -2044,7 +2044,15 @@ SN_API int32_t sn_physics_ragdoll_impulse(int32_t world, int32_t ragdoll, int32_
 		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "ragdoll " + std::to_string(ragdoll) + " does not exist");
 	Vec3 value = Load3(impulse);
 	if (part < 0)
-		record->mRagdoll->AddImpulse(value);
+	{
+		// 全身的冲量按质量分给每一部分（Jolt 的 Ragdoll::AddImpulse 是每个物体各加一整份，轻的部分会飞出去）
+		float total = 0.0f;
+		for (const sn_ragdoll_part &p : record->mParts)
+			total += p.mass;
+		BodyInterface &bodies = w->mSystem.GetBodyInterface();
+		for (size_t p = 0; p < record->mParts.size(); ++p)
+			bodies.AddImpulse(record->mRagdoll->GetBodyID(int(p)), value * (record->mParts[p].mass / total));
+	}
 	else if (size_t(part) < record->mParts.size())
 		w->mSystem.GetBodyInterface().AddImpulse(record->mRagdoll->GetBodyID(part), value);
 	else
