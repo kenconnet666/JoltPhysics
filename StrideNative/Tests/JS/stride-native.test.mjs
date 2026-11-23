@@ -1399,6 +1399,18 @@ describe('stride-native and stride-tools', () => {
 		assert.ok(Math.abs(position(0)[1] + 0.2) < 1e-4, `hips down: ${position(0)}`);
 		assert.ok(Math.abs(position(3)[1] + 0.9) < 1e-3, `foot raised to -0.9: ${position(3)}`);
 		assert.ok(position(2)[2] > 0.05, 'knee bends');
+		// 遮罩：只有腿的权重 1。静止姿势的剪辑在下、抬脚转头的快照在上，按遮罩混：脚跟快照抬起，头还朝前
+		const restClip = native.loadAnimation(tools.buildAnimation(1, [[0, 0, 0], [0.1, 0, 0], [0, -0.5, 0], [0, -0.5, 0], [0, 0.7, 0]].map((t) => ({ translations: [[0, ...t]], rotations: [[0, 0, 0, 0, 1]], scales: [[0, 1, 1, 1]] }))));
+		const legOnly = skeleton.createMask([0, 1, 1, 1, 0]);
+		instance.setIk([{ type: 'twoBone', joints: [1, 2, 3], target: [0.1, -0.7, 0.2], pole: [0, 0, 1], midAxis: [1, 0, 0] }, { type: 'aim', joint: 4, target: [1, 0.7, 0], forward: [0, 0, 1], up: [0, 1, 0] }]);
+		evaluate();
+		instance.snapshot();
+		instance.setIk([]);
+		batch.clear().instance(instance).push(restClip, 0).pushSnapshot().blendMasked(1, legOnly);
+		batch.evaluate();
+		assert.ok(Math.hypot(position(3)[0] - 0.1, position(3)[1] + 0.7, position(3)[2] - 0.2) < 1e-3, `masked foot follows the snapshot: ${position(3)}`);
+		assert.ok(instance.modelMatrices()[4 * 16 + 10] > 0.99, 'the head (outside the mask) keeps facing +z');
+		assert.throws(() => skeleton.createMask([1, 1]), /2 weights for 5 joints/);
 		// 快照：IK 抬起的脚存下来，清掉 IK 以后压快照还是抬起的样子；根的修正把整个姿势挪走
 		instance.setIk([{ type: 'twoBone', joints: [1, 2, 3], target: [0.1, -0.7, 0.2], pole: [0, 0, 1], midAxis: [1, 0, 0] }]);
 		evaluate();

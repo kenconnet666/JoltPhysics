@@ -40,6 +40,12 @@ namespace
 	struct SkeletonAsset { Skeleton mSkeleton; };
 	struct AnimationAsset { Animation mAnimation; };
 
+	/// 按关节的权重（个数补到 SoA 的整数倍，补的是 0）
+	struct Mask
+	{
+		std::vector<float>					mWeights;
+	};
+
 	struct Skin
 	{
 		std::vector<uint32_t>				mJoints;
@@ -207,7 +213,8 @@ namespace
 		Slerp(inA.r, r, inFactor, outJoint.r);
 	}
 
-	void BlendPoses(int32_t inType, const ozz::vector<SoaTransform> &inA, const ozz::vector<SoaTransform> &inB, float inFactor, ozz::vector<SoaTransform> &outPose)
+	/// inWeights 不为空时每个关节的系数再乘它（遮罩）
+	void BlendPoses(int32_t inType, const ozz::vector<SoaTransform> &inA, const ozz::vector<SoaTransform> &inB, float inFactor, ozz::vector<SoaTransform> &outPose, const float *inWeights = nullptr)
 	{
 		Joint a[4], b[4], result[4];
 		for (size_t i = 0; i < inA.size(); ++i)
@@ -215,7 +222,7 @@ namespace
 			Unpack(inA[i], a);
 			Unpack(inB[i], b);
 			for (int j = 0; j < 4; ++j)
-				BlendJoint(inType, a[j], b[j], inFactor, result[j]);
+				BlendJoint(inType, a[j], b[j], inWeights != nullptr ? inFactor * inWeights[i * 4 + size_t(j)] : inFactor, result[j]);
 			Pack(result, outPose[i]);
 		}
 	}
@@ -350,6 +357,16 @@ namespace
 					return SN_ERROR_INVALID_ARGUMENT;
 				std::copy(instance->mSnapshot.begin(), instance->mSnapshot.end(), instance->mStack[depth].begin());
 				++depth;
+			}
+			else if (op.type == SN_ANIM_BLEND_MASKED || op.type == SN_ANIM_ADD_MASKED)
+			{
+				Mask *mask = GetTable<Mask>().Get(op.animation);
+				if (mask == nullptr)
+					return SN_ERROR_INVALID_HANDLE;
+				if (depth < 2 || mask->mWeights.size() < instance->mStack[0].size() * 4)
+					return SN_ERROR_INVALID_ARGUMENT;
+				BlendPoses(op.type == SN_ANIM_BLEND_MASKED ? SN_ANIM_BLEND : SN_ANIM_ADD, instance->mStack[depth - 2], instance->mStack[depth - 1], op.factor, instance->mStack[depth - 2], mask->mWeights.data());
+				--depth;
 			}
 			else if (op.type == SN_ANIM_BLEND || op.type == SN_ANIM_ADD || op.type == SN_ANIM_SUBTRACT)
 			{
@@ -561,6 +578,22 @@ SN_API int32_t sn_anim_evaluate_batch(const sn_anim_op *ops, sn_anim_evaluate_re
 	if (DebugEnabled())
 		sn_debug_set_counter("animation.instances", count);
 	return RunBatch(requests, count, "animation evaluation", [ops](const sn_anim_evaluate_request &inRequest) { return Evaluate(ops, inRequest); });
+}
+
+SN_API int32_t sn_anim_mask_create(const float *weights, uint32_t joint_count)
+{
+	if (weights == nullptr || joint_count == 0)
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "a mask needs one weight per joint");
+	auto mask = std::make_unique<Mask>();
+	mask->mWeights.assign((joint_count + 3) / 4 * 4, 0.0f);
+	for (uint32_t j = 0; j < joint_count; ++j)
+		mask->mWeights[j] = std::clamp(weights[j], 0.0f, 1.0f);
+	return GetTable<Mask>().Add(std::move(mask));
+}
+
+SN_API void sn_anim_mask_destroy(int32_t mask)
+{
+	GetTable<Mask>().Remove(mask);
 }
 
 SN_API int32_t sn_anim_skin_create(const uint32_t *joints, const float *inverse_binds, uint32_t joint_count)

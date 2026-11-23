@@ -53,6 +53,13 @@ export interface NativeExports {
 	 * C: Runtime.h
 	 */
 	_sn_anim_load_skeleton(data: number, size: number): number;
+	/**
+	 * A mask: one weight (0..1) per skeleton joint, for the masked blends (upper-body layers).
+	 * C: Runtime.h
+	 */
+	_sn_anim_mask_create(weights: number, jointCount: number): number;
+	/** C: Runtime.h */
+	_sn_anim_mask_destroy(mask: number): void;
 	/** C: Runtime.h */
 	_sn_anim_skeleton_joint_count(skeleton: number): number;
 	/**
@@ -883,6 +890,7 @@ export const POINTER_SIGNATURES: Readonly<Record<string, string>> = {
 	sn_anim_instance_snapshot: '__p',
 	sn_anim_load_animation: '_p_',
 	sn_anim_load_skeleton: '_p_',
+	sn_anim_mask_create: '_p_',
 	sn_anim_skin_batch: '_p_',
 	sn_anim_skin_create: '_pp_',
 	sn_bvh_build_boxes: '_p_',
@@ -1120,6 +1128,8 @@ export type RuntimeExport =
 	| 'sn_anim_instance_create'
 	| 'sn_anim_instance_destroy'
 	| 'sn_anim_instance_model_matrices'
+	| 'sn_anim_mask_create'
+	| 'sn_anim_mask_destroy'
 	| 'sn_anim_evaluate_batch'
 	| 'sn_anim_instance_snapshot'
 	| 'sn_anim_instance_set_ik'

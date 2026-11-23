@@ -1673,6 +1673,13 @@ export class Skeleton extends NativeObject<StrideNative> {
 		this.jointCount = native.module._sn_anim_skeleton_joint_count(handle);
 	}
 
+	/** 按关节的权重（每个关节一个，0..1）建遮罩。 */
+	createMask(weights: ArrayLike<number>): AnimationMask {
+		const n = this.native;
+		if (weights.length !== this.jointCount) throw new RangeError(`createMask: ${weights.length} weights for ${this.jointCount} joints`);
+		return n.withArrays([Float32Array.from(weights)], (w) => new AnimationMask(n, n.check(n.module._sn_anim_mask_create(w, weights.length), 'sn_anim_mask_create'), weights.length));
+	}
+
 	/** 骨架要比它的实例活得久。 */
 	createInstance(): AnimationInstance {
 		const n = this.native;
@@ -1681,6 +1688,21 @@ export class Skeleton extends NativeObject<StrideNative> {
 
 	protected override release(): void {
 		this.native.module._sn_anim_destroy_skeleton(this[HANDLE]);
+	}
+}
+
+/** 关节的遮罩：每个关节一个权重（0..1），AnimationBatch 的 blendMasked、addMasked 用（分层：上半身、手臂）。 */
+export class AnimationMask extends NativeObject<StrideNative> {
+	readonly jointCount: number;
+
+	/** @internal */
+	constructor(native: StrideNative, handle: number, jointCount: number) {
+		super(native, handle);
+		this.jointCount = jointCount;
+	}
+
+	protected override release(): void {
+		this.native.module._sn_anim_mask_destroy(this[HANDLE]);
 	}
 }
 
@@ -1879,6 +1901,16 @@ export class AnimationBatch implements Disposable {
 		return this.#op(ANIM_OPS.push, animation[HANDLE], time, 0);
 	}
 
+	/** 弹出 a、b，按遮罩混：每个关节按 factor 乘遮罩里它的权重（上半身的层盖在下半身的动画上）。 */
+	blendMasked(factor: number, mask: AnimationMask): this {
+		return this.#op(ANIM_OPS.blendMasked, mask[HANDLE], 0, factor);
+	}
+
+	/** 弹出 a、b，按遮罩叠加（b 是叠加动画）。 */
+	addMasked(factor: number, mask: AnimationMask): this {
+		return this.#op(ANIM_OPS.addMasked, mask[HANDLE], 0, factor);
+	}
+
 	/** 压入实例用 AnimationInstance.snapshot 存的姿势（从布娃娃淡回动画）；没存过时求值报错。 */
 	pushSnapshot(): this {
 		return this.#op(ANIM_OPS.pushSnapshot, 0, 0, 0);
@@ -1941,7 +1973,7 @@ export class AnimationBatch implements Disposable {
 }
 
 /** sn_anim_op.type。 */
-const ANIM_OPS = { push: 0, blend: 1, add: 2, subtract: 3, pushSnapshot: 4 } as const;
+const ANIM_OPS = { push: 0, blend: 1, add: 2, subtract: 3, pushSnapshot: 4, blendMasked: 5, addMasked: 6 } as const;
 
 /** 原生内存里按元素大小增长的数组（AnimationBatch 的几张请求表）。 */
 class NativeBuffer {

@@ -249,7 +249,13 @@ enum
 	SN_ANIM_ADD = 2,
 	SN_ANIM_SUBTRACT = 3,
 	SN_ANIM_PUSH_SNAPSHOT = 4,		///< pushes the pose saved by sn_anim_instance_snapshot (blending back from a ragdoll)
+	SN_ANIM_BLEND_MASKED = 5,		///< like BLEND, each joint's factor multiplied by the mask's weight (animation = the mask): layers
+	SN_ANIM_ADD_MASKED = 6,			///< like ADD with a mask (an additive layer on the upper body)
 };
+
+/// A mask: one weight (0..1) per skeleton joint, for the masked blends (upper-body layers).
+SN_API int32_t sn_anim_mask_create(const float *weights, uint32_t joint_count);
+SN_API void sn_anim_mask_destroy(int32_t mask);
 
 typedef struct sn_anim_op
 {
