@@ -1,5 +1,5 @@
 // 光追用的 BVH（Runtime.h 的 sn_bvh_*，stride-ts 路线图 R2）：按表面积启发式（SAH）在三个轴上各分 16 个桶找最便宜的切法建
-// 二叉树，再收成 4 叉的宽 BVH（Widen：每个节点吸收孙子，每次展开表面积最大的内部子节点）——GPU 上一次读一个节点就测 4 个盒子，
+// 二叉树，再收成 4 叉的宽 BVH（Widen：每个节点吸收孙子，每次展开表面积最大的内部孩子）——GPU 上一次读一个节点就测 4 个盒子，
 // 走的节点少、读显存的次数少。三角形的版本另输出按叶子排好的三角形（v0、两条边），GPU 上直接做 Möller–Trumbore；包围盒的版本给
 // 实例的顶层 BVH 用。节点布局见 Runtime.h。
 #include <Core/Core.h>
@@ -63,7 +63,7 @@ namespace StrideNative
 		};
 		static_assert(sizeof(Node) == 32);
 
-		/// 宽 BVH 的节点（布局见 Runtime.h）：4 个子节点的包围盒按分量排，子节点的下标和图元数；空着的子节点盒子是反的（测不中）。
+		/// 宽 BVH 的节点（布局见 Runtime.h）：4 个孩子的包围盒按分量排，孩子的下标和图元数；空着的孩子盒子是反的（测不中）。
 		struct WideNode
 		{
 			float		mMin[3][4];
@@ -79,9 +79,9 @@ namespace StrideNative
 			return dx < 0.0f ? 0.0f : dx * dy + dy * dz + dz * dx;
 		}
 
-		/// 二叉树收成 4 叉：从根开始，每个宽节点的子节点先是二叉节点的两个子节点，再一个个展开表面积最大的内部子节点，直到 4 个或者都是
-		/// 叶子；内部子节点接着往下收。二叉树的根是叶子（只有几个图元）时宽节点只有这一个子节点；空树（根是个数为 0、盒子反着的节点）
-		/// 出一个 4 个子节点都空的节点。
+		/// 二叉树收成 4 叉：从根开始，每个宽节点的孩子先是二叉节点的两个孩子，再一个个展开表面积最大的内部孩子，直到 4 个或者都是
+		/// 叶子；内部孩子接着往下收。二叉树的根是叶子（只有几个图元）时宽节点只有这一个孩子；空树（根是个数为 0、盒子反着的节点）
+		/// 出一个 4 个孩子都空的节点。
 		std::vector<WideNode> Widen(const std::vector<Node> &inNodes)
 		{
 			WideNode empty;
@@ -159,70 +159,6 @@ namespace StrideNative
 				wide[work.mWide] = node;
 			}
 			return wide;
-		}
-
-		/// 压缩的宽节点（sn_bvh_quantize 的输出，布局见 Runtime.h）：节点的原点、三个轴的缩放（2 的整数次幂），4 个子节点的盒子按分量各 8 位、向外
-		/// 取整（保守：射线不会漏掉），子节点的图元数各 8 位（255 是空着的子节点），子节点的下标。64 字节，WideNode 的一半：GPU 遍历时读的
-		/// 显存少一半（CWBVH 的做法，Ylitie、Karras、Laine 2017，我们是 4 叉）。
-		struct QuantizedNode
-		{
-			float		mOrigin[3];
-			uint32_t	mExponents;		///< 三个轴各 8 位：2 的指数加 127
-			uint32_t	mQuantized[6];	///< 最小 x、y、z，最大 x、y、z：每个字 4 个子节点各 8 位
-			uint32_t	mCounts;		///< 4 个子节点的图元数各 8 位（0 是内部节点，255 是空着的）
-			uint32_t	mReserved;
-			uint32_t	mChild[4];
-		};
-		static_assert(sizeof(QuantizedNode) == 64);
-
-		constexpr uint32_t cEmptyChild = 255;
-
-		std::vector<QuantizedNode> Quantize(const std::vector<WideNode> &inNodes)
-		{
-			std::vector<QuantizedNode> out(inNodes.size());
-			for (size_t n = 0; n < inNodes.size(); ++n)
-			{
-				const WideNode &node = inNodes[n];
-				QuantizedNode &q = out[n];
-				std::memset(&q, 0, sizeof(q));
-				bool occupied[4];
-				for (int i = 0; i < 4; ++i)
-					occupied[i] = node.mMin[0][i] <= node.mMax[0][i];
-				for (int axis = 0; axis < 3; ++axis)
-				{
-					float lo = FLT_MAX, hi = -FLT_MAX;
-					for (int i = 0; i < 4; ++i)
-						if (occupied[i])
-						{
-							lo = std::min(lo, node.mMin[axis][i]);
-							hi = std::max(hi, node.mMax[axis][i]);
-						}
-					if (lo > hi)
-						lo = hi = 0.0f;
-					// 255 格盖住整个范围的最小的 2 的整数次幂：去量化（原点 + 格数 × 缩放）里的乘法是精确的
-					const double extent = double(hi) - double(lo);
-					int exponent = -126;
-					while (exponent < 127 && std::ldexp(255.0, exponent) < extent)
-						++exponent;
-					const double scale = std::ldexp(1.0, exponent);
-					q.mOrigin[axis] = lo;
-					q.mExponents |= uint32_t(exponent + 127) << (axis * 8);
-					for (int i = 0; i < 4; ++i)
-					{
-						if (!occupied[i])
-							continue;
-						const double qlo = std::floor((double(node.mMin[axis][i]) - lo) / scale), qhi = std::ceil((double(node.mMax[axis][i]) - lo) / scale);
-						q.mQuantized[axis] |= uint32_t(std::clamp(qlo, 0.0, 255.0)) << (i * 8);
-						q.mQuantized[3 + axis] |= uint32_t(std::clamp(qhi, 0.0, 255.0)) << (i * 8);
-					}
-				}
-				for (int i = 0; i < 4; ++i)
-				{
-					q.mChild[i] = node.mChild[i];
-					q.mCounts |= (occupied[i] ? std::min<uint32_t>(node.mCount[i], cEmptyChild - 1) : cEmptyChild) << (i * 8);
-				}
-			}
-			return out;
 		}
 
 		/// 按图元的包围盒建树：返回节点，ioOrder 排成叶子的顺序。
@@ -552,23 +488,6 @@ SN_API int32_t sn_bvh_build_boxes(const float *boxes, uint32_t count)
 		std::memcpy(ioTask.AddOutput(uint32_t(nodes.size() * sizeof(WideNode))), nodes.data(), nodes.size() * sizeof(WideNode));
 		std::memcpy(ioTask.AddOutput(std::max<uint32_t>(1, count) * sizeof(uint32_t)), order.data(), order.size() * sizeof(uint32_t));
 		ioTask.SetResult(0, int32_t(nodes.size()));
-		return true;
-	});
-}
-
-SN_API int32_t sn_bvh_quantize(const uint32_t *nodes, uint32_t node_count)
-{
-	SN_REQUIRE_INIT(SN_ERROR_NOT_INITIALIZED);
-	if (node_count > 0 && nodes == nullptr)
-		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "sn_bvh_quantize: nodes are required");
-	return RunTask("sn_bvh_quantize", [nodes, node_count](Task &ioTask)
-	{
-		// 每个节点单独压，子节点的下标不变：几棵树接在一起的大缓冲也能整块压
-		std::vector<WideNode> wide(node_count);
-		std::memcpy(wide.data(), nodes, size_t(node_count) * sizeof(WideNode));
-		std::vector<QuantizedNode> out = Quantize(wide);
-		std::memcpy(ioTask.AddOutput(std::max<uint32_t>(1, node_count) * uint32_t(sizeof(QuantizedNode))), out.data(), out.size() * sizeof(QuantizedNode));
-		ioTask.SetResult(0, int32_t(node_count));
 		return true;
 	});
 }

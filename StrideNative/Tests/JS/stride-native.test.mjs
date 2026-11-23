@@ -758,7 +758,7 @@ describe('stride-native and stride-tools', () => {
 		const { nodes, triangles, nodeCount } = await native.buildTriangleBvh(positions, indices);
 		const floats = new Float32Array(nodes.buffer, nodes.byteOffset, nodes.length);
 		assert.equal(nodes.length, nodeCount * 32);
-		// 宽节点：4 个子节点的盒子按分量排（最小 xyz、最大 xyz 各 4 个），子节点、图元数；空的子节点盒子是反的
+		// 宽节点：4 个孩子的盒子按分量排（最小 xyz、最大 xyz 各 4 个），孩子、图元数；空的孩子盒子是反的
 		const box = (n, i) => [0, 1, 2, 3, 4, 5].map((k) => floats[n * 32 + k * 4 + i]);
 		const seen = new Set();
 		let reached = 1;
@@ -768,7 +768,7 @@ describe('stride-native and stride-tools', () => {
 				if (x0 > x1) continue;
 				const child = nodes[n * 32 + 24 + i], leafCount = nodes[n * 32 + 28 + i];
 				if (leafCount === 0) {
-					// 子节点的子节点都在这个盒子里
+					// 子节点的孩子都在这个盒子里
 					reached++;
 					for (let j = 0; j < 4; j++) {
 						const inner = box(child, j);
@@ -806,7 +806,7 @@ describe('stride-native and stride-tools', () => {
 		const reduced = await native.buildTriangleBvh(itemPositions, new Uint32Array(itemIndices), { maxTriangles: 2000 });
 		assert.ok(reduced.triangleCount > 2 && reduced.triangleCount <= items * 12 + 2, `simplified to ${reduced.triangleCount}`);
 		assert.equal(reduced.triangles.length, reduced.triangleCount * 12);
-		// 根的 4 个子节点合起来还是盖住地板和商品
+		// 根的 4 个孩子合起来还是盖住地板和商品
 		const root = new Float32Array(reduced.nodes.buffer, reduced.nodes.byteOffset, 32);
 		const span = (k, pick) => pick(...[0, 1, 2, 3].map((i) => root[k * 4 + i]).filter((v) => Math.abs(v) < 3e38));
 		assert.ok(span(0, Math.min) <= 0 && span(3, Math.max) >= 10 && span(1, Math.min) <= -0.1 && span(4, Math.max) > 1, `still spans the floor and the items: ${[...root.subarray(0, 24)]}`);
@@ -815,52 +815,6 @@ describe('stride-native and stride-tools', () => {
 		const boxes = new Float32Array([0, 0, 0, 1, 1, 1, 5, 0, 0, 6, 1, 1, 10, 0, 0, 11, 1, 1]);
 		const tlas = await native.buildBoxBvh(boxes);
 		assert.deepEqual([...tlas.order].sort(), [0, 1, 2]);
-	});
-
-	it('quantizes wide BVH nodes: same children and counts, leaf boxes still cover their triangles, empty children are 255', async () => {
-		const count = 300, positions = new Float32Array(count * 9), indices = new Uint32Array(count * 3);
-		let seed = 11;
-		const random = () => ((seed = (seed * 1103515245 + 12345) >>> 0) / 4294967296);
-		for (let t = 0; t < count; t++) {
-			const cx = random() * 50 - 25, cy = random() * 4, cz = random() * 50 - 25;
-			for (let k = 0; k < 3; k++) {
-				positions.set([cx + random() * 0.5, cy + random() * 0.5, cz + random() * 0.5], (t * 3 + k) * 3);
-				indices[t * 3 + k] = t * 3 + k;
-			}
-		}
-		const { nodes, triangles, nodeCount } = await native.buildTriangleBvh(positions, indices);
-		const packed = await native.quantizeBvh(nodes);
-		assert.equal(packed.length, nodeCount * 16);
-		const floats = new Float32Array(nodes.buffer, nodes.byteOffset, nodes.length);
-		const byte = (word, i) => (word >>> (i * 8)) & 0xff;
-		const packedFloats = new Float32Array(packed.buffer, packed.byteOffset, packed.length);
-		for (let n = 0; n < nodeCount; n++) {
-			for (let i = 0; i < 4; i++) {
-				const empty = floats[n * 32 + i] > floats[n * 32 + 12 + i], leafCount = byte(packed[n * 16 + 10], i);
-				if (empty) {
-					assert.equal(leafCount, 255);
-					continue;
-				}
-				assert.equal(leafCount, nodes[n * 32 + 28 + i]);
-				assert.equal(packed[n * 16 + 12 + i], nodes[n * 32 + 24 + i]);
-				const box = [0, 1, 2, 3, 4, 5].map((k) => {
-					const axis = k % 3, scale = 2 ** (byte(packed[n * 16 + 3], axis) - 127);
-					return packedFloats[n * 16 + axis] + byte(packed[n * 16 + 4 + k], i) * scale;
-				});
-				// 向外取整：解出来的盒子盖住原来的盒子
-				for (let axis = 0; axis < 3; axis++) {
-					assert.ok(box[axis] <= floats[n * 32 + axis * 4 + i] && box[3 + axis] >= floats[n * 32 + 12 + axis * 4 + i], `node ${n} child ${i} axis ${axis}`);
-				}
-				if (leafCount === 0) continue;
-				const first = nodes[n * 32 + 24 + i];
-				for (let t = first; t < first + leafCount; t++) {
-					const v = triangles.subarray(t * 12, t * 12 + 12);
-					for (const p of [[v[0], v[1], v[2]], [v[0] + v[4], v[1] + v[5], v[2] + v[6]], [v[0] + v[8], v[1] + v[9], v[2] + v[10]]]) {
-						assert.ok(p[0] >= box[0] && p[1] >= box[1] && p[2] >= box[2] && p[0] <= box[3] && p[1] <= box[4] && p[2] <= box[5], `leaf of node ${n} covers triangle ${t}`);
-					}
-				}
-			}
-		}
 	});
 
 	it('evaluates vector terrain: noise base, flatten polygons and strokes, seamless pages far from the origin', async () => {
