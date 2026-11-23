@@ -590,6 +590,18 @@ export class StrideTools extends NativeModule<ToolsExport> {
 
 	/** 生成 ozz 骨架档案。 */
 	buildSkeleton(joints: readonly JointDescription[]): Uint8Array {
+		// ozz 按深度优先（每个关节的子关节紧跟在它后面，按给的先后）重排关节：给的顺序不是这样时运行时的下标和这里的对不上，直接报错
+		const order: number[] = [];
+		const visit = (parent: number) => joints.forEach((joint, i) => {
+			if ((joint.parent ?? -1) !== parent) return;
+			order.push(i);
+			visit(i);
+		});
+		visit(-1);
+		const moved = order.findIndex((joint, i) => joint !== i);
+		if (order.length !== joints.length || moved >= 0) {
+			throw new Error(`buildSkeleton: joints must be in depth-first order (each joint's children right after it, parents before children); joint ${moved >= 0 ? order[moved] : '?'} ('${joints[moved >= 0 ? order[moved]! : 0]?.name ?? ''}') would move to ${moved}`);
+		}
 		const JOINT_SIZE = 44;
 		const table = new DataView(new ArrayBuffer(joints.length * JOINT_SIZE));
 		joints.forEach((joint, i) => {

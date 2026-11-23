@@ -1473,6 +1473,8 @@ describe('stride-native and stride-tools', () => {
 		assert.deepEqual(pos(3), [0.2, 2, 3]);
 		assert.deepEqual(pos(4), [0.2, 2, 4]);
 		assert.throws(() => native.retargetAnimation(clip, sourceSkeleton, targetSkeleton, [-1, 0, 1, 2]), /4 entries for 5 target joints/);
+		// 不是深度优先的顺序：ozz 会重排，下标对不上，建的时候就报错
+		assert.throws(() => tools.buildSkeleton([{ parent: -1, name: 'a' }, { parent: 0, name: 'b' }, { parent: 0, name: 'c' }, { parent: 1, name: 'd' }]), /depth-first/);
 		assert.throws(() => native.retargetAnimation(clip, sourceSkeleton, targetSkeleton, [-1, 0, 1, 9, -1]), /maps to source joint 9/);
 		// 在别的骨架的实例上压：报错
 		const other = sourceSkeleton.createInstance();
