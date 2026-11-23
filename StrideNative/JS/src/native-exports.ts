@@ -350,7 +350,7 @@ export interface NativeExports {
 	 */
 	_sn_physics_positions(world: number): number;
 	/**
-	 * 给一部分加冲量（世界空间，牛·秒），比如被撞的那一下；part 是 -1 时加在所有部分上（按质量分）。
+	 * 给一部分加冲量（世界空间，牛·秒），比如被撞的那一下；part 是 -1 时是全身的冲量，按质量分给每一部分（全身的速度变化是 冲量 / 总质量）。
 	 * C: Physics.h
 	 */
 	_sn_physics_ragdoll_impulse(world: number, ragdoll: number, part: number, impulse: number): number;
