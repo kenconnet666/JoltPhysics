@@ -1672,6 +1672,11 @@ export class Crowd extends NativeObject<StrideNative> {
 		return this.#positions;
 	}
 
+	/** 避让有多仔细（Recast 演示的四档）：0 低、1 中（默认）、2 好、3 高；所有人都换，越高每步越贵。 */
+	setAvoidanceQuality(quality: 0 | 1 | 2 | 3): void {
+		this.native.check(this.native.module._sn_crowd_set_avoidance_quality(this[HANDLE], quality), 'sn_crowd_set_avoidance_quality');
+	}
+
 	/** 每个槽位的速度 xyz（空槽位是 0），同 positions：原生内存上的视图，update() 原地改写。 */
 	velocities(): Float32Array {
 		return this.#velocities;

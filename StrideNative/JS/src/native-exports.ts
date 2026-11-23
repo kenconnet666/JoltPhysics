@@ -124,6 +124,12 @@ export interface NativeExports {
 	/** C: Navigation.h */
 	_sn_crowd_request_move(crowd: number, agent: number, target3: number): number;
 	/**
+	 * How carefully agents avoid each other (Recast demo presets): 0 low, 1 medium (default), 2 good, 3 high. Applies to
+	 * every agent; higher costs more per update.
+	 * C: Navigation.h
+	 */
+	_sn_crowd_set_avoidance_quality(crowd: number, quality: number): number;
+	/**
 	 * Moves the agents, then writes their positions into the positions buffer.
 	 * C: Navigation.h
 	 */
@@ -1057,6 +1063,7 @@ export type RuntimeExport =
 	| 'sn_crowd_request_move'
 	| 'sn_crowd_update'
 	| 'sn_crowd_positions'
+	| 'sn_crowd_set_avoidance_quality'
 	| 'sn_crowd_velocities'
 	| 'sn_physics_create'
 	| 'sn_physics_destroy'

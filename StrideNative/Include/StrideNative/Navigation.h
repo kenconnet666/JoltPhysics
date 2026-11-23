@@ -49,5 +49,8 @@ SN_API void sn_crowd_update(int32_t crowd, float delta_time);
 /// The crowd's positions buffer: xyz per agent slot (NaN for empty slots), room for max_agents. It stays
 /// at this address until the crowd is destroyed; add_agent, remove_agent and update keep it current.
 SN_API const float *sn_crowd_positions(int32_t crowd);
+/// How carefully agents avoid each other (Recast demo presets): 0 low, 1 medium (default), 2 good, 3 high. Applies to
+/// every agent; higher costs more per update.
+SN_API int32_t sn_crowd_set_avoidance_quality(int32_t crowd, int32_t quality);
 /// Velocities (xyz per agent slot, 0 for empty slots), kept like the positions buffer: which way each agent walks.
 SN_API const float *sn_crowd_velocities(int32_t crowd);

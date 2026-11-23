@@ -47,6 +47,7 @@ namespace
 		int32_t				mNavMesh = 0;			///< The navmesh must outlive the crowd
 		std::vector<float>	mPositions;				///< xyz per agent slot, NaN when empty; sized once so callers can keep a view
 		std::vector<float>	mVelocities;			///< xyz per agent slot (0 when empty), like mPositions
+		unsigned char		mQuality = 1;			///< obstacle avoidance preset of new agents (sn_crowd_set_avoidance_quality)
 
 		~Crowd() { dtFreeCrowd(mCrowd); }
 
@@ -185,6 +186,16 @@ SN_API int32_t sn_crowd_create(int32_t navmesh, uint32_t max_agents, float max_a
 		return SetLastError(SN_ERROR_FAILED, "dtCrowd::init failed");
 	crowd->mPositions.assign(size_t(max_agents) * 3, std::numeric_limits<float>::quiet_NaN());
 	crowd->mVelocities.assign(size_t(max_agents) * 3, 0.0f);
+	// Recast 演示的四档避让（低、中、好、高）：自适应采样的分段、环数、深度越大越准越贵；默认的五层深度比"高"还贵
+	const unsigned char presets[4][3] = { { 5, 2, 1 }, { 5, 2, 2 }, { 7, 2, 3 }, { 7, 3, 3 } };
+	for (int quality = 0; quality < 4; ++quality)
+	{
+		dtObstacleAvoidanceParams params = *crowd->mCrowd->getObstacleAvoidanceParams(quality);
+		params.adaptiveDivs = presets[quality][0];
+		params.adaptiveRings = presets[quality][1];
+		params.adaptiveDepth = presets[quality][2];
+		crowd->mCrowd->setObstacleAvoidanceParams(quality, &params);
+	}
 	return GetTable<Crowd>().Add(std::move(crowd));
 }
 
@@ -208,6 +219,7 @@ SN_API int32_t sn_crowd_add_agent(int32_t crowd, const float *position3, float r
 	params.pathOptimizationRange = radius * 30.0f;
 	params.updateFlags = DT_CROWD_ANTICIPATE_TURNS | DT_CROWD_OPTIMIZE_VIS | DT_CROWD_OPTIMIZE_TOPO | DT_CROWD_OBSTACLE_AVOIDANCE | DT_CROWD_SEPARATION;
 	params.separationWeight = 2.0f;
+	params.obstacleAvoidanceType = c->mQuality;
 	int agent = c->mCrowd->addAgent(position3, &params);
 	if (agent < 0)
 		return SetLastError(SN_ERROR_FAILED, "crowd is full or position is off the navmesh");
@@ -252,6 +264,26 @@ SN_API void sn_crowd_update(int32_t crowd, float delta_time)
 	c->mCrowd->update(delta_time, nullptr);
 	for (int agent = 0; agent < c->mCrowd->getAgentCount(); ++agent)
 		c->WritePosition(agent);
+}
+
+SN_API int32_t sn_crowd_set_avoidance_quality(int32_t crowd, int32_t quality)
+{
+	Crowd *c = Lookup<Crowd>(crowd, "crowd");
+	if (c == nullptr)
+		return SN_ERROR_INVALID_HANDLE;
+	if (quality < 0 || quality > 3)
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "sn_crowd_set_avoidance_quality: quality must be 0..3");
+	c->mQuality = (unsigned char)quality;
+	for (int agent = 0; agent < c->mCrowd->getAgentCount(); ++agent)
+	{
+		const dtCrowdAgent *existing = c->mCrowd->getAgent(agent);
+		if (!existing->active)
+			continue;
+		dtCrowdAgentParams params = existing->params;
+		params.obstacleAvoidanceType = (unsigned char)quality;
+		c->mCrowd->updateAgentParameters(agent, &params);
+	}
+	return SN_OK;
 }
 
 SN_API const float *sn_crowd_velocities(int32_t crowd)
