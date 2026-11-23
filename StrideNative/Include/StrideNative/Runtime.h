@@ -248,6 +248,7 @@ enum
 	SN_ANIM_BLEND = 1,
 	SN_ANIM_ADD = 2,
 	SN_ANIM_SUBTRACT = 3,
+	SN_ANIM_PUSH_SNAPSHOT = 4,		///< pushes the pose saved by sn_anim_instance_snapshot (blending back from a ragdoll)
 };
 
 typedef struct sn_anim_op
@@ -300,6 +301,12 @@ typedef struct sn_anim_ik
 	uint32_t flags;					///< SN_ANIM_IK_*
 	uint32_t reserved;
 } sn_anim_ik;
+
+/// Saves the instance's current model-space matrices (the last evaluation, or what a ragdoll wrote) as a
+/// local pose that SN_ANIM_PUSH_SNAPSHOT pushes. root_correction (16 floats, column-major, or null)
+/// multiplies the root joints' model matrices first: when the model itself moved (stood up after a
+/// ragdoll), it is new model-to-world inverse times old model-to-world, so the pose stays put in the world.
+SN_API int32_t sn_anim_instance_snapshot(int32_t instance, const float *root_correction);
 
 /// Sets the IK applied after every evaluation of this instance (copied; count 0 clears it). Returns the
 /// count, or an error when a joint index is out of range.

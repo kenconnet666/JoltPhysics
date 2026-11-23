@@ -1399,6 +1399,21 @@ describe('stride-native and stride-tools', () => {
 		assert.ok(Math.abs(position(0)[1] + 0.2) < 1e-4, `hips down: ${position(0)}`);
 		assert.ok(Math.abs(position(3)[1] + 0.9) < 1e-3, `foot raised to -0.9: ${position(3)}`);
 		assert.ok(position(2)[2] > 0.05, 'knee bends');
+		// 快照：IK 抬起的脚存下来，清掉 IK 以后压快照还是抬起的样子；根的修正把整个姿势挪走
+		instance.setIk([{ type: 'twoBone', joints: [1, 2, 3], target: [0.1, -0.7, 0.2], pole: [0, 0, 1], midAxis: [1, 0, 0] }]);
+		evaluate();
+		const raised = position(3);
+		instance.snapshot();
+		instance.setIk([]);
+		batch.clear().instance(instance).pushSnapshot();
+		batch.evaluate();
+		assert.ok(Math.hypot(...position(3).map((v, k) => v - raised[k])) < 1e-4, `snapshot keeps the raised foot: ${position(3)}`);
+		batch.clear().instance(instance).pushSnapshot();
+		batch.evaluate();
+		instance.snapshot([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 2, 0, 1]);
+		batch.clear().instance(instance).pushSnapshot();
+		batch.evaluate();
+		assert.ok(Math.abs(position(3)[1] - (raised[1] + 2)) < 1e-4, 'root correction moves the pose');
 		instance.setIk([]);
 		evaluate();
 		assert.deepEqual(position(3).map((v) => +v.toFixed(4)), [0.1, -1, 0]);

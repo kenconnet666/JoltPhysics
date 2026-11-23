@@ -53,6 +53,7 @@ namespace
 		std::vector<ozz::vector<SoaTransform>>	mStack;
 		ozz::vector<ozz::math::Float4x4>		mModels;
 		std::vector<sn_anim_ik>					mIks;		///< 每次求值以后按顺序做
+		ozz::vector<SoaTransform>				mSnapshot;	///< sn_anim_instance_snapshot 存的局部姿势；空的是没存过
 
 		ozz::animation::SamplingJob::Context &ContextFor(const Animation &inAnimation)
 		{
@@ -343,6 +344,13 @@ namespace
 					return SN_ERROR_FAILED;
 				++depth;
 			}
+			else if (op.type == SN_ANIM_PUSH_SNAPSHOT)
+			{
+				if (depth >= cMaxStack || instance->mSnapshot.size() != instance->mStack[depth].size())
+					return SN_ERROR_INVALID_ARGUMENT;
+				std::copy(instance->mSnapshot.begin(), instance->mSnapshot.end(), instance->mStack[depth].begin());
+				++depth;
+			}
 			else if (op.type == SN_ANIM_BLEND || op.type == SN_ANIM_ADD || op.type == SN_ANIM_SUBTRACT)
 			{
 				if (depth < 2)
@@ -473,6 +481,48 @@ SN_API int32_t sn_anim_instance_create(int32_t skeleton)
 SN_API void sn_anim_instance_destroy(int32_t instance)
 {
 	GetTable<Instance>().Remove(instance);
+}
+
+SN_API int32_t sn_anim_instance_snapshot(int32_t instance, const float *root_correction)
+{
+	Instance *i = GetTable<Instance>().Get(instance);
+	if (i == nullptr)
+		return SN_ERROR_INVALID_HANDLE;
+	const Skeleton &skeleton = *i->mSkeleton;
+	int joints = skeleton.num_joints();
+	ozz::math::Float4x4 correction = ozz::math::Float4x4::identity();
+	if (root_correction != nullptr)
+		for (int c = 0; c < 4; ++c)
+			correction.cols[c] = ozz::math::simd_float4::LoadPtrU(root_correction + c * 4);
+	i->mSnapshot.resize(size_t(skeleton.num_soa_joints()));
+	// 模型空间换回局部：根关节 = 修正 × 模型矩阵，别的 = 父关节的逆 × 自己；用不到的 SoA 通道填单位变换
+	Joint lanes[4];
+	for (int soa = 0; soa < skeleton.num_soa_joints(); ++soa)
+	{
+		for (int lane = 0; lane < 4; ++lane)
+		{
+			Joint &joint = lanes[lane];
+			joint = { { 0, 0, 0 }, { 0, 0, 0, 1 }, { 1, 1, 1 } };
+			int j = soa * 4 + lane;
+			if (j >= joints)
+				continue;
+			int parent = skeleton.joint_parents()[j];
+			ozz::math::Float4x4 local = parent == ozz::animation::Skeleton::kNoParent ? correction * i->mModels[size_t(j)]
+				: ozz::math::Invert(i->mModels[size_t(parent)]) * i->mModels[size_t(j)];
+			ozz::math::SimdFloat4 translation, rotation, scale;
+			if (!ozz::math::ToAffine(local, &translation, &rotation, &scale))
+				return SetLastError(SN_ERROR_FAILED, "sn_anim_instance_snapshot: joint " + std::to_string(j) + " has a degenerate matrix");
+			alignas(16) float t[4], r[4], s[4];
+			ozz::math::StorePtr(translation, t);
+			ozz::math::StorePtr(rotation, r);
+			ozz::math::StorePtr(scale, s);
+			std::copy(t, t + 3, joint.t);
+			std::copy(r, r + 4, joint.r);
+			std::copy(s, s + 3, joint.s);
+		}
+		Pack(lanes, i->mSnapshot[size_t(soa)]);
+	}
+	return SN_OK;
 }
 
 SN_API int32_t sn_anim_instance_set_ik(int32_t instance, const sn_anim_ik *iks, uint32_t count)

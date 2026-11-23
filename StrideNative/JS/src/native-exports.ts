@@ -38,6 +38,14 @@ export interface NativeExports {
 	 * C: Runtime.h
 	 */
 	_sn_anim_instance_set_ik(instance: number, iks: number, count: number): number;
+	/**
+	 * Saves the instance's current model-space matrices (the last evaluation, or what a ragdoll wrote) as a
+	 * local pose that SN_ANIM_PUSH_SNAPSHOT pushes. root_correction (16 floats, column-major, or null)
+	 * multiplies the root joints' model matrices first: when the model itself moved (stood up after a
+	 * ragdoll), it is new model-to-world inverse times old model-to-world, so the pose stays put in the world.
+	 * C: Runtime.h
+	 */
+	_sn_anim_instance_snapshot(instance: number, rootCorrection: number): number;
 	/** C: Runtime.h */
 	_sn_anim_load_animation(data: number, size: number): number;
 	/**
@@ -872,6 +880,7 @@ export const POINTER_SIGNATURES: Readonly<Record<string, string>> = {
 	sn_anim_evaluate_batch: '_pp_',
 	sn_anim_instance_model_matrices: 'p_',
 	sn_anim_instance_set_ik: '__p_',
+	sn_anim_instance_snapshot: '__p',
 	sn_anim_load_animation: '_p_',
 	sn_anim_load_skeleton: '_p_',
 	sn_anim_skin_batch: '_p_',
@@ -1112,6 +1121,7 @@ export type RuntimeExport =
 	| 'sn_anim_instance_destroy'
 	| 'sn_anim_instance_model_matrices'
 	| 'sn_anim_evaluate_batch'
+	| 'sn_anim_instance_snapshot'
 	| 'sn_anim_instance_set_ik'
 	| 'sn_anim_skin_create'
 	| 'sn_anim_skin_destroy'

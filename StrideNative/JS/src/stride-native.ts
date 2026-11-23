@@ -1794,6 +1794,20 @@ export class AnimationInstance extends NativeObject<StrideNative> {
 		});
 	}
 
+	/**
+	 * 把现在的模型空间矩阵（上一次求值的，或者布娃娃写的）存成局部姿势，之后 AnimationBatch 的 pushSnapshot 压它（从布娃娃淡回
+	 * 动画）。rootCorrection（列主序 4x4）先乘到根关节上：模型自己挪了（布娃娃以后站起来）时是新的模型到世界的逆乘旧的，姿势在
+	 * 世界里不动。
+	 */
+	snapshot(rootCorrection?: ArrayLike<number>): void {
+		const n = this.native;
+		if (!rootCorrection) {
+			n.check(n.module._sn_anim_instance_snapshot(this[HANDLE], 0), 'sn_anim_instance_snapshot');
+			return;
+		}
+		n.withArrays([Float32Array.from(rootCorrection)], (correction) => n.check(n.module._sn_anim_instance_snapshot(this[HANDLE], correction), 'sn_anim_instance_snapshot'));
+	}
+
 	/** 模型空间的关节矩阵（每个是列主序 4x4），原生内存上的视图，不拷贝，可以直接交给 GPUQueue.writeBuffer。实例销毁后失效。 */
 	modelMatrices(): Float32Array {
 		return this.native.f32(this.native.module._sn_anim_instance_model_matrices(this[HANDLE]), this.jointCount * 16);
@@ -1865,6 +1879,11 @@ export class AnimationBatch implements Disposable {
 		return this.#op(ANIM_OPS.push, animation[HANDLE], time, 0);
 	}
 
+	/** 压入实例用 AnimationInstance.snapshot 存的姿势（从布娃娃淡回动画）；没存过时求值报错。 */
+	pushSnapshot(): this {
+		return this.#op(ANIM_OPS.pushSnapshot, 0, 0, 0);
+	}
+
 	/** 弹出 a、b，压入 lerp(a, b, factor)（旋转是 slerp）。 */
 	blend(factor: number): this {
 		return this.#op(ANIM_OPS.blend, 0, 0, factor);
@@ -1922,7 +1941,7 @@ export class AnimationBatch implements Disposable {
 }
 
 /** sn_anim_op.type。 */
-const ANIM_OPS = { push: 0, blend: 1, add: 2, subtract: 3 } as const;
+const ANIM_OPS = { push: 0, blend: 1, add: 2, subtract: 3, pushSnapshot: 4 } as const;
 
 /** 原生内存里按元素大小增长的数组（AnimationBatch 的几张请求表）。 */
 class NativeBuffer {
