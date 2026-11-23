@@ -1,5 +1,6 @@
-// 光追用的 BVH（Runtime.h 的 sn_bvh_*，stride-ts 路线图 R2）：按表面积启发式（SAH）在三个轴上各分 16 个桶找最便宜的切法，
-// 二叉树，左右孩子挨着放。三角形的版本另输出按叶子排好的三角形（v0、两条边），GPU 上直接做 Möller–Trumbore；包围盒的版本给
+// 光追用的 BVH（Runtime.h 的 sn_bvh_*，stride-ts 路线图 R2）：按表面积启发式（SAH）在三个轴上各分 16 个桶找最便宜的切法建
+// 二叉树，再收成 4 叉的宽 BVH（Widen：每个节点吸收孙子，每次展开表面积最大的内部孩子）——GPU 上一次读一个节点就测 4 个盒子，
+// 走的节点少、读显存的次数少。三角形的版本另输出按叶子排好的三角形（v0、两条边），GPU 上直接做 Möller–Trumbore；包围盒的版本给
 // 实例的顶层 BVH 用。节点布局见 Runtime.h。
 #include <Core/Core.h>
 #include <Core/Tasks.h>
@@ -61,6 +62,104 @@ namespace StrideNative
 			uint32_t	mCount;
 		};
 		static_assert(sizeof(Node) == 32);
+
+		/// 宽 BVH 的节点（布局见 Runtime.h）：4 个孩子的包围盒按分量排，孩子的下标和图元数；空着的孩子盒子是反的（测不中）。
+		struct WideNode
+		{
+			float		mMin[3][4];
+			float		mMax[3][4];
+			uint32_t	mChild[4];
+			uint32_t	mCount[4];
+		};
+		static_assert(sizeof(WideNode) == 128);
+
+		float NodeArea(const Node &inNode)
+		{
+			float dx = inNode.mMax[0] - inNode.mMin[0], dy = inNode.mMax[1] - inNode.mMin[1], dz = inNode.mMax[2] - inNode.mMin[2];
+			return dx < 0.0f ? 0.0f : dx * dy + dy * dz + dz * dx;
+		}
+
+		/// 二叉树收成 4 叉：从根开始，每个宽节点的孩子先是二叉节点的两个孩子，再一个个展开表面积最大的内部孩子，直到 4 个或者都是
+		/// 叶子；内部孩子接着往下收。二叉树的根是叶子（只有几个图元）时宽节点只有这一个孩子；空树（根是个数为 0、盒子反着的节点）
+		/// 出一个 4 个孩子都空的节点。
+		std::vector<WideNode> Widen(const std::vector<Node> &inNodes)
+		{
+			WideNode empty;
+			for (int axis = 0; axis < 3; ++axis)
+				for (int i = 0; i < 4; ++i)
+				{
+					empty.mMin[axis][i] = FLT_MAX;
+					empty.mMax[axis][i] = -FLT_MAX;
+				}
+			for (int i = 0; i < 4; ++i)
+			{
+				empty.mChild[i] = 0;
+				empty.mCount[i] = 0;
+			}
+			std::vector<WideNode> wide { empty };
+			const Node &root = inNodes[0];
+			if (root.mCount == 0 && inNodes.size() < 3)
+				return wide;
+			struct Work { uint32_t mBinary, mWide; };
+			std::vector<Work> stack { { 0, 0 } };
+			while (!stack.empty())
+			{
+				Work work = stack.back();
+				stack.pop_back();
+				uint32_t children[4];
+				int n = 0;
+				const Node &binary = inNodes[work.mBinary];
+				if (binary.mCount != 0)
+					children[n++] = work.mBinary;
+				else
+				{
+					children[n++] = binary.mFirst;
+					children[n++] = binary.mFirst + 1;
+				}
+				while (n < 4)
+				{
+					int best = -1;
+					float bestArea = -1.0f;
+					for (int i = 0; i < n; ++i)
+					{
+						const Node &child = inNodes[children[i]];
+						if (child.mCount == 0 && NodeArea(child) > bestArea)
+						{
+							bestArea = NodeArea(child);
+							best = i;
+						}
+					}
+					if (best < 0)
+						break;
+					uint32_t left = inNodes[children[best]].mFirst;
+					children[best] = left;
+					children[n++] = left + 1;
+				}
+				WideNode node = empty;
+				for (int i = 0; i < n; ++i)
+				{
+					const Node &child = inNodes[children[i]];
+					for (int axis = 0; axis < 3; ++axis)
+					{
+						node.mMin[axis][i] = child.mMin[axis];
+						node.mMax[axis][i] = child.mMax[axis];
+					}
+					if (child.mCount != 0)
+					{
+						node.mChild[i] = child.mFirst;
+						node.mCount[i] = child.mCount;
+					}
+					else
+					{
+						node.mChild[i] = uint32_t(wide.size());
+						wide.push_back(empty);
+						stack.push_back({ children[i], node.mChild[i] });
+					}
+				}
+				wide[work.mWide] = node;
+			}
+			return wide;
+		}
 
 		/// 按图元的包围盒建树：返回节点，ioOrder 排成叶子的顺序。
 		std::vector<Node> Build(const std::vector<Box> &inBoxes, std::vector<uint32_t> &ioOrder, uint32_t inMaxLeaf)
@@ -349,8 +448,8 @@ SN_API int32_t sn_bvh_build_triangles(const float *positions, uint32_t vertex_co
 			for (int k = 0; k < 3; ++k)
 				boxes[t].GrowPoint(&positions[size_t(indices[size_t(t) * 3 + k]) * 3]);
 		std::vector<uint32_t> order;
-		std::vector<Node> nodes = Build(boxes, order, 4);
-		std::memcpy(ioTask.AddOutput(uint32_t(nodes.size() * sizeof(Node))), nodes.data(), nodes.size() * sizeof(Node));
+		std::vector<WideNode> nodes = Widen(Build(boxes, order, 4));
+		std::memcpy(ioTask.AddOutput(uint32_t(nodes.size() * sizeof(WideNode))), nodes.data(), nodes.size() * sizeof(WideNode));
 		float *triangles = static_cast<float *>(ioTask.AddOutput(std::max<uint32_t>(1, triangle_count) * 12 * sizeof(float)));
 		for (uint32_t i = 0; i < triangle_count; ++i)
 		{
@@ -385,8 +484,8 @@ SN_API int32_t sn_bvh_build_boxes(const float *boxes, uint32_t count)
 				input[i].mMax[c] = boxes[size_t(i) * 6 + 3 + c];
 			}
 		std::vector<uint32_t> order;
-		std::vector<Node> nodes = Build(input, order, 2);
-		std::memcpy(ioTask.AddOutput(uint32_t(nodes.size() * sizeof(Node))), nodes.data(), nodes.size() * sizeof(Node));
+		std::vector<WideNode> nodes = Widen(Build(input, order, 2));
+		std::memcpy(ioTask.AddOutput(uint32_t(nodes.size() * sizeof(WideNode))), nodes.data(), nodes.size() * sizeof(WideNode));
 		std::memcpy(ioTask.AddOutput(std::max<uint32_t>(1, count) * sizeof(uint32_t)), order.data(), order.size() * sizeof(uint32_t));
 		ioTask.SetResult(0, int32_t(nodes.size()));
 		return true;
