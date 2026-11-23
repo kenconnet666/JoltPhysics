@@ -73,6 +73,15 @@ export interface NativeExports {
 	 */
 	_sn_bvh_build_triangles(positions: number, vertexCount: number, indices: number, triangleCount: number, maxTriangles: number): number;
 	/**
+	 * 压缩宽 BVH 的节点（异步任务）：nodes 是上面布局的 node_count 个节点（可以是几棵树接在一起的，每个节点单独压，子节点的下标不变）。
+	 * 输出 [0]：压缩的节点，每个 16 个 32 位（64 字节，一半）——[0..2] 原点（float，子节点盒子的并的最小角），[3] 三个轴的缩放各 8 位
+	 * （2 的指数加 127），[4..9] 4 个子节点的盒子按分量排（最小 x、y、z，最大 x、y、z），每个字 4 个子节点各 8 位的格数（盒子 = 原点 + 格数
+	 * × 缩放，向外取整，只会比真的大），[10] 4 个子节点的图元数各 8 位（0 是内部节点，255 是空着的子节点），[11] 不用，[12..15] 子节点。
+	 * 少读一半显存，多一点解压的运算：带宽小的显卡（核显、手机）上快，大缓存的独显上可能慢（stride-ts 现场量了再选）。结果 [0]：节点数。
+	 * C: Runtime.h
+	 */
+	_sn_bvh_quantize(nodes: number, nodeCount: number): number;
+	/**
 	 * Returns the agent index.
 	 * C: Navigation.h
 	 */
@@ -771,6 +780,7 @@ export const POINTER_SIGNATURES: Readonly<Record<string, string>> = {
 	sn_anim_skin_create: '_pp_',
 	sn_bvh_build_boxes: '_p_',
 	sn_bvh_build_triangles: '_p_p__',
+	sn_bvh_quantize: '_p_',
 	sn_crowd_add_agent: '__p____',
 	sn_crowd_positions: 'p_',
 	sn_crowd_request_move: '___p',
@@ -965,6 +975,7 @@ export type RuntimeExport =
 	| 'sn_terrain_heights'
 	| 'sn_bvh_build_triangles'
 	| 'sn_bvh_build_boxes'
+	| 'sn_bvh_quantize'
 	| 'sn_meshopt_decode'
 	| 'sn_meshopt_decode_batch'
 	| 'sn_anim_load_skeleton'
