@@ -161,6 +161,70 @@ namespace StrideNative
 			return wide;
 		}
 
+		/// 压缩的宽节点（输出的布局，见 Runtime.h）：节点的原点、三个轴的缩放（2 的整数次幂），4 个孩子的盒子按分量各 8 位、向外
+		/// 取整（保守：射线不会漏掉），孩子的图元数各 8 位（255 是空着的孩子），孩子的下标。64 字节，WideNode 的一半：GPU 遍历时读的
+		/// 显存少一半（CWBVH 的做法，Ylitie、Karras、Laine 2017，我们是 4 叉）。
+		struct QuantizedNode
+		{
+			float		mOrigin[3];
+			uint32_t	mExponents;		///< 三个轴各 8 位：2 的指数加 127
+			uint32_t	mQuantized[6];	///< 最小 x、y、z，最大 x、y、z：每个字 4 个孩子各 8 位
+			uint32_t	mCounts;		///< 4 个孩子的图元数各 8 位（0 是内部节点，255 是空着的）
+			uint32_t	mReserved;
+			uint32_t	mChild[4];
+		};
+		static_assert(sizeof(QuantizedNode) == 64);
+
+		constexpr uint32_t cEmptyChild = 255;
+
+		std::vector<QuantizedNode> Quantize(const std::vector<WideNode> &inNodes)
+		{
+			std::vector<QuantizedNode> out(inNodes.size());
+			for (size_t n = 0; n < inNodes.size(); ++n)
+			{
+				const WideNode &node = inNodes[n];
+				QuantizedNode &q = out[n];
+				std::memset(&q, 0, sizeof(q));
+				bool occupied[4];
+				for (int i = 0; i < 4; ++i)
+					occupied[i] = node.mMin[0][i] <= node.mMax[0][i];
+				for (int axis = 0; axis < 3; ++axis)
+				{
+					float lo = FLT_MAX, hi = -FLT_MAX;
+					for (int i = 0; i < 4; ++i)
+						if (occupied[i])
+						{
+							lo = std::min(lo, node.mMin[axis][i]);
+							hi = std::max(hi, node.mMax[axis][i]);
+						}
+					if (lo > hi)
+						lo = hi = 0.0f;
+					// 255 格盖住整个范围的最小的 2 的整数次幂：去量化（原点 + 格数 × 缩放）里的乘法是精确的
+					const double extent = double(hi) - double(lo);
+					int exponent = -126;
+					while (exponent < 127 && std::ldexp(255.0, exponent) < extent)
+						++exponent;
+					const double scale = std::ldexp(1.0, exponent);
+					q.mOrigin[axis] = lo;
+					q.mExponents |= uint32_t(exponent + 127) << (axis * 8);
+					for (int i = 0; i < 4; ++i)
+					{
+						if (!occupied[i])
+							continue;
+						const double qlo = std::floor((double(node.mMin[axis][i]) - lo) / scale), qhi = std::ceil((double(node.mMax[axis][i]) - lo) / scale);
+						q.mQuantized[axis] |= uint32_t(std::clamp(qlo, 0.0, 255.0)) << (i * 8);
+						q.mQuantized[3 + axis] |= uint32_t(std::clamp(qhi, 0.0, 255.0)) << (i * 8);
+					}
+				}
+				for (int i = 0; i < 4; ++i)
+				{
+					q.mChild[i] = node.mChild[i];
+					q.mCounts |= (occupied[i] ? std::min<uint32_t>(node.mCount[i], cEmptyChild - 1) : cEmptyChild) << (i * 8);
+				}
+			}
+			return out;
+		}
+
 		/// 按图元的包围盒建树：返回节点，ioOrder 排成叶子的顺序。
 		std::vector<Node> Build(const std::vector<Box> &inBoxes, std::vector<uint32_t> &ioOrder, uint32_t inMaxLeaf)
 		{
@@ -448,8 +512,8 @@ SN_API int32_t sn_bvh_build_triangles(const float *positions, uint32_t vertex_co
 			for (int k = 0; k < 3; ++k)
 				boxes[t].GrowPoint(&positions[size_t(indices[size_t(t) * 3 + k]) * 3]);
 		std::vector<uint32_t> order;
-		std::vector<WideNode> nodes = Widen(Build(boxes, order, 4));
-		std::memcpy(ioTask.AddOutput(uint32_t(nodes.size() * sizeof(WideNode))), nodes.data(), nodes.size() * sizeof(WideNode));
+		std::vector<QuantizedNode> nodes = Quantize(Widen(Build(boxes, order, 4)));
+		std::memcpy(ioTask.AddOutput(uint32_t(nodes.size() * sizeof(QuantizedNode))), nodes.data(), nodes.size() * sizeof(QuantizedNode));
 		float *triangles = static_cast<float *>(ioTask.AddOutput(std::max<uint32_t>(1, triangle_count) * 12 * sizeof(float)));
 		for (uint32_t i = 0; i < triangle_count; ++i)
 		{
@@ -484,8 +548,8 @@ SN_API int32_t sn_bvh_build_boxes(const float *boxes, uint32_t count)
 				input[i].mMax[c] = boxes[size_t(i) * 6 + 3 + c];
 			}
 		std::vector<uint32_t> order;
-		std::vector<WideNode> nodes = Widen(Build(input, order, 2));
-		std::memcpy(ioTask.AddOutput(uint32_t(nodes.size() * sizeof(WideNode))), nodes.data(), nodes.size() * sizeof(WideNode));
+		std::vector<QuantizedNode> nodes = Quantize(Widen(Build(input, order, 2)));
+		std::memcpy(ioTask.AddOutput(uint32_t(nodes.size() * sizeof(QuantizedNode))), nodes.data(), nodes.size() * sizeof(QuantizedNode));
 		std::memcpy(ioTask.AddOutput(std::max<uint32_t>(1, count) * sizeof(uint32_t)), order.data(), order.size() * sizeof(uint32_t));
 		ioTask.SetResult(0, int32_t(nodes.size()));
 		return true;
