@@ -203,12 +203,15 @@ export class StrideNative extends NativeModule<RuntimeExport> {
 	/**
 	 * 重定向：给 sourceSkeleton 做的剪辑搬到 targetSkeleton 上，返回新的剪辑（在 targetSkeleton 的实例上压，时长同源剪辑）。
 	 * sourceOfTarget 每个目标关节一个：它照哪个源关节转（-1 是保持静止姿势、跟着父关节）。两边的静止姿势要像（都是 T 字或都是
-	 * A 字）。targetHips、sourceHips 给了时髋按两边髋高的比例跟着源的髋挪（都给 -1 是原地）。
+	 * A 字）。hips 给了 [目标的髋, 源的髋] 时髋按两边髋高的比例跟着源的髋挪（不给是原地）。copyLocals 时对上的关节直接拷源的局部
+	 * 变换（同一套绑定导出的剪辑、文件里的默认姿势是随便哪一帧时；同桌面 Stride 按关节名绑定动画），不能再给 hips。
 	 */
-	retargetAnimation(source: Animation, sourceSkeleton: Skeleton, targetSkeleton: Skeleton, sourceOfTarget: ArrayLike<number>, targetHips = -1, sourceHips = -1): Animation {
+	retargetAnimation(source: Animation, sourceSkeleton: Skeleton, targetSkeleton: Skeleton, sourceOfTarget: ArrayLike<number>, options: { readonly hips?: readonly [target: number, source: number]; readonly copyLocals?: boolean } = {}): Animation {
 		if (sourceOfTarget.length !== targetSkeleton.jointCount) throw new RangeError(`retargetAnimation: ${sourceOfTarget.length} entries for ${targetSkeleton.jointCount} target joints`);
+		const [targetHips, sourceHips] = options.hips ?? [-1, -1];
+		const flags = options.copyLocals ? 1 : 0; // SN_ANIM_RETARGET_COPY_LOCALS
 		return this.withArrays([Int32Array.from(sourceOfTarget)], (map) =>
-			new Animation(this, this.check(this.module._sn_anim_retarget(source[HANDLE], sourceSkeleton[HANDLE], targetSkeleton[HANDLE], map, targetHips, sourceHips), 'sn_anim_retarget')));
+			new Animation(this, this.check(this.module._sn_anim_retarget(source[HANDLE], sourceSkeleton[HANDLE], targetSkeleton[HANDLE], map, targetHips, sourceHips, flags), 'sn_anim_retarget')));
 	}
 
 	/** 蒙皮：joints 是骨架的关节下标，inverseBinds 每个关节一个列主序 4x4（网格到绑定时的关节空间）。 */

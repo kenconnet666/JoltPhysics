@@ -57,6 +57,7 @@ namespace
 		std::vector<std::array<float, 4>>	mCorrection;			///< 每个目标关节：源静止的模型旋转的逆 × 目标静止的模型旋转
 		std::vector<Joint>					mTargetRest;			///< 目标骨架的静止局部姿势（逐关节）
 		int32_t								mTargetHips = -1, mSourceHips = -1;
+		bool								mCopyLocals = false;	///< SN_ANIM_RETARGET_COPY_LOCALS：对上的关节直接拷源的局部变换
 		float								mHipsScale = 1.0f;
 		float								mSourceHipsRest[3] = { 0, 0, 0 };
 		float								mTargetHipsRest[3] = { 0, 0, 0 };
@@ -294,6 +295,21 @@ namespace
 		return models;
 	}
 
+	/// 逐关节的局部姿势打包成 SoA（补齐的通道是单位变换）
+	void PackPose(const std::vector<Joint> &inLocals, ozz::vector<SoaTransform> &outPose)
+	{
+		Joint lanes[4];
+		for (size_t soa = 0; soa < outPose.size(); ++soa)
+		{
+			for (int lane = 0; lane < 4; ++lane)
+			{
+				size_t j = soa * 4 + size_t(lane);
+				lanes[lane] = j < inLocals.size() ? inLocals[j] : Joint { { 0, 0, 0 }, { 0, 0, 0, 1 }, { 1, 1, 1 } };
+			}
+			Pack(lanes, outPose[soa]);
+		}
+	}
+
 	/// 重定向的剪辑在 inTime 秒的姿势写进 outPose（目标骨架的局部 SoA）。注意 Multiply(a, b) 按 Stride 的约定是 b·a
 	int32_t SampleRetargeted(Instance &ioInstance, const Retarget &inRetarget, float inTime, ozz::vector<SoaTransform> &outPose)
 	{
@@ -313,6 +329,24 @@ namespace
 		sampling.output = ozz::make_span(ioInstance.mSourcePose);
 		if (!sampling.Run())
 			return SN_ERROR_FAILED;
+		const Skeleton &to = *ioInstance.mSkeleton;
+		size_t count = size_t(to.num_joints());
+		std::vector<Joint> locals(inRetarget.mTargetRest);
+		Joint lanes[4];
+		if (inRetarget.mCopyLocals)
+		{
+			// 同一套绑定：对上的关节照搬源的局部变换（同桌面 Stride 按名字绑定动画），对不上的保持目标的静止姿势
+			for (size_t j = 0; j < count; ++j)
+			{
+				int s = inRetarget.mSourceOf[j];
+				if (s < 0)
+					continue;
+				Unpack(ioInstance.mSourcePose[size_t(s) / 4], lanes);
+				locals[j] = lanes[s & 3];
+			}
+			PackPose(locals, outPose);
+			return SN_OK;
+		}
 		ozz::animation::LocalToModelJob to_model;
 		to_model.skeleton = &from;
 		to_model.input = ozz::make_span(ioInstance.mSourcePose);
@@ -321,10 +355,7 @@ namespace
 			return SN_ERROR_FAILED;
 
 		// 目标关节按顺序（父在前）：模型空间的旋转 = 源关节现在的模型旋转 × 修正，没有对应的跟着父关节；局部 = 父的逆 × 自己
-		const Skeleton &to = *ioInstance.mSkeleton;
-		size_t count = size_t(to.num_joints());
 		std::vector<std::array<float, 4>> model(count);
-		std::vector<Joint> locals(inRetarget.mTargetRest);
 		for (size_t j = 0; j < count; ++j)
 		{
 			int parent = to.joint_parents()[j];
@@ -374,16 +405,7 @@ namespace
 			Conjugate(parentRotation, inverse);
 			Rotate(inverse, delta, locals[size_t(inRetarget.mTargetHips)].t);
 		}
-		Joint lanes[4];
-		for (size_t soa = 0; soa < outPose.size(); ++soa)
-		{
-			for (int lane = 0; lane < 4; ++lane)
-			{
-				size_t j = soa * 4 + size_t(lane);
-				lanes[lane] = j < count ? locals[j] : Joint { { 0, 0, 0 }, { 0, 0, 0, 1 }, { 1, 1, 1 } };
-			}
-			Pack(lanes, outPose[soa]);
-		}
+		PackPose(locals, outPose);
 		return SN_OK;
 	}
 
@@ -755,7 +777,7 @@ SN_API int32_t sn_anim_evaluate_batch(const sn_anim_op *ops, sn_anim_evaluate_re
 }
 
 SN_API int32_t sn_anim_retarget(int32_t source_animation, int32_t source_skeleton, int32_t target_skeleton, const int32_t *source_of_target,
-	int32_t target_hips, int32_t source_hips)
+	int32_t target_hips, int32_t source_hips, uint32_t flags)
 {
 	AnimationAsset *source = Lookup<AnimationAsset>(source_animation, "animation");
 	SkeletonAsset *from = Lookup<SkeletonAsset>(source_skeleton, "skeleton");
@@ -774,12 +796,16 @@ SN_API int32_t sn_anim_retarget(int32_t source_animation, int32_t source_skeleto
 			return SetLastError(SN_ERROR_INVALID_ARGUMENT, "sn_anim_retarget: target joint " + std::to_string(j) + " maps to source joint " + std::to_string(source_of_target[j]) + " (the source has " + std::to_string(sources) + ")");
 	if (target_hips >= targets || source_hips >= sources || (target_hips < 0) != (source_hips < 0))
 		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "sn_anim_retarget: hips must be both given (in range) or both -1");
+	bool copyLocals = (flags & SN_ANIM_RETARGET_COPY_LOCALS) != 0;
+	if (copyLocals && target_hips >= 0)
+		return SetLastError(SN_ERROR_INVALID_ARGUMENT, "sn_anim_retarget: copying local transforms takes no hips");
 
 	auto retarget = std::make_unique<Retarget>();
 	retarget->mSourceAnimation = source_animation;
 	retarget->mSourceSkeleton = source_skeleton;
 	retarget->mTargetSkeleton = target_skeleton;
 	retarget->mSourceOf.assign(source_of_target, source_of_target + targets);
+	retarget->mCopyLocals = copyLocals;
 	ozz::vector<ozz::math::Float4x4> sourceRest = RestModels(from->mSkeleton), targetRest = RestModels(to->mSkeleton);
 	retarget->mCorrection.resize(size_t(targets));
 	for (int j = 0; j < targets; ++j)

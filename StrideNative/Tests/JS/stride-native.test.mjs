@@ -1550,7 +1550,7 @@ describe('stride-native and stride-tools', () => {
 			{ parent: 2, translation: [0, -1, 0], name: 'lowerLeg' },
 			{ parent: 3, translation: [0, -1, 0], name: 'foot' },
 		]));
-		const retargeted = native.retargetAnimation(clip, sourceSkeleton, targetSkeleton, [-1, 0, 1, 2, -1], 1, 0);
+		const retargeted = native.retargetAnimation(clip, sourceSkeleton, targetSkeleton, [-1, 0, 1, 2, -1], { hips: [1, 0] });
 		assert.equal(retargeted.duration, 1);
 		const instance = targetSkeleton.createInstance();
 		using batch = new AnimationBatch(native);
@@ -1577,6 +1577,44 @@ describe('stride-native and stride-tools', () => {
 		const other = sourceSkeleton.createInstance();
 		batch.clear().instance(other).push(retargeted, 0);
 		assert.throws(() => batch.evaluate());
+		assert.throws(() => native.retargetAnimation(clip, sourceSkeleton, targetSkeleton, [-1, 0, 1, 2, -1], { hips: [1, 0], copyLocals: true }), /no hips/);
+	});
+
+	it('binds a clip of the same rig by joint name (copies local transforms; the file\'s default pose is any frame)', () => {
+		const s = Math.SQRT1_2;
+		// 源：只为动画导出的文件，默认姿势是大腿已经抬着的某一帧；剪辑 0 秒腿垂着、1 秒绕 x 转 -90°（往前抬平）
+		const sourceSkeleton = native.loadSkeleton(tools.buildSkeleton([
+			{ parent: -1, translation: [0, 1, 0], name: 'hips' },
+			{ parent: 0, translation: [0.1, 0, 0], rotation: [-0.383, 0, 0, 0.924], name: 'thigh' },
+			{ parent: 1, translation: [0, -0.5, 0], name: 'knee' },
+		]));
+		const clip = native.loadAnimation(tools.buildAnimation(1, [
+			{ translations: [[0, 0, 1, 0]], rotations: [[0, 0, 0, 0, 1]], scales: [[0, 1, 1, 1]] },
+			{ translations: [[0, 0.1, 0, 0]], rotations: [[0, 0, 0, 0, 1], [1, -s, 0, 0, s]], scales: [[0, 1, 1, 1]] },
+			{ translations: [[0, 0, -0.5, 0]], rotations: [[0, 0, 0, 0, 1]], scales: [[0, 1, 1, 1]] },
+		]));
+		// 目标：同一套绑定的模型（静止姿势是绑定姿势、腿垂着），多一根对不上的脚
+		const targetSkeleton = native.loadSkeleton(tools.buildSkeleton([
+			{ parent: -1, translation: [0, 1, 0], name: 'hips' },
+			{ parent: 0, translation: [0.1, 0, 0], name: 'thigh' },
+			{ parent: 1, translation: [0, -0.5, 0], name: 'knee' },
+			{ parent: 2, translation: [0, -0.5, 0], name: 'foot' },
+		]));
+		const bound = native.retargetAnimation(clip, sourceSkeleton, targetSkeleton, [0, 1, 2, -1], { copyLocals: true });
+		const instance = targetSkeleton.createInstance();
+		using batch = new AnimationBatch(native);
+		const at = (time) => {
+			batch.clear().instance(instance).push(bound, time);
+			batch.evaluate();
+			const m = instance.modelMatrices();
+			return (joint) => [m[joint * 16 + 12], m[joint * 16 + 13], m[joint * 16 + 14]].map((v) => +v.toFixed(3) + 0);
+		};
+		// 照搬剪辑的局部变换：0 秒腿垂着（不是"相对源的默认姿势的变化"加在目标上），1 秒抬平
+		let pos = at(0);
+		assert.deepEqual(pos(3), [0.1, 0, 0]);
+		pos = at(1);
+		assert.deepEqual(pos(2), [0.1, 1, 0.5]);
+		assert.deepEqual(pos(3), [0.1, 1, 1]);
 	});
 
 	it('builds ozz assets (tools) and samples characters in parallel (runtime)', () => {

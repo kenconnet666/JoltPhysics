@@ -260,8 +260,16 @@ enum
 /// (rest poses should be alike: both T-pose or both A-pose). The hips (target_hips, from source_hips) also
 /// move, by the source hips' model-space movement scaled by the ratio of the two hips' rest heights;
 /// -1 keeps the target's rest translations everywhere (in-place animation).
+/// With SN_ANIM_RETARGET_COPY_LOCALS in flags each mapped joint instead takes its source joint's local
+/// transform as is (binding by joint name, like desktop Stride: clips exported from the same rig, whose
+/// files' default poses are arbitrary frames); the hips arguments must then be -1.
 SN_API int32_t sn_anim_retarget(int32_t source_animation, int32_t source_skeleton, int32_t target_skeleton, const int32_t *source_of_target,
-	int32_t target_hips, int32_t source_hips);
+	int32_t target_hips, int32_t source_hips, uint32_t flags);
+
+enum
+{
+	SN_ANIM_RETARGET_COPY_LOCALS = 1,	///< same rig: copy local transforms instead of turning by the change from the rest pose
+};
 
 /// A mask: one weight (0..1) per skeleton joint, for the masked blends (upper-body layers).
 SN_API int32_t sn_anim_mask_create(const float *weights, uint32_t joint_count);

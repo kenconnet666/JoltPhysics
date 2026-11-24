@@ -68,9 +68,12 @@ export interface NativeExports {
 	 * (rest poses should be alike: both T-pose or both A-pose). The hips (target_hips, from source_hips) also
 	 * move, by the source hips' model-space movement scaled by the ratio of the two hips' rest heights;
 	 * -1 keeps the target's rest translations everywhere (in-place animation).
+	 * With SN_ANIM_RETARGET_COPY_LOCALS in flags each mapped joint instead takes its source joint's local
+	 * transform as is (binding by joint name, like desktop Stride: clips exported from the same rig, whose
+	 * files' default poses are arbitrary frames); the hips arguments must then be -1.
 	 * C: Runtime.h
 	 */
-	_sn_anim_retarget(sourceAnimation: number, sourceSkeleton: number, targetSkeleton: number, sourceOfTarget: number, targetHips: number, sourceHips: number): number;
+	_sn_anim_retarget(sourceAnimation: number, sourceSkeleton: number, targetSkeleton: number, sourceOfTarget: number, targetHips: number, sourceHips: number, flags: number): number;
 	/** C: Runtime.h */
 	_sn_anim_skeleton_joint_count(skeleton: number): number;
 	/**
@@ -959,7 +962,7 @@ export const POINTER_SIGNATURES: Readonly<Record<string, string>> = {
 	sn_anim_load_animation: '_p_',
 	sn_anim_load_skeleton: '_p_',
 	sn_anim_mask_create: '_p_',
-	sn_anim_retarget: '____p__',
+	sn_anim_retarget: '____p___',
 	sn_anim_skin_batch: '_p_',
 	sn_anim_skin_create: '_pp_',
 	sn_bvh_build_boxes: '_p_',
