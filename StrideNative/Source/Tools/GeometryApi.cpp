@@ -450,6 +450,7 @@ namespace
 		manifold::vec3 center;			///< world position of the local origin
 		double params[4] = {};
 		double bound = 0;				///< radius of a sphere around the local origin holding the shape (local units)
+		manifold::vec3 reach;			///< half size of the world-space box around center holding the shape
 	};
 
 	double Length2(double inX, double inY) { return std::sqrt(inX * inX + inY * inY); }
@@ -548,6 +549,10 @@ namespace
 		double d = 1e9;
 		for (const SdfShape &shape : inShapes)
 		{
+			// 到包围球的距离是这个形状距离的下界：够远时它改不了结果（加：s ≥ d + k 时平滑并集还是 d；减：s ≥ k − d），不用算
+			const double near = manifold::la::length(inWorld - shape.center) - shape.bound * shape.scale;
+			if ((shape.operation == ST_BRUSH_ADD && near >= d + shape.smoothness) || (shape.operation == ST_BRUSH_SUBTRACT && near >= shape.smoothness - d))
+				continue;
 			const double s = ShapeDistance(shape, inWorld);
 			switch (shape.operation)
 			{
@@ -558,6 +563,85 @@ namespace
 		}
 		return d;
 	}
+
+	/// st_sdf_mesh 的距离场：按 Manifold::LevelSet 的体心立方网格（两套错开半格的立方网格）先用任务系统并行算好，LevelSet 的回调
+	/// 只查表（Manifold 编成单线程，MANIFOLD_PAR=-1，逐点对每个形状求值太慢）。按 4×4×4 的块算：
+	/// 块中心离表面足够远的整块填中心的值（同侧、够不着表面，LevelSet 只用到跨表面的边上的值），不逐点算。
+	class SdfGrid
+	{
+	public:
+		SdfGrid(const std::vector<SdfShape> &inShapes, const manifold::Box &inBounds, double inEdge) : mShapes(inShapes), mOrigin(inBounds.min)
+		{
+			// 同 Manifold::Impl::CreateLevelSet 的网格：w = 1 的点在 origin + spacing·i（i < size），w = 0 的在 origin + spacing·(i − ½)（i ≤ size）
+			const manifold::vec3 dim = inBounds.Size();
+			mCount = manifold::ivec3(dim / inEdge + 1.0);
+			mSpacing = dim / manifold::vec3(mCount - 1);
+			const manifold::ivec3 centers = mCount + 1;
+			mCorners.resize(size_t(mCount.x) * mCount.y * mCount.z);
+			mCenters.resize(size_t(centers.x) * centers.y * centers.z);
+			Fill(mCorners, mCount, 0.0);
+			Fill(mCenters, centers, -0.5);
+		}
+
+		double operator()(const manifold::vec3 &inPoint) const
+		{
+			const manifold::vec3 t = (inPoint - mOrigin) / mSpacing;
+			if (const double *value = Find(mCorners, mCount, t))
+				return *value;
+			if (const double *value = Find(mCenters, mCount + 1, t + 0.5))
+				return *value;
+			return SceneDistance(mShapes, inPoint);
+		}
+
+	private:
+		static constexpr int cBlock = 4;
+
+		static size_t Index(const manifold::ivec3 &inCount, int inX, int inY, int inZ) { return (size_t(inZ) * inCount.y + inY) * inCount.x + inX; }
+
+		/// 网格点 t（以格为单位）在表里的值；不在网格点上时空（Manifold 的 FindSurface 在容差无穷大时不在格点之间求值，按理不会走到）
+		static const double *Find(const std::vector<double> &inValues, const manifold::ivec3 &inCount, const manifold::vec3 &inT)
+		{
+			int i[3];
+			for (int k = 0; k < 3; ++k)
+			{
+				const double r = std::round(inT[k]);
+				if (std::abs(inT[k] - r) > 1e-4 || r < 0 || r >= inCount[k])
+					return nullptr;
+				i[k] = int(r);
+			}
+			return &inValues[Index(inCount, i[0], i[1], i[2])];
+		}
+
+		void Fill(std::vector<double> &outValues, const manifold::ivec3 &inCount, double inOffset) const
+		{
+			const manifold::ivec3 blocks((inCount.x + cBlock - 1) / cBlock, (inCount.y + cBlock - 1) / cBlock, (inCount.z + cBlock - 1) / cBlock);
+			const double spacing = std::max(mSpacing.x, std::max(mSpacing.y, mSpacing.z));
+			const auto position = [&](int inX, int inY, int inZ) { return mOrigin + mSpacing * (manifold::vec3(inX, inY, inZ) + inOffset); };
+			ParallelFor(uint32_t(blocks.x * blocks.y * blocks.z), [&](uint32_t inBegin, uint32_t inEnd)
+			{
+				for (uint32_t b = inBegin; b < inEnd; ++b)
+				{
+					const int x0 = int(b % uint32_t(blocks.x)) * cBlock, y0 = int(b / uint32_t(blocks.x) % uint32_t(blocks.y)) * cBlock, z0 = int(b / uint32_t(blocks.x * blocks.y)) * cBlock;
+					const int x1 = std::min(x0 + cBlock, inCount.x), y1 = std::min(y0 + cBlock, inCount.y), z1 = std::min(z0 + cBlock, inCount.z);
+					const manifold::vec3 low = position(x0, y0, z0), high = position(x1 - 1, y1 - 1, z1 - 1);
+					const double middle = SceneDistance(mShapes, (low + high) * 0.5);
+					// 斜率按不超过 2 算（椭球、平滑的并减不是严格的距离），块里的点都离表面 3 格以上：和中心同侧，挨着的边都不跨表面
+					const bool far = std::abs(middle) > manifold::la::length(high - low) + 3 * spacing;
+					for (int z = z0; z < z1; ++z)
+						for (int y = y0; y < y1; ++y)
+							for (int x = x0; x < x1; ++x)
+								outValues[Index(inCount, x, y, z)] = far ? middle : SceneDistance(mShapes, position(x, y, z));
+				}
+			});
+		}
+
+		const std::vector<SdfShape> &mShapes;
+		manifold::vec3 mOrigin;
+		manifold::ivec3 mCount;
+		manifold::vec3 mSpacing;
+		std::vector<double> mCorners;
+		std::vector<double> mCenters;
+	};
 
 	/// Reads one shape of st_sdf_mesh's stream; false with outError on bad input.
 	bool ReadSdfShape(const float *&ioCursor, const float *inEnd, uint32_t inIndex, SdfShape &outShape, std::string &outError)
@@ -606,6 +690,19 @@ namespace
 		case ST_SDF_ROUND_CONE: outShape.bound = a[0] * 0.5 + std::max(a[1], a[2]); break;
 		case ST_SDF_HEX_PRISM: outShape.bound = Length2(a[0], a[1] * 1.1547005383792515); break;
 		}
+		// 局部的包围盒的半边长（网格的范围用：包围球在扁长的形状上大好几倍，网格跟着大好几倍）
+		manifold::vec3 extent;
+		switch (outShape.kind)
+		{
+		case ST_SDF_SPHERE: extent = manifold::vec3(a[0]); break;
+		case ST_SDF_BOX: case ST_SDF_ELLIPSOID: extent = manifold::vec3(a[0], a[1], a[2]); break;
+		case ST_SDF_CAPSULE: extent = manifold::vec3(a[1], a[0] + a[1], a[1]); break;
+		case ST_SDF_CYLINDER: extent = manifold::vec3(a[1], a[0], a[1]); break;
+		case ST_SDF_TORUS: extent = manifold::vec3(a[0] + a[1], a[1], a[0] + a[1]); break;
+		case ST_SDF_CONE: extent = manifold::vec3(std::max(a[1], a[2]), a[0], std::max(a[1], a[2])); break;
+		case ST_SDF_ROUND_CONE: extent = manifold::vec3(std::max(a[1], a[2]), a[0] * 0.5 + std::max(a[1], a[2]), std::max(a[1], a[2])); break;
+		case ST_SDF_HEX_PRISM: extent = manifold::vec3(a[1] * 1.1547005383792515, a[0], a[1]); break;
+		}
 		for (int i = 0; i < count; ++i)
 			if (!(a[i] >= 0) || (i == 0 && a[i] <= 0))
 			{
@@ -638,6 +735,7 @@ namespace
 		const manifold::mat3 linear(transform[0], transform[1], transform[2]);
 		const manifold::mat3 inverse = manifold::la::inverse(linear);
 		outShape.toLocal = manifold::mat3x4(inverse[0], inverse[1], inverse[2], -(inverse * outShape.center));
+		outShape.reach = manifold::la::abs(linear[0]) * extent.x + manifold::la::abs(linear[1]) * extent.y + manifold::la::abs(linear[2]) * extent.z;
 		return true;
 	}
 }
@@ -673,9 +771,9 @@ SN_API int32_t st_sdf_mesh(const float *shapes, uint32_t float_count, float edge
 		{
 			if (shape.operation != ST_BRUSH_ADD)
 				continue;
-			const double radius = shape.bound * shape.scale + shape.smoothness;
-			bounds.Union(shape.center - manifold::vec3(radius));
-			bounds.Union(shape.center + manifold::vec3(radius));
+			const manifold::vec3 reach = shape.reach + shape.smoothness;
+			bounds.Union(shape.center - reach);
+			bounds.Union(shape.center + reach);
 			any = true;
 		}
 		if (!any)
@@ -694,7 +792,8 @@ SN_API int32_t st_sdf_mesh(const float *shapes, uint32_t float_count, float edge
 		}
 
 		// Manifold's level set is positive inside
-		const manifold::Manifold solid = manifold::Manifold::LevelSet([&](manifold::vec3 p) { return -SceneDistance(list, p); }, bounds, edge, 0, -1, false);
+		const SdfGrid grid(list, bounds, edge);
+		const manifold::Manifold solid = manifold::Manifold::LevelSet([&](manifold::vec3 p) { return -grid(p); }, bounds, edge, 0, -1, false);
 		if (solid.Status() != manifold::Manifold::Error::NoError || solid.IsEmpty())
 		{
 			ioTask.Fail("the shapes make no surface (all subtracted away, or smaller than edge_length)");
@@ -706,39 +805,45 @@ SN_API int32_t st_sdf_mesh(const float *shapes, uint32_t float_count, float edge
 		float *positions = static_cast<float *>(ioTask.AddOutput(size_t(vertex_count) * 3 * sizeof(float)));
 		float *normals = static_cast<float *>(ioTask.AddOutput(size_t(vertex_count) * 3 * sizeof(float)));
 		const double h = edge * 0.25;
-		for (uint32_t v = 0; v < vertex_count; ++v)
+		ParallelFor(vertex_count, [&](uint32_t inBegin, uint32_t inEnd)
 		{
-			const manifold::vec3 p(mesh.vertProperties[size_t(v) * mesh.numProp], mesh.vertProperties[size_t(v) * mesh.numProp + 1], mesh.vertProperties[size_t(v) * mesh.numProp + 2]);
-			const manifold::vec3 dx(h, 0, 0), dy(0, h, 0), dz(0, 0, h);
-			manifold::vec3 gradient(SceneDistance(list, p + dx) - SceneDistance(list, p - dx), SceneDistance(list, p + dy) - SceneDistance(list, p - dy), SceneDistance(list, p + dz) - SceneDistance(list, p - dz));
-			const double length = manifold::la::length(gradient);
-			gradient = length > 0 ? gradient / length : manifold::vec3(0, 1, 0);
-			for (int k = 0; k < 3; ++k)
+			for (uint32_t v = inBegin; v < inEnd; ++v)
 			{
-				positions[v * 3 + k] = float(p[k]);
-				normals[v * 3 + k] = float(gradient[k]);
+				const manifold::vec3 p(mesh.vertProperties[size_t(v) * mesh.numProp], mesh.vertProperties[size_t(v) * mesh.numProp + 1], mesh.vertProperties[size_t(v) * mesh.numProp + 2]);
+				const manifold::vec3 dx(h, 0, 0), dy(0, h, 0), dz(0, 0, h);
+				manifold::vec3 gradient(SceneDistance(list, p + dx) - SceneDistance(list, p - dx), SceneDistance(list, p + dy) - SceneDistance(list, p - dy), SceneDistance(list, p + dz) - SceneDistance(list, p - dz));
+				const double length = manifold::la::length(gradient);
+				gradient = length > 0 ? gradient / length : manifold::vec3(0, 1, 0);
+				for (int k = 0; k < 3; ++k)
+				{
+					positions[v * 3 + k] = float(p[k]);
+					normals[v * 3 + k] = float(gradient[k]);
+				}
 			}
-		}
+		});
 		uint32_t *indices = static_cast<uint32_t *>(ioTask.AddOutput(size_t(triangle_count) * 3 * sizeof(uint32_t)));
 		std::memcpy(indices, mesh.triVerts.data(), size_t(triangle_count) * 3 * sizeof(uint32_t));
 		uint32_t *owner = static_cast<uint32_t *>(ioTask.AddOutput(size_t(triangle_count) * sizeof(uint32_t)));
-		for (uint32_t t = 0; t < triangle_count; ++t)
+		ParallelFor(triangle_count, [&](uint32_t inBegin, uint32_t inEnd)
 		{
-			manifold::vec3 centroid(0.0);
-			for (int c = 0; c < 3; ++c)
-				centroid += manifold::vec3(positions[indices[t * 3 + c] * 3], positions[indices[t * 3 + c] * 3 + 1], positions[indices[t * 3 + c] * 3 + 2]);
-			centroid /= 3.0;
-			double nearest = 1e18;
-			for (uint32_t s = 0; s < list.size(); ++s)
+			for (uint32_t t = inBegin; t < inEnd; ++t)
 			{
-				const double d = std::abs(ShapeDistance(list[s], centroid));
-				if (d < nearest)
+				manifold::vec3 centroid(0.0);
+				for (int c = 0; c < 3; ++c)
+					centroid += manifold::vec3(positions[indices[t * 3 + c] * 3], positions[indices[t * 3 + c] * 3 + 1], positions[indices[t * 3 + c] * 3 + 2]);
+				centroid /= 3.0;
+				double nearest = 1e18;
+				for (uint32_t s = 0; s < list.size(); ++s)
 				{
-					nearest = d;
-					owner[t] = s;
+					const double d = std::abs(ShapeDistance(list[s], centroid));
+					if (d < nearest)
+					{
+						nearest = d;
+						owner[t] = s;
+					}
 				}
 			}
-		}
+		});
 		ioTask.SetResult(0, int32_t(triangle_count));
 		return true;
 	});
