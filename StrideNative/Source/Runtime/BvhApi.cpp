@@ -1,7 +1,7 @@
 // 光追用的 BVH（Runtime.h 的 sn_bvh_*，stride-ts 路线图 R2）：按表面积启发式（SAH）在三个轴上各分 16 个桶找最便宜的切法建
-// 二叉树（叶子最多 3 个图元），再收成压缩的 8 叉宽 BVH（CWBVH，Compress：每个节点吸收子孙，每次展开表面积最大的内部子节点，
-// 子节点的盒子按节点的范围量化成 8 位）——GPU 上一次读 80 个字节测 8 个盒子，读显存的量是 4 叉不压缩的三分之一左右。三角形的
-// 版本另输出按叶子排好的三角形（v0、两条边），GPU 上直接做 Möller–Trumbore；包围盒的版本给实例的顶层 BVH 用。节点布局见 Runtime.h。
+// 二叉树，再收成 4 叉的宽 BVH（Widen：每个节点吸收孙子，每次展开表面积最大的内部子节点）——GPU 上一次读一个节点就测 4 个盒子，
+// 走的节点少、读显存的次数少。三角形的版本另输出按叶子排好的三角形（v0、两条边），GPU 上直接做 Möller–Trumbore；包围盒的版本给
+// 实例的顶层 BVH 用。节点布局见 Runtime.h。
 #include <Core/Core.h>
 #include <Core/Tasks.h>
 #include <StrideNative/Runtime.h>
@@ -63,22 +63,15 @@ namespace StrideNative
 		};
 		static_assert(sizeof(Node) == 32);
 
-		/// 压缩的 8 叉宽 BVH 的节点（Ylitie、Karras、Laine 2017，"Efficient Incoherent Ray Traversal on GPUs Through Compressed Wide BVHs"；
-		/// 布局同 tinybvh 的 BVH8_CWBVH，见 Runtime.h）：80 个字节，一次读 5 个 vec4 测 8 个子节点的盒子。
-		struct CwNode
+		/// 宽 BVH 的节点（布局见 Runtime.h）：4 个子节点的包围盒按分量排，子节点的下标和图元数；空着的子节点盒子是反的（测不中）。
+		struct WideNode
 		{
-			float		mOrigin[3];			///< 量化的起点（节点的最小角）
-			uint8_t		mExponent[3];		///< 三个轴的量化指数 + 127：直接是 2^e 的浮点指数位
-			uint8_t		mInnerMask;			///< 哪些槽是内部节点
-			uint32_t	mChildBase;			///< 第一个内部子节点的下标（内部子节点按槽的顺序连着放）
-			uint32_t	mPrimitiveBase;		///< 第一个图元在输出 [1] 里的下标（叶子的图元按槽的顺序连着放）
-			uint8_t		mMeta[8];			///< 每个槽：空着是 0；内部 0b001 << 5 | (24 + 槽)；叶子 一元编码的个数 << 5 | 图元在这个节点里的偏移
-			uint8_t		mQuantized[6][8];	///< 每个槽的盒子：最小 x、y、z，最大 x、y、z（相对起点，单位 2^e，往外取整）
+			float		mMin[3][4];
+			float		mMax[3][4];
+			uint32_t	mChild[4];
+			uint32_t	mCount[4];
 		};
-		static_assert(sizeof(CwNode) == 80);
-
-		/// 叶子最多几个图元（一元编码只有 3 位）。
-		constexpr uint32_t cMaxLeafPrimitives = 3;
+		static_assert(sizeof(WideNode) == 128);
 
 		float NodeArea(const Node &inNode)
 		{
@@ -86,55 +79,34 @@ namespace StrideNative
 			return dx < 0.0f ? 0.0f : dx * dy + dy * dz + dz * dx;
 		}
 
-		/// 量化指数：extent / 255 往上取到 2 的幂（全是 0、太小、NaN 时取最小的）。
-		int QuantizationExponent(float inExtent)
+		/// 二叉树收成 4 叉：从根开始，每个宽节点的子节点先是二叉节点的两个子节点，再一个个展开表面积最大的内部子节点，直到 4 个或者都是
+		/// 叶子；内部子节点接着往下收。二叉树的根是叶子（只有几个图元）时宽节点只有这一个子节点；空树（根是个数为 0、盒子反着的节点）
+		/// 出一个 4 个子节点都空的节点。
+		std::vector<WideNode> Widen(const std::vector<Node> &inNodes)
 		{
-			if (!(inExtent > 0.0f))
-				return -126;
-			uint32_t bits;
-			float scaled = inExtent * (1.0f / 255.0f);
-			std::memcpy(&bits, &scaled, sizeof(bits));
-			int exponent = int((bits >> 23) & 255) - 127;
-			if (exponent < -126)
-				return -126;
-			if (exponent > 125)
-				return 126;
-			return (bits & 0x7fffff) != 0 ? exponent + 1 : exponent;
-		}
-
-		/// 一个没有子节点的节点（空树）：所有槽空着，盒子反着。
-		CwNode EmptyCwNode()
-		{
-			CwNode node {};
-			for (int k = 0; k < 3; ++k)
-				node.mExponent[k] = 127;
-			for (int slot = 0; slot < 8; ++slot)
-				for (int k = 0; k < 3; ++k)
+			WideNode empty;
+			for (int axis = 0; axis < 3; ++axis)
+				for (int i = 0; i < 4; ++i)
 				{
-					node.mQuantized[k][slot] = 255;
-					node.mQuantized[3 + k][slot] = 0;
+					empty.mMin[axis][i] = FLT_MAX;
+					empty.mMax[axis][i] = -FLT_MAX;
 				}
-			return node;
-		}
-
-		/// 二叉树收成压缩的 8 叉：每个宽节点从对应的二叉节点开始，一次展开表面积最大的内部子节点，到 8 个或者都是叶子。子节点按
-		/// 方向分到 8 个槽（论文的贪心分配：槽 s 的三位是 x、y、z 的正负，子节点中心相对节点中心按 s 的方向投影越小越先放进 s），
-		/// GPU 上按射线方向的卦限倒着取槽，大致近的先走；盒子按节点的范围量化成 8 位。内部子节点连着放，叶子的图元（二叉树里的
-		/// 顺序 inOrder）按槽的顺序接到 outPrimitives 后面。二叉树的根是叶子时宽节点只有这一个子节点。
-		std::vector<CwNode> Compress(const std::vector<Node> &inNodes, const std::vector<uint32_t> &inOrder, std::vector<uint32_t> &outPrimitives)
-		{
-			outPrimitives.clear();
-			std::vector<CwNode> out { EmptyCwNode() };
+			for (int i = 0; i < 4; ++i)
+			{
+				empty.mChild[i] = 0;
+				empty.mCount[i] = 0;
+			}
+			std::vector<WideNode> wide { empty };
 			const Node &root = inNodes[0];
 			if (root.mCount == 0 && inNodes.size() < 3)
-				return out;
+				return wide;
 			struct Work { uint32_t mBinary, mWide; };
 			std::vector<Work> stack { { 0, 0 } };
 			while (!stack.empty())
 			{
 				Work work = stack.back();
 				stack.pop_back();
-				uint32_t children[8];
+				uint32_t children[4];
 				int n = 0;
 				const Node &binary = inNodes[work.mBinary];
 				if (binary.mCount != 0)
@@ -144,7 +116,7 @@ namespace StrideNative
 					children[n++] = binary.mFirst;
 					children[n++] = binary.mFirst + 1;
 				}
-				while (n < 8)
+				while (n < 4)
 				{
 					int best = -1;
 					float bestArea = -1.0f;
@@ -163,95 +135,30 @@ namespace StrideNative
 					children[best] = left;
 					children[n++] = left + 1;
 				}
-
-				// 节点的范围和量化
-				Box bounds;
-				for (int i = 0; i < n; ++i)
-				{
-					Box child;
-					std::memcpy(child.mMin, inNodes[children[i]].mMin, sizeof(child.mMin));
-					std::memcpy(child.mMax, inNodes[children[i]].mMax, sizeof(child.mMax));
-					bounds.Grow(child);
-				}
-				CwNode node = EmptyCwNode();
-				float scale[3];
-				for (int k = 0; k < 3; ++k)
-				{
-					node.mOrigin[k] = bounds.mMin[k];
-					int exponent = QuantizationExponent(bounds.mMax[k] - bounds.mMin[k]);
-					node.mExponent[k] = uint8_t(exponent + 127);
-					uint32_t bits = uint32_t(127 - exponent) << 23;
-					std::memcpy(&scale[k], &bits, sizeof(float));	// 2^-e，精确
-				}
-
-				// 子节点分到槽：每次取代价最小的（槽，子节点）对
-				float center[3];
-				for (int k = 0; k < 3; ++k)
-					center[k] = 0.5f * (bounds.mMin[k] + bounds.mMax[k]);
-				float cost[8][8];
+				WideNode node = empty;
 				for (int i = 0; i < n; ++i)
 				{
 					const Node &child = inNodes[children[i]];
-					float d[3];
-					for (int k = 0; k < 3; ++k)
-						d[k] = 0.5f * (child.mMin[k] + child.mMax[k]) - center[k];
-					for (int slot = 0; slot < 8; ++slot)
-						cost[slot][i] = ((slot & 4) ? -d[0] : d[0]) + ((slot & 2) ? -d[1] : d[1]) + ((slot & 1) ? -d[2] : d[2]);
-				}
-				int childOfSlot[8] = { -1, -1, -1, -1, -1, -1, -1, -1 };
-				bool placed[8] = {};
-				for (int round = 0; round < n; ++round)
-				{
-					float bestCost = FLT_MAX;
-					int bestSlot = -1, bestChild = -1;
-					for (int slot = 0; slot < 8; ++slot)
+					for (int axis = 0; axis < 3; ++axis)
 					{
-						if (childOfSlot[slot] >= 0)
-							continue;
-						for (int i = 0; i < n; ++i)
-							if (!placed[i] && cost[slot][i] < bestCost)
-							{
-								bestCost = cost[slot][i];
-								bestSlot = slot;
-								bestChild = i;
-							}
+						node.mMin[axis][i] = child.mMin[axis];
+						node.mMax[axis][i] = child.mMax[axis];
 					}
-					childOfSlot[bestSlot] = bestChild;
-					placed[bestChild] = true;
-				}
-
-				// 盒子量化（往外取整）、元数据；内部子节点按槽的顺序接在节点表后面，叶子的图元接在图元表后面
-				uint32_t primitiveOffset = 0;
-				node.mChildBase = uint32_t(out.size());
-				node.mPrimitiveBase = uint32_t(outPrimitives.size());
-				for (int slot = 0; slot < 8; ++slot)
-				{
-					if (childOfSlot[slot] < 0)
-						continue;
-					uint32_t index = children[childOfSlot[slot]];
-					const Node &child = inNodes[index];
-					for (int k = 0; k < 3; ++k)
+					if (child.mCount != 0)
 					{
-						node.mQuantized[k][slot] = uint8_t(std::clamp(int(std::floor((child.mMin[k] - bounds.mMin[k]) * scale[k])), 0, 255));
-						node.mQuantized[3 + k][slot] = uint8_t(std::clamp(int(std::ceil((child.mMax[k] - bounds.mMin[k]) * scale[k])), 0, 255));
+						node.mChild[i] = child.mFirst;
+						node.mCount[i] = child.mCount;
 					}
-					if (child.mCount == 0)
+					else
 					{
-						node.mMeta[slot] = uint8_t((1 << 5) | (24 + slot));
-						node.mInnerMask |= uint8_t(1 << slot);
-						stack.push_back({ index, uint32_t(out.size()) });
-						out.push_back(EmptyCwNode());
-						continue;
+						node.mChild[i] = uint32_t(wide.size());
+						wide.push_back(empty);
+						stack.push_back({ children[i], node.mChild[i] });
 					}
-					const uint8_t unary = child.mCount == 1 ? 0b001 : child.mCount == 2 ? 0b011 : 0b111;
-					node.mMeta[slot] = uint8_t((unary << 5) | primitiveOffset);
-					primitiveOffset += child.mCount;
-					for (uint32_t i = 0; i < child.mCount; ++i)
-						outPrimitives.push_back(inOrder[child.mFirst + i]);
 				}
-				out[work.mWide] = node;
+				wide[work.mWide] = node;
 			}
-			return out;
+			return wide;
 		}
 
 		/// 按图元的包围盒建树：返回节点，ioOrder 排成叶子的顺序。
@@ -540,13 +447,13 @@ SN_API int32_t sn_bvh_build_triangles(const float *positions, uint32_t vertex_co
 		for (uint32_t t = 0; t < triangle_count; ++t)
 			for (int k = 0; k < 3; ++k)
 				boxes[t].GrowPoint(&positions[size_t(indices[size_t(t) * 3 + k]) * 3]);
-		std::vector<uint32_t> order, primitives;
-		std::vector<CwNode> nodes = Compress(Build(boxes, order, cMaxLeafPrimitives), order, primitives);
-		std::memcpy(ioTask.AddOutput(uint32_t(nodes.size() * sizeof(CwNode))), nodes.data(), nodes.size() * sizeof(CwNode));
+		std::vector<uint32_t> order;
+		std::vector<WideNode> nodes = Widen(Build(boxes, order, 4));
+		std::memcpy(ioTask.AddOutput(uint32_t(nodes.size() * sizeof(WideNode))), nodes.data(), nodes.size() * sizeof(WideNode));
 		float *triangles = static_cast<float *>(ioTask.AddOutput(std::max<uint32_t>(1, triangle_count) * 12 * sizeof(float)));
-		for (uint32_t i = 0; i < uint32_t(primitives.size()); ++i)
+		for (uint32_t i = 0; i < triangle_count; ++i)
 		{
-			uint32_t t = primitives[i];
+			uint32_t t = order[i];
 			const float *p0 = &positions[size_t(indices[size_t(t) * 3]) * 3];
 			const float *p1 = &positions[size_t(indices[size_t(t) * 3 + 1]) * 3];
 			const float *p2 = &positions[size_t(indices[size_t(t) * 3 + 2]) * 3];
@@ -576,10 +483,10 @@ SN_API int32_t sn_bvh_build_boxes(const float *boxes, uint32_t count)
 				input[i].mMin[c] = boxes[size_t(i) * 6 + c];
 				input[i].mMax[c] = boxes[size_t(i) * 6 + 3 + c];
 			}
-		std::vector<uint32_t> order, primitives;
-		std::vector<CwNode> nodes = Compress(Build(input, order, 2), order, primitives);
-		std::memcpy(ioTask.AddOutput(uint32_t(nodes.size() * sizeof(CwNode))), nodes.data(), nodes.size() * sizeof(CwNode));
-		std::memcpy(ioTask.AddOutput(std::max<uint32_t>(1, count) * sizeof(uint32_t)), primitives.data(), primitives.size() * sizeof(uint32_t));
+		std::vector<uint32_t> order;
+		std::vector<WideNode> nodes = Widen(Build(input, order, 2));
+		std::memcpy(ioTask.AddOutput(uint32_t(nodes.size() * sizeof(WideNode))), nodes.data(), nodes.size() * sizeof(WideNode));
+		std::memcpy(ioTask.AddOutput(std::max<uint32_t>(1, count) * sizeof(uint32_t)), order.data(), order.size() * sizeof(uint32_t));
 		ioTask.SetResult(0, int32_t(nodes.size()));
 		return true;
 	});
