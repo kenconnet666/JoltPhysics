@@ -95,7 +95,7 @@ export interface NativeExports {
 	 */
 	_sn_bvh_build_boxes(boxes: number, count: number): number;
 	/**
-	 * 三角网格的 BVH（异步任务）：按表面积启发式（SAH，每个轴 16 个桶）建二叉树、再收成 4 叉，叶子最多 4 个三角形。positions 是 vertex_count × 3 个
+	 * 三角网格的 BVH（异步任务）：按表面积启发式（SAH，每个轴 16 个桶）建二叉树、再收成压缩的 8 叉，叶子最多 3 个三角形。positions 是 vertex_count × 3 个
 	 * float，indices 是 triangle_count × 3 个顶点下标。max_triangles 不是 0 且三角形比它多时先简化：连通的小块（包围盒对角线不到
 	 * 整个网格的 5%）按中心分进 2.5% 对角线的格子，每格换成一个包围盒，大块原样留着（简化后仍可能多于 max_triangles）。光追只要大致
 	 * 的形状——货架连同几千件商品几十万个三角形，商品换成盒子 BVH 小几倍；sloppy 简化会把小东西整个合没，不用。

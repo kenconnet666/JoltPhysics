@@ -218,8 +218,8 @@ export class StrideNative extends NativeModule<RuntimeExport> {
 	}
 
 	/**
-	 * 三角网格的 BVH（光追用，工作线程上建，按表面积启发式建二叉树再收成 4 叉）：nodes 每个节点 32 个 32 位（4 个子节点的包围盒按
-	 * 分量排、子节点的下标、图元数，0 是内部节点；布局见 Runtime.h，GPU 上直接用），triangles 按叶子排好、每个 12 个 32 位
+	 * 三角网格的 BVH（光追用，工作线程上建，按表面积启发式建二叉树再收成压缩的 8 叉，CWBVH）：nodes 每个节点 20 个 32 位（量化的起点、
+	 * 指数、内部子节点的槽掩码、子节点和图元的起点、8 个槽的元数据和 8 位的盒子；布局见 Runtime.h，GPU 上直接用），triangles 按叶子排好、每个 12 个 32 位
 	 * （v0、三角形下标、e1、0、e2、0）。maxTriangles 给了且三角形比它多时先简化（连通的小块按格子换成包围盒，见 Runtime.h）；
 	 * triangleCount 是实际用了几个三角形。
 	 */
@@ -233,7 +233,7 @@ export class StrideNative extends NativeModule<RuntimeExport> {
 			})));
 	}
 
-	/** 包围盒的 BVH（实例的顶层 BVH 用，工作线程上建）：boxes 每个 6 个 float（最小角、最大角）；order 是叶子里图元的顺序。 */
+	/** 包围盒的 BVH（实例的顶层 BVH 用，工作线程上建，节点同 buildTriangleBvh）：boxes 每个 6 个 float（最小角、最大角）；order 是叶子里图元的顺序。 */
 	buildBoxBvh(boxes: Float32Array): Promise<{ nodes: Uint32Array; order: Uint32Array; nodeCount: number }> {
 		return this.withArraysAsync([boxes], (b) =>
 			this.awaitTask(this.module._sn_bvh_build_boxes(b, boxes.length / 6), 'sn_bvh_build_boxes', (task) => ({

@@ -26,6 +26,36 @@ const testData = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '
 const fontPath = process.env.STRIDE_TEST_FONT ?? 'C:/Windows/Fonts/arial.ttf';
 
 /** Flat square grid on y = 0, centered on the origin. */
+/**
+ * 压缩的 8 叉 BVH 的一个节点（布局见 Runtime.h）：用到的槽，每个有盒子（最小 xyz、最大 xyz，按量化还原）、是不是内部节点、
+ * 内部的子节点下标，叶子的第一个图元和个数。
+ */
+function cwNode(nodes, n) {
+	const at = n * 20;
+	const floats = new Float32Array(nodes.buffer, nodes.byteOffset + at * 4, 3);
+	const bytes = new Uint8Array(nodes.buffer, nodes.byteOffset + at * 4, 80);
+	const scale = [0, 1, 2].map((k) => 2 ** (bytes[12 + k] - 127));
+	const innerMask = bytes[15], childBase = nodes[at + 4], primitiveBase = nodes[at + 5];
+	const slots = [];
+	for (let slot = 0; slot < 8; slot++) {
+		const meta = bytes[24 + slot];
+		if (meta === 0) continue;
+		const box = [0, 1, 2, 3, 4, 5].map((k) => floats[k % 3] + bytes[32 + k * 8 + slot] * scale[k % 3]);
+		const inner = (innerMask >> slot & 1) === 1;
+		const below = innerMask & ((1 << slot) - 1);
+		let rank = 0;
+		for (let b = below; b; b &= b - 1) rank++;
+		slots.push({ index: slot, box, inner, child: inner ? childBase + rank : -1, first: inner ? 0 : primitiveBase + (meta & 31), count: inner ? 0 : [0, 1, 0, 2, 0, 0, 0, 3][meta >> 5] });
+	}
+	return { slots };
+}
+
+/** 盒子 a（最小 xyz、最大 xyz）在 b 里（容差 epsilon，按 b 的大小放宽）。 */
+function inside(a, b, epsilon) {
+	const tolerance = epsilon * Math.max(1, ...b.map(Math.abs));
+	return [0, 1, 2].every((k) => a[k] >= b[k] - tolerance && a[k + 3] <= b[k + 3] + tolerance);
+}
+
 function ground(size, cells) {
 	const vertices = [], triangles = [];
 	for (let z = 0; z <= cells; ++z)
@@ -932,7 +962,7 @@ describe('stride-native and stride-tools', () => {
 		assert.ok(hit && Math.abs(hit.point[1] - 1) < 0.05 && Math.abs(hit.point[0] - 20000000.501) < 1e-3);
 	});
 
-	it('builds BVHs for ray tracing: every triangle in one leaf, children inside their parents, box BVH orders every primitive', async () => {
+	it('builds compressed 8-wide BVHs for ray tracing: every triangle in one leaf inside its slot box, children inside their parents, box BVH orders every primitive', async () => {
 		const count = 500, positions = new Float32Array(count * 9), indices = new Uint32Array(count * 3);
 		let seed = 7;
 		const random = () => ((seed = (seed * 1103515245 + 12345) >>> 0) / 4294967296);
@@ -944,35 +974,38 @@ describe('stride-native and stride-tools', () => {
 			}
 		}
 		const { nodes, triangles, nodeCount } = await native.buildTriangleBvh(positions, indices);
-		const floats = new Float32Array(nodes.buffer, nodes.byteOffset, nodes.length);
-		assert.equal(nodes.length, nodeCount * 32);
-		// 宽节点：4 个子节点的盒子按分量排（最小 xyz、最大 xyz 各 4 个），子节点、图元数；空的子节点盒子是反的
-		const box = (n, i) => [0, 1, 2, 3, 4, 5].map((k) => floats[n * 32 + k * 4 + i]);
+		assert.equal(nodes.length, nodeCount * 20);
+		const vertex = (t, k) => [0, 1, 2].map((c) => positions[indices[t * 3 + k] * 3 + c]);
+		const triangleIndices = new Uint32Array(triangles.buffer, triangles.byteOffset);
 		const seen = new Set();
-		let reached = 1;
-		for (let n = 0; n < nodeCount; n++) {
-			for (let i = 0; i < 4; i++) {
-				const [x0, y0, z0, x1, y1, z1] = box(n, i);
-				if (x0 > x1) continue;
-				const child = nodes[n * 32 + 24 + i], leafCount = nodes[n * 32 + 28 + i];
-				if (leafCount === 0) {
-					// 子节点的子节点都在这个盒子里
-					reached++;
-					for (let j = 0; j < 4; j++) {
-						const inner = box(child, j);
-						if (inner[0] > inner[3]) continue;
-						assert.ok(inner[0] >= x0 && inner[1] >= y0 && inner[2] >= z0 && inner[3] <= x1 && inner[4] <= y1 && inner[5] <= z1, `node ${n} child ${i} contains its children`);
-					}
+		const reached = new Set([0]);
+		// 每个三角形都在它一路上每一层的槽盒子里（子节点自己量化往外取整，盒子可能比父的槽略宽，不影响遍历）
+		const stack = [{ n: 0, ancestors: [] }];
+		while (stack.length > 0) {
+			const { n, ancestors } = stack.pop();
+			const node = cwNode(nodes, n);
+			for (const slot of node.slots) {
+				if (slot.inner) {
+					assert.ok(!reached.has(slot.child), `node ${slot.child} reached twice`);
+					reached.add(slot.child);
+					stack.push({ n: slot.child, ancestors: [...ancestors, slot.box] });
 					continue;
 				}
-				assert.ok(leafCount <= 4);
-				for (let t = child; t < child + leafCount; t++) seen.add(new Uint32Array(triangles.buffer, triangles.byteOffset)[t * 12 + 3]);
+				assert.ok(slot.count >= 1 && slot.count <= 3, `leaf of ${slot.count}`);
+				for (let i = slot.first; i < slot.first + slot.count; i++) {
+					const t = triangleIndices[i * 12 + 3];
+					assert.ok(!seen.has(t), `triangle ${t} in two leaves`);
+					seen.add(t);
+					for (let k = 0; k < 3; k++) {
+						for (const box of [...ancestors, slot.box]) assert.ok(inside([...vertex(t, k), ...vertex(t, k)], box, 1e-4), `triangle ${t} inside the boxes on its path`);
+					}
+				}
 			}
 		}
 		assert.equal(seen.size, count);
-		// 每个节点都有人指着（没有孤立的）；4 叉比二叉少得多（二叉树大约 2 × 三角形数个节点）
-		assert.equal(reached, nodeCount);
-		assert.ok(nodeCount < count * 0.6, `${nodeCount} wide nodes for ${count} triangles`);
+		// 每个节点都有人指着（没有孤立的）；8 叉比二叉少得多（二叉树大约 2 × 三角形数个节点）
+		assert.equal(reached.size, nodeCount);
+		assert.ok(nodeCount < count * 0.25, `${nodeCount} wide nodes for ${count} triangles`);
 		// 三角形太多时先简化：10 米的地板上 2000 件 2 厘米的"商品"（每件是共一个角的两个小方块，24 个三角形连成一块），限到 2000 个；
 		// 小的按中心分格、每格换成一个盒子（12 个三角形，一格一两件），地板（大块）原样留着
 		const items = 2000, itemPositions = new Float32Array((items * 15 + 4) * 3), itemIndices = [];
@@ -994,15 +1027,19 @@ describe('stride-native and stride-tools', () => {
 		const reduced = await native.buildTriangleBvh(itemPositions, new Uint32Array(itemIndices), { maxTriangles: 2000 });
 		assert.ok(reduced.triangleCount > 2 && reduced.triangleCount <= items * 12 + 2, `simplified to ${reduced.triangleCount}`);
 		assert.equal(reduced.triangles.length, reduced.triangleCount * 12);
-		// 根的 4 个子节点合起来还是盖住地板和商品
-		const root = new Float32Array(reduced.nodes.buffer, reduced.nodes.byteOffset, 32);
-		const span = (k, pick) => pick(...[0, 1, 2, 3].map((i) => root[k * 4 + i]).filter((v) => Math.abs(v) < 3e38));
-		assert.ok(span(0, Math.min) <= 0 && span(3, Math.max) >= 10 && span(1, Math.min) <= -0.1 && span(4, Math.max) > 1, `still spans the floor and the items: ${[...root.subarray(0, 24)]}`);
+		// 根的子节点合起来还是盖住地板和商品
+		const rootSlots = cwNode(reduced.nodes, 0).slots;
+		const span = (k, pick) => pick(...rootSlots.map((slot) => slot.box[k]));
+		assert.ok(span(0, Math.min) <= 0 && span(3, Math.max) >= 10 && span(1, Math.min) <= -0.1 && span(4, Math.max) > 1, `still spans the floor and the items: ${JSON.stringify(rootSlots.map((slot) => slot.box))}`);
 		// 没超过上限的不动
 		assert.equal((await native.buildTriangleBvh(itemPositions, new Uint32Array(itemIndices), { maxTriangles: 100000 })).triangleCount, items * 24 + 2);
 		const boxes = new Float32Array([0, 0, 0, 1, 1, 1, 5, 0, 0, 6, 1, 1, 10, 0, 0, 11, 1, 1]);
 		const tlas = await native.buildBoxBvh(boxes);
 		assert.deepEqual([...tlas.order].sort(), [0, 1, 2]);
+		// 三个盒子都在根的叶子里；空的 BVH 是一个没有子节点的节点
+		assert.deepEqual(cwNode(tlas.nodes, 0).slots.reduce((sum, slot) => sum + slot.count, 0), 3);
+		const empty = await native.buildBoxBvh(new Float32Array(0));
+		assert.deepEqual([empty.nodeCount, cwNode(empty.nodes, 0).slots.length], [1, 0]);
 	});
 
 	it('evaluates vector terrain: noise base, flatten polygons and strokes, seamless pages far from the origin', async () => {
